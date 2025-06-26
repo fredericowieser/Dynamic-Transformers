@@ -1,8 +1,8 @@
 # pyproject.toml
 [project]
-name = "dvd-transformer"
+name = "dynamic-transformer"
 version = "0.1.0"
-description = "Dynamic Variational Decoder Transformer"
+description = "Dynamic Transformer"
 requires-python = ">=3.10"
 
 # Dependencies should be a list of strings
@@ -17,5 +17,6 @@ dependencies = [
     "numpy",
     "tqdm",
     "typing_extensions",
+    "ipykernel",
 ]
 
