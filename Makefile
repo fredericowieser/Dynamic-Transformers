@@ -10,14 +10,24 @@ VENV_DIR := .venv
 .PHONY: setup help
 
 setup: pyproject.toml # Ensure pyproject.toml exists before creating venv
-	@echo "Creating virtual environment with Python $(PYTHON_VERSION)..."
-	uv venv --python $(PYTHON_VERSION)
-	@echo "Virtual environment created at $(VENV_DIR)/"
+	@export PATH="$(HOME)/.local/bin:$$PATH"; \
+	echo "Checking for uv..."; \
+	if ! command -v uv >/dev/null 2>&1; then \
+		echo "uv not found, installing..."; \
+		curl -LsSf https://astral.sh/uv/install.sh | sh; \
+		echo "uv installed successfully."; \
+	fi; \
+	echo "Creating virtual environment with Python $(PYTHON_VERSION)..."; \
+	uv venv --python $(PYTHON_VERSION); \
+	echo "Virtual environment created at $(VENV_DIR)/"
 	@echo ""
 	@echo "Next steps:"
 	@echo "1. Activate the environment: source $(VENV_DIR)/bin/activate"
 	@echo "2. Install dependencies: uv pip sync pyproject.toml"
 	@echo "3. Login to wandb: wandb login"
+	@echo ""
+	@echo "Tip: If 'uv' isn't found in your terminal after setup, run..."
+	@echo "source $$HOME/.local/bin/env"
 
 help:
 	@echo "Available targets:"
