@@ -48,3 +48,34 @@ train will then have different files which will specify different ways of traini
 NOTE: onece a model is trained the goal is to save this model into the model-weights folder
 
 test: perplexity, and other metircs but ideally this should load back in the model from the model-weights file.
+
+Example Usage:
+
+main.py / main.sh --config==llama_3-2_1B_finetune.yaml --num_gpus==4 ...
+
+OPTIONS:
+--train ... boolean
+
+--train_config ... hashmap
+
+--test ... boolean
+
+--test_config ... hashmap
+
+--experiment ... boolean
+
+--experiment_dir ... string
+
+--logs_dir ... string
+
+--hf_model ... Optional[boolean, string]
+
+--transformer_params ... hash_map
+
+--seed 42
+
+--tensorboard ... boolean
+
+--wandb login
+
+
