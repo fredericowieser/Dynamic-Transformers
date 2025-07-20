@@ -23,41 +23,57 @@ class LightningModel(pl.LightningModule):
         # Load the configuration first
         config = AutoConfig.from_pretrained(self.model_cfg.model_name)
         log.info(f"Original config.json for {self.model_cfg.model_name}:")
-        log.info(config.to_dict()) # Print the full config dictionary for inspection
+        log.info(config.to_dict())
 
-        # --- FIX: Handle potential missing 'type' in 'rope_scaling' ---
-        # The LlamaRotaryEmbedding constructor expects config.rope_scaling to be a dictionary
-        # and to contain either 'rope_type' or 'type' key.
+        # --- REVISED FIX: Handle potential missing 'type' in 'rope_scaling' with extra robustness ---
+        # The LlamaRotaryEmbedding constructor uses:
+        # self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling["type"])
+        # This will KeyError if config.rope_scaling["type"] is missing AND config.rope_scaling.get("rope_type") is None.
 
-        # 1. Ensure 'rope_scaling' attribute exists and is a dictionary
-        if not hasattr(config, "rope_scaling") or config.rope_scaling is None:
-            config.rope_scaling = {}
+        # Ensure 'rope_scaling' is a dictionary. If it's not present or is not a dict, create a default.
+        if not hasattr(config, "rope_scaling") or config.rope_scaling is None or not isinstance(config.rope_scaling, dict):
+            original_rope_scaling_value = getattr(config, "rope_scaling", "N/A")
             log.warning(
-                f"Config for {self.model_cfg.model_name} does not have `rope_scaling` attribute. "
-                "Initializing `rope_scaling` as an empty dictionary."
+                f"Config for {self.model_cfg.model_name} `rope_scaling` is missing or not a dict (was: {original_rope_scaling_value}). "
+                "Initializing `rope_scaling` with default 'linear' type and factor 1.0."
             )
-        elif not isinstance(config.rope_scaling, dict):
-            log.warning(
-                f"Config for {self.model_cfg.model_name} `rope_scaling` is not a dictionary ({type(config.rope_scaling)}). "
-                "Overwriting `rope_scaling` as an empty dictionary."
-            )
-            config.rope_scaling = {}
+            config.rope_scaling = {"type": "linear", "factor": 1.0}
         
-        # 2. Ensure the 'type' key exists within 'rope_scaling' for LlamaRotaryEmbedding compatibility
-        # LlamaRotaryEmbedding: self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling["type"])
-        # This line will KeyError if config.rope_scaling["type"] is not found AND "rope_type" is not found or is None.
-        
-        # If 'rope_type' is not set or is None, then 'type' is needed as a fallback.
-        if config.rope_scaling.get("rope_type") is None and "type" not in config.rope_scaling:
+        # If rope_scaling exists and is a dict, ensure it has both 'rope_type' and 'type' to be safe.
+        # This is a defensive move against subtle behaviors of .get() or unexpected internal logic.
+        if "rope_type" in config.rope_scaling and config.rope_scaling["rope_type"] is not None:
+            # If rope_type is present and not None, ensure 'type' is also set to a consistent value
+            # so the fallback in LlamaRotaryEmbedding never causes KeyError.
+            if "type" not in config.rope_scaling:
+                log.warning(
+                    f"Config for {self.model_cfg.model_name} `rope_scaling` has 'rope_type' but no 'type'. "
+                    f"Setting `rope_scaling.type` to be consistent with 'rope_type': {config.rope_scaling['rope_type']}."
+                )
+                config.rope_scaling["type"] = config.rope_scaling["rope_type"]
+        else: # 'rope_type' is missing or None
+            # If 'rope_type' is missing or None, then 'type' is the primary one. Ensure it exists.
+            if "type" not in config.rope_scaling:
+                log.warning(
+                    f"Config for {self.model_cfg.model_name} `rope_scaling` lacks 'rope_type' (or it's None) and 'type'. "
+                    "Setting `rope_scaling.type` to 'linear' and `factor` to 1.0."
+                )
+                config.rope_scaling["type"] = "linear"
+                config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0)
+            
+            # Ensure rope_type is also set if type is set but rope_type is missing/None
+            if "rope_type" not in config.rope_scaling or config.rope_scaling["rope_type"] is None:
+                config.rope_scaling["rope_type"] = config.rope_scaling["type"] # Make them consistent
+
+        # Finally, ensure factor is present if it's a scaling config
+        if "factor" not in config.rope_scaling:
             log.warning(
-                f"Config for {self.model_cfg.model_name} `rope_scaling` lacks 'rope_type' and 'type'. "
-                "Setting `rope_scaling.type` to 'linear' and `factor` to 1.0."
+                f"Config for {self.model_cfg.model_name} `rope_scaling` lacks 'factor'. Setting to 1.0."
             )
-            config.rope_scaling["type"] = "linear"
-            config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0) # Set a default factor
+            config.rope_scaling["factor"] = 1.0
+
 
         log.info(f"Modified config.rope_scaling before model loading: {config.rope_scaling}")
-        # --- END FIX ---
+        # --- END REVISED FIX ---
 
 
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -75,9 +91,7 @@ class LightningModel(pl.LightningModule):
         log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
         new_layers = nn.ModuleList()
         for i, layer in enumerate(self.model.model.layers):
-            # Create the custom layer with the *model's actual config*, which should now be patched
             custom_layer = DynamicLlamaDecoderLayer(self.model.config, i) 
-            # Only load state_dict for modules that exist in the original layer.
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
         self.model.model.layers = new_layers
