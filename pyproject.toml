@@ -28,7 +28,7 @@ dependencies = [
     "antlr4-python3-runtime", # '~=4.10.1' means '>=4.10.1, <4.11.0'
     "PyYAML>=6.0",
     # Hugging Face ecosystem
-    "transformers==4.42.4",
+    "transformers==4.43.0",
     "datasets>=2.18.0",
     "accelerate>=0.27.0",
     "safetensors>=0.4.2",
