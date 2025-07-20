@@ -50,16 +50,16 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: torch.Tensor = None,
-        position_ids: torch.LongTensor = None,
-        past_key_value: tuple[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None, # Made Optional for clarity, consistent with HF
+        position_ids: Optional[torch.LongTensor] = None, # Made Optional
+        past_key_value: Optional[Tuple[torch.Tensor]] = None, # Made Optional
         output_attentions: bool = False,
         use_cache: bool = False,
-        current_iter: int = 0, # Current training iteration
-        gate_warmup_iters: int = 1000, # Total iterations for bias warm-up
-        dynamic_k: float = 0.5, # Threshold for Conditional Unconditional (CU) gate
-        **kwargs,
-    ) -> Tuple[torch.Tensor, ...]: # The return type is now more complex
+        current_iter: int = 0, # Custom argument
+        gate_warmup_iters: int = 1000, # Custom argument
+        dynamic_k: float = 0.5, # Custom argument
+        **kwargs, # Capture any other arguments passed to this layer's forward, don't pass them on
+    ) -> Tuple[torch.Tensor, ...]:
         
         original_input_to_block = hidden_states # (B, T, C)
 
@@ -67,15 +67,23 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         # Self-attention part
         residual_attn = hidden_states
         hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
-        attn_outputs = self.self_attn(
-            hidden_states_pre_attn_ln,
-            attention_mask,
-            position_ids,
-            past_key_value,
-            output_attentions,
-            use_cache,
-            #**kwargs,
-        )
+        
+        # Explicitly prepare arguments for self.self_attn
+        attn_args = {
+            "hidden_states": hidden_states_pre_attn_ln,
+            "output_attentions": output_attentions,
+            "use_cache": use_cache,
+        }
+        if attention_mask is not None:
+            attn_args["attention_mask"] = attention_mask
+        if position_ids is not None:
+            attn_args["position_ids"] = position_ids
+        if past_key_value is not None:
+            attn_args["past_key_value"] = past_key_value
+        
+        # Call self_attn with explicitly constructed arguments
+        attn_outputs = self.self_attn(**attn_args)
+        
         attention_output = attn_outputs[0] # (B, T, C)
         hidden_states_after_attn = residual_attn + attention_output # This is 'mha_out'
 
@@ -83,35 +91,25 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         residual_mlp = hidden_states_after_attn
         hidden_states_pre_mlp_ln = self.post_attention_layernorm(hidden_states_after_attn)
         posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln) # (B, T, C)
-        # 'posterior' as defined for gating context
         posterior_full_path_output = residual_mlp + posterior_mlp_output # (B, T, C)
 
         # Prior FFN prediction
-        # prev_attention_output is attention_output shifted by one timestep
-        prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0)) # (0, 0, 1, 0) means (left, right, top, bottom) for last two dims
+        prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0))
         prior_input = self.prior_layernorm(prev_attention_output)
-        prior_prediction = self.prior_ffn(prior_input) # This is 'prior_ch' (B, T, C)
+        prior_prediction = self.prior_ffn(prior_input) # (B, T, C)
 
-        # Token surprises: MSE between full posterior and two priors
-        # d_st_tok: surprise relative to the original input (static prior)
+        # --- Dynamic Gating Logic (inspired by nanoGPT) ---
         d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1) # (B, T)
-        # d_ch_tok: surprise relative to the prior FFN prediction (channel prior)
         d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1) # (B, T)
 
-        # Sequence-average surprises (mean over sequence length T)
         D_st = d_st_tok.mean(dim=1) # (B,)
         D_ch = d_ch_tok.mean(dim=1) # (B,)
 
-        # Warm-up bias
-        # Bias ensures the prior FFN has some warm-up time before it's heavily relied upon
         bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
         beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
         D_ch_biased = D_ch + beta # (B,)
 
-        # VPR (Variational Prediction Rule) decision per sample in the batch
-        # CE (Conditional Expert): Is static prior better than biased channel prior?
         CE = D_st > D_ch_biased # (B,) bool
-        # CU (Conditional Unconditional): Is static prior surprisingly bad compared to its own average?
         CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
 
         gate_vec = (CE | CU).float() # (B,) - 1.0 means activate posterior, 0.0 means activate original input
@@ -121,7 +119,6 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block # (B, T, C)
 
         # Prediction-loss for the prior FFN
-        # The prior_ffn tries to predict the *full* posterior path output, matching the nanoGPT logic.
         prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach()) # Scalar
 
         # Prepare outputs (standard Llama output + prior_loss + gate_vec)
