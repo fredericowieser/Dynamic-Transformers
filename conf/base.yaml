@@ -40,9 +40,10 @@ data:
 
 model:
   _target_: src.core.trainer.LightningModel
-  model_name: "meta-llama/Llama-3.2-1B-instruct"
-  prior_loss_weight: 0.1
-  dynamic_k: 0.5 # Threshold for Conditional Unconditional (CU) gate
+  model_cfg:
+    model_name: "meta-llama/Llama-3.2-1B-instruct"
+    prior_loss_weight: 0.1
+    dynamic_k: 0.5 # Threshold for Conditional Unconditional (CU) gate
 
 training:
   max_iters: 5000
