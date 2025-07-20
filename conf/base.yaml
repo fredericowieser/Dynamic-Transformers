@@ -54,6 +54,7 @@ training:
     weight_decay: 0.01
   scheduler:
     warmup_steps: 100
+  gate_warmup_iters: 0 # Steps to warm up the dynamic gating mechanism
 
 logging:
   tensorboard:
