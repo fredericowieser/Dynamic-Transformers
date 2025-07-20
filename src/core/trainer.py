@@ -19,8 +19,33 @@ class LightningModel(pl.LightningModule):
         self.training_cfg = training_cfg
 
         log.info(f"Loading pre-trained model: {self.model_cfg.model_name}")
+        
+        # Load the configuration first
+        config = AutoConfig.from_pretrained(self.model_cfg.model_name)
+
+        # --- FIX: Handle potential missing 'type' in 'rope_scaling' ---
+        # The KeyError occurs if config.rope_scaling is a dict but lacks "type" or "rope_type".
+        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            if "type" not in config.rope_scaling and "rope_type" not in config.rope_scaling:
+                log.warning(
+                    f"Config for {self.model_cfg.model_name} has `rope_scaling` but no `type` or `rope_type`."
+                    " Defaulting `rope_scaling.type` to 'linear' and `factor` to 1.0."
+                )
+                config.rope_scaling["type"] = "linear"
+                # Ensure 'factor' is also present, commonly 1.0 for linear scaling
+                config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0)
+        elif not hasattr(config, "rope_scaling") or config.rope_scaling is None:
+            # If rope_scaling attribute doesn't exist or is None, initialize it with defaults
+            log.warning(
+                f"Config for {self.model_cfg.model_name} does not have `rope_scaling` attribute."
+                " Initializing `rope_scaling` with default 'linear' type and factor 1.0."
+            )
+            config.rope_scaling = {"type": "linear", "factor": 1.0}
+        # --- END FIX ---
+
+
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_cfg.model_name, torch_dtype=torch.bfloat16
+            self.model_cfg.model_name, torch_dtype=torch.bfloat16, config=config # Pass the potentially modified config
         )
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token is None:
