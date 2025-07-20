@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from typing import Tuple
+from typing import Tuple, Optional
 
 log = logging.getLogger(__name__)
 
