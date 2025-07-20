@@ -156,11 +156,13 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         D_st = d_st_tok.mean(dim=1) # (B,)
         D_ch = d_ch_tok.mean(dim=1) # (B,)
 
-        bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
-        beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
-        D_ch_biased = D_ch + beta # (B,)
+        # Training Time Biasing
+        if gate_warmup_iters > 0:
+            bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
+            beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
+            D_ch = D_ch + beta # (B,)
 
-        CE = D_st > D_ch_biased # (B,) bool
+        CE = D_st > D_ch # (B,) bool
         CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
 
         gate_vec = (CE | CU).float() # (B,) - 1.0 means activate posterior, 0.0 means activate original input
