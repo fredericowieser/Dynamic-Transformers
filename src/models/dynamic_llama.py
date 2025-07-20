@@ -38,7 +38,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
 
         self.self_attn = LlamaAttention(config, layer_idx) # Explicitly create LlamaAttention
         self.mlp = LlamaMLP(config)
-        
+
         self.prior_ffn = FeedForward(config)
         self.prior_layernorm = nn.LayerNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -83,7 +83,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         if attention_mask is not None:
             attn_args["attention_mask"] = attention_mask
         if position_ids is not None:
-            attn_args["position_ids"] = position_ids
+            attn_args["position_embeddings"] = position_ids
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
         
