@@ -2,7 +2,11 @@ import logging
 import torch
 from torch import nn
 import torch.nn.functional as F
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.llama.modeling_llama import (
+    LlamaDecoderLayer,
+    LlamaAttention,
+    LlamaMLP,
+)
 from typing import Tuple, Optional
 
 log = logging.getLogger(__name__)
@@ -32,7 +36,9 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
 
-        dropout_val = getattr(config, "attention_dropout", 0.0)
+        self.self_attn = LlamaAttention(config, layer_idx) # Explicitly create LlamaAttention
+        self.mlp = LlamaMLP(config)
+        
         self.prior_ffn = FeedForward(config)
         self.prior_layernorm = nn.LayerNorm(
             config.hidden_size, eps=config.rms_norm_eps
