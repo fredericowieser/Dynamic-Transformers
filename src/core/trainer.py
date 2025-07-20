@@ -117,8 +117,26 @@ class LightningModel(pl.LightningModule):
         gate_warmup_iters = self.training_cfg.gate_warmup_iters
         dynamic_k = self.model_cfg.dynamic_k
 
+        input_ids = inputs["input_ids"]
         hidden_states = self.model.model.embed_tokens(inputs["input_ids"])
         attention_mask = inputs.get("attention_mask")
+
+        # --- FIX: Generate position_ids if not provided by the batch ---
+        position_ids = inputs.get("position_ids")
+        if position_ids is None:
+            # Generate default position_ids: a tensor of increasing integers (0, 1, 2, ...)
+            # for each sequence in the batch.
+            seq_len = input_ids.shape[1]
+            position_ids = (
+                torch.arange(
+                    seq_len,
+                    dtype=torch.long,
+                    device=input_ids.device,
+                )
+                .unsqueeze(0) # Add batch dimension
+                .expand(input_ids.shape[0], -1) # Expand to match batch size
+            )
+        # --- END FIX ---
         
         prior_losses_per_layer = []
         gate_vecs_per_layer = []
@@ -127,7 +145,7 @@ class LightningModel(pl.LightningModule):
             layer_outputs = layer(
                 hidden_states,
                 attention_mask=attention_mask,
-                position_ids=inputs.get("position_ids"),
+                position_ids=position_ids,
                 current_iter=current_iter,
                 gate_warmup_iters=gate_warmup_iters,
                 dynamic_k=dynamic_k,
