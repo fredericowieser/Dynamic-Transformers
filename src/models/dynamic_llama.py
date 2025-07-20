@@ -13,12 +13,11 @@ class FeedForward(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.w1 = nn.Linear(n_embd, 4 * n_embd, bias=False)
-        self.w3 = nn.Linear(n_embd, 4 * n_embd, bias=False)
-        self.w2 = nn.Linear(4 * n_embd, n_embd, bias=False)
+        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
         self.act_fn = nn.SiLU()
-        self.dropout_layer = nn.Dropout(config.hidden_dropout_prob if hasattr(config, 'hidden_dropout_prob') else 0.0)
-
+        self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, 'hidden_dropout_prob') else 0.0)
     def forward(self, x):
         x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
         return self.dropout(x)
