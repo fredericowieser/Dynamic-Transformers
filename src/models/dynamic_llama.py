@@ -29,116 +29,49 @@ class FeedForward(nn.Module):
 
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
-    """
-    A custom version of the LlamaDecoderLayer that inserts our Prior FFN.
-    We inherit from the original to reuse as much of the existing logic as possible.
-    """
-
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
-
-        self.self_attn = LlamaAttention(config, layer_idx) # Explicitly create LlamaAttention
-        self.mlp = LlamaMLP(config)
-
         self.prior_ffn = FeedForward(config)
-        self.prior_layernorm = nn.LayerNorm(
-            config.hidden_size, eps=config.rms_norm_eps
-        )
-
-        self.rotary_emb = LlamaRotaryEmbedding(config)
-
-        # Initialize the new components' weights.
-        log.info(f"Initializing new prior_ffn for layer {layer_idx}")
-        for module in [self.prior_ffn, self.prior_layernorm]:
-            for name, param in module.named_parameters():
-                if "weight" in name:
-                    nn.init.normal_(param, mean=0.0, std=0.02)
-                elif "bias" in name:
-                    nn.init.zeros_(param)
+        self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,  # Input as position_ids
+        position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
-        current_iter: int = 0,
-        gate_warmup_iters: int = 1000,
-        dynamic_k: float = 0.5,
         **kwargs,
-    ) -> Tuple[torch.Tensor, ...]:
-        
-        original_input_to_block = hidden_states
+    ):
+        original_input = hidden_states
 
-        # Compute position_embeddings using the rotary embedding module
-        position_embeddings = None
-        if position_ids is not None:
-            # LlamaRotaryEmbedding expects (batch_size, seq_len, head_dim) for cos/sin
-            # LlamaAttention expects (cos, sin) tuple
-            cos, sin = self.rotary_emb(hidden_states, position_ids)
-            position_embeddings = (cos, sin)
+        # Standard Llama path
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        attn_out = self.self_attn(
+            hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+        )[0]
+        hidden_states = residual + attn_out
 
-        # Standard Llama Decoder Path
-        residual_attn = hidden_states
-        hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
-        
-        attn_args = {
-            "hidden_states": hidden_states_pre_attn_ln,
-            "output_attentions": output_attentions,
-            "use_cache": use_cache,
-        }
-        if attention_mask is not None:
-            attn_args["attention_mask"] = attention_mask
-        if position_embeddings is not None:
-            attn_args["position_embeddings"] = position_embeddings
-        if past_key_value is not None:
-            attn_args["past_key_value"] = past_key_value
-        
-        attn_outputs = self.self_attn(**attn_args)
-        
-        attention_output = attn_outputs[0]
-        hidden_states_after_attn = residual_attn + attention_output
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        mlp_out = self.mlp(hidden_states)
+        hidden_states = residual + mlp_out
 
-        # Main MLP part (Posterior)
-        residual_mlp = hidden_states_after_attn
-        hidden_states_pre_mlp_ln = self.post_attention_layernorm(hidden_states_after_attn)
-        posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln)
-        posterior_full_path_output = residual_mlp + posterior_mlp_output
+        # Prior FFN
+        prev_attn = F.pad(attn_out[:, :-1, :], (0, 0, 1, 0))
+        prior_input = self.prior_layernorm(prev_attn)
+        prior_pred = self.prior_ffn(prior_input)
 
-        # Prior FFN prediction
-        prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0))
-        prior_input = self.prior_layernorm(prev_attention_output)
-        prior_prediction = self.prior_ffn(prior_input)
+        # Dynamic gating
+        d_st = F.mse_loss(hidden_states, original_input, reduction="none").mean(-1)
+        d_ch = F.mse_loss(hidden_states, prior_pred, reduction="none").mean(-1)
 
-        # Dynamic Gating Logic
-        d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1)
-        d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1)
+        gate = (d_st > d_ch).float().view(-1, 1, 1)
+        hidden_states = gate * hidden_states + (1 - gate) * original_input
 
-        D_st = d_st_tok.mean(dim=1)
-        D_ch = d_ch_tok.mean(dim=1)
+        prior_loss = F.mse_loss(prior_pred, hidden_states.detach())
 
-        bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
-        beta = D_ch.detach().mean() * bias_scale
-        D_ch_biased = D_ch + beta
-
-        CE = D_st > D_ch_biased
-        CU = D_st > dynamic_k * D_st.detach().mean()
-
-        gate_vec = (CE | CU).float()
-        
-        gate = gate_vec.view(-1, 1, 1)
-        hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block
-
-        prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach())
-
-        outputs = (hidden_states_final,)
-        if output_attentions:
-            outputs += (attn_outputs[1],)
-        if use_cache:
-            outputs += (attn_outputs[2],)
-        outputs += (prior_loss,)
-        outputs += (gate_vec,)
-
-        return outputs
+        return hidden_states, prior_loss, gate.mean()
