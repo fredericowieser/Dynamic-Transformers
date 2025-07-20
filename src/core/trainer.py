@@ -137,6 +137,45 @@ class LightningModel(pl.LightningModule):
                 .expand(input_ids.shape[0], -1) # Expand to match batch size
             )
         # --- END FIX ---
+
+        # --- FIX: Prepare the 4D attention mask ---
+        # Get the original 2D attention_mask (padding mask) from inputs
+        padding_attention_mask_2d = inputs.get("attention_mask")
+
+        # Create a base causal mask (lower triangular)
+        # It's (seq_len, seq_len) with -inf for future tokens
+        causal_mask_base = torch.full(
+            (seq_len, seq_len), 
+            torch.finfo(dtype).min, 
+            device=device
+        )
+        causal_mask_base = torch.triu(causal_mask_base, diagonal=1)
+
+        # Expand padding_attention_mask_2d to (batch_size, 1, 1, seq_len)
+        # This will contain 0 for actual tokens and -inf for padded tokens
+        # We need to broadcast it with the causal mask.
+        if padding_attention_mask_2d is not None:
+            expanded_padding_mask = (
+                (1 - padding_attention_mask_2d)
+                .bool()
+                .to(dtype)
+                .masked_fill_((1 - padding_attention_mask_2d).bool(), torch.finfo(dtype).min)
+                .unsqueeze(1) # Add head dim
+                .unsqueeze(1) # Add query sequence dim
+            ) # Shape: (batch_size, 1, 1, seq_len)
+            
+            # Combine causal mask with padding mask using broadcasting
+            # The result will be (batch_size, 1, seq_len, seq_len)
+            attention_mask_4d = causal_mask_base + expanded_padding_mask
+        else:
+            # If no padding mask is provided, use only the causal mask
+            attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(0) # -> (1, 1, seq_len, seq_len)
+            attention_mask_4d = attention_mask_4d.expand(batch_size, -1, -1, -1) # -> (batch_size, 1, seq_len, seq_len)
+        
+        # NOTE: LlamaAttention might expect a specific dimension for num_heads or just 1.
+        # It typically expands the mask to num_heads internally if it's 1.
+        # So, (batch_size, 1, seq_len, seq_len) should work.
+        # --- END FIX ---
         
         prior_losses_per_layer = []
         gate_vecs_per_layer = []
