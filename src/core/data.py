@@ -4,6 +4,7 @@ from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorForLanguageModeling
 import logging
 import json
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         text_column: str,
         dataset_config: str = None,
         validation_split_percentage: int = 5,
+        train_subset_ratio: Optional[float] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -113,6 +115,18 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
         lm_datasets = tokenized_datasets.map(group_texts, batched=True)
         full_dataset = lm_datasets["train"]
+
+        # Apply training data subsetting if specified
+        if self.hparams.train_subset_ratio is not None and 0.0 < self.hparams.train_subset_ratio < 1.0:
+            num_samples_to_use = int(len(full_dataset) * self.hparams.train_subset_ratio)
+            if num_samples_to_use == 0 and len(full_dataset) > 0:
+                num_samples_to_use = 1 # Ensure at least one sample if dataset is not empty
+            
+            # Randomly select indices for the subset
+            # Using torch.randperm for reproducibility (if seed_everything is set)
+            indices = torch.randperm(len(full_dataset))[:num_samples_to_use].tolist()
+            full_dataset = full_dataset.select(indices)
+            log.info(f"Reduced training dataset to {num_samples_to_use} samples ({self.hparams.train_subset_ratio*100:.2f}% of original).")
 
         # Create train/val splits
         val_size = int(len(full_dataset) * (self.hparams.validation_split_percentage / 100))

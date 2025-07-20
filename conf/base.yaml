@@ -27,6 +27,7 @@ data:
     block_size: 1024
     batch_size: 8
     validation_split_percentage: 5
+    train_subset_ratio: 0.01
 
   open_code_instruct:
     _target_: src.core.data.HuggingFaceDataModule
@@ -37,6 +38,7 @@ data:
     block_size: 1024
     batch_size: 4 # Often smaller for longer sequences
     validation_split_percentage: 5
+    train_subset_ratio: 0.01
 
 model:
   _target_: src.core.trainer.LightningModel
