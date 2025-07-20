@@ -57,6 +57,7 @@ def main(cfg: DictConfig) -> None:
         devices="auto",
         max_steps=cfg.training.max_iters,
         val_check_interval=cfg.training.eval_interval,
+        check_val_every_n_epoch=None,
         log_every_n_steps=10,
         logger=loggers,
         callbacks=[checkpoint_callback, lr_monitor],
