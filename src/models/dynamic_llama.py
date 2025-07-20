@@ -17,7 +17,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(n_embd, 4 * n_embd, bias=False)
         self.w2 = nn.Linear(4 * n_embd, n_embd, bias=False)
         self.act_fn = nn.SiLU()
-        self.dropout_layer = nn.Dropout(dropout_prob)
+        self.dropout_layer = nn.Dropout(config.hidden_dropout_prob if hasattr(config, 'hidden_dropout_prob') else 0.0)
 
     def forward(self, x):
         x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
@@ -34,7 +34,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         super().__init__(config, layer_idx)
 
         dropout_val = getattr(config, "attention_dropout", 0.0)
-        self.prior_ffn = FeedForward(config.hidden_size, dropout_val)
+        self.prior_ffn = FeedForward(config)
         self.prior_layernorm = nn.LayerNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
@@ -50,7 +50,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
 
     def forward(
         self,
-        hidden_states: torch.Tensor, # This is 'x' for the current block's input
+        hidden_states: torch.Tensor,
         attention_mask: torch.Tensor = None,
         position_ids: torch.LongTensor = None,
         past_key_value: tuple[torch.Tensor] = None,
