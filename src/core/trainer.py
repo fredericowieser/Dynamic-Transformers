@@ -119,7 +119,11 @@ class LightningModel(pl.LightningModule):
 
         input_ids = inputs["input_ids"]
         hidden_states = self.model.model.embed_tokens(inputs["input_ids"])
-        attention_mask = inputs.get("attention_mask")
+        # attention_mask = inputs.get("attention_mask")
+
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
+        dtype = hidden_states.dtype # Define dtype here
 
         # --- FIX: Generate position_ids if not provided by the batch ---
         position_ids = inputs.get("position_ids")
@@ -183,7 +187,7 @@ class LightningModel(pl.LightningModule):
         for layer in self.model.model.layers:
             layer_outputs = layer(
                 hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=attention_mask_4d,
                 position_ids=position_ids,
                 current_iter=current_iter,
                 gate_warmup_iters=gate_warmup_iters,
