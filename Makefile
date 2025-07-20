@@ -7,7 +7,7 @@ VENV_DIR := .venv
 
 # --- Targets ---
 
-.PHONY: setup help
+.PHONY: setup help run clean
 
 setup: pyproject.toml # Ensure pyproject.toml exists before creating venv
 	@export PATH="$(HOME)/.local/bin:$$PATH"; \
@@ -38,3 +38,24 @@ help:
 	@echo "  source .venv/bin/activate"
 	@echo "Then install dependencies: uv pip sync pyproject.toml"
 	@echo "And login to wandb: wandb login"
+
+# Capture all arguments passed to `make run`
+RUN_ARGS := $(filter-out run,$(MAKECMDGOALS))
+# Prevent Make from trying to interpret RUN_ARGS as targets
+$(eval $(RUN_ARGS):;@:)
+
+run:
+	@echo "Running main training script..."
+	@if [ ! -d "$(VENV_DIR)" ]; then \
+		echo "Error: Virtual environment not found. Please run 'make setup' first."; \
+		exit 1; \
+	fi
+	@. $(VENV_DIR)/bin/activate && \
+	python main.py $(RUN_ARGS)
+
+clean:
+	@echo "Removing virtual environment: $(VENV_DIR)/"
+	@rm -rf $(VENV_DIR)
+	@echo "Removing all __pycache__ folders..."
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@echo "Cleanup complete."

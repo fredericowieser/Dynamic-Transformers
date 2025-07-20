@@ -1,0 +1,63 @@
+# @package _global_
+
+# Default configuration for a full run.
+# Values can be overridden from the command line, e.g.,
+# python main.py data=open_code_instruct training.optimizer.base_lr=1e-5
+
+defaults:
+  - _self_
+
+run:
+  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}"
+  output_dir: "outputs/${run.name}"
+  seed: 42
+  device: "auto" # "cpu", "cuda", "mps", etc.
+  precision: "bf16-mixed" # "32-true", "16-mixed", "bf16-mixed"
+  run_final_evaluation: true
+
+data:
+  name: slim_orca
+  # --- Dataset Configurations ---
+  slim_orca:
+    _target_: src.core.data.HuggingFaceDataModule
+    dataset_name: "Open-Orca/SlimOrca-Dedup"
+    dataset_config: null
+    text_column: "conversations" # The column containing the text to be trained on
+    tokenizer_name: "meta-llama/Llama-3.2-1B-instruct"
+    block_size: 1024
+    batch_size: 8
+    validation_split_percentage: 5
+
+  open_code_instruct:
+    _target_: src.core.data.HuggingFaceDataModule
+    dataset_name: "g-ronimo/oasst-code-feed-filtered"
+    dataset_config: null
+    text_column: "prompt_response"
+    tokenizer_name: "meta-llama/Llama-3.2-1B-instruct"
+    block_size: 1024
+    batch_size: 4 # Often smaller for longer sequences
+    validation_split_percentage: 5
+
+model:
+  _target_: src.core.trainer.LightningModel
+  model_cfg:
+    model_name: "meta-llama/Llama-3.2-1B-instruct"
+    prior_loss_weight: 0.1
+
+training:
+  max_iters: 5000
+  eval_interval: 500
+  optimizer:
+    base_lr: 5.0e-5
+    prior_ffn_lr: 5.0e-4 # Higher learning rate for the newly initialized parts
+    weight_decay: 0.01
+  scheduler:
+    warmup_steps: 100
+
+logging:
+  tensorboard:
+    enabled: true
+  wandb:
+    enabled: false # Set to true to use WandB
+    project: "dynamic-llama"
+    entity: null # <<< YOUR WANDB ENTITY HERE
