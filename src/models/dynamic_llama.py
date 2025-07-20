@@ -74,7 +74,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             past_key_value,
             output_attentions,
             use_cache,
-            **kwargs,
+            #**kwargs,
         )
         attention_output = attn_outputs[0] # (B, T, C)
         hidden_states_after_attn = residual_attn + attention_output # This is 'mha_out'
