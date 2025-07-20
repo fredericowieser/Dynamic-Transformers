@@ -4,7 +4,12 @@ import torch.nn.functional as F
 from torch import nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    AutoConfig,
+    get_linear_schedule_with_warmup,
+)
 from src.models.dynamic_llama import DynamicLlamaDecoderLayer
 from typing import Tuple
 
@@ -41,7 +46,7 @@ class LightningModel(pl.LightningModule):
                 " Initializing `rope_scaling` with default 'linear' type and factor 1.0."
             )
             config.rope_scaling = {"type": "linear", "factor": 1.0}
-        # --- END FIX ---
+        # --- END FIX --- 
 
 
         self.model = AutoModelForCausalLM.from_pretrained(
