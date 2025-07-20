@@ -45,12 +45,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
-        self.rotary_emb = LlamaRotaryEmbedding(
-            dim=config.hidden_size // config.num_attention_heads,
-            max_position_embeddings=config.max_position_embeddings,
-            base=config.rope_theta if hasattr(config, 'rope_theta') else 10000.0,
-            device=None, # Let it infer device
-        )
+        self.rotary_emb = LlamaRotaryEmbedding(config)
 
         # Initialize the new components' weights.
         log.info(f"Initializing new prior_ffn for layer {layer_idx}")
