@@ -438,6 +438,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "safetensors" },
     { name = "sentencepiece" },
+    { name = "tensorboard" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -467,6 +468,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "safetensors", specifier = ">=0.4.2" },
     { name = "sentencepiece", specifier = ">=0.2.0" },
+    { name = "tensorboard", specifier = ">=2.19.0" },
     { name = "tensorboard", marker = "extra == 'logging'", specifier = ">=2.16.0" },
     { name = "torch", specifier = ">=2.2.0" },
     { name = "transformers", specifier = ">=4.38.0" },

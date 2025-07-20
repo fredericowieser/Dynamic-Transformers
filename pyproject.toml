@@ -33,6 +33,7 @@ dependencies = [
     "accelerate>=0.27.0",
     "safetensors>=0.4.2",
     "sentencepiece>=0.2.0", # Often a required tokenizer dependency
+    "tensorboard>=2.19.0",
 ]
 
 [project.urls]
