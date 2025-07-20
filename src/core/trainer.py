@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
 from src.models.dynamic_llama import DynamicLlamaDecoderLayer
+from typing import Tuple
 
 log = logging.getLogger(__name__)
 
@@ -47,33 +48,51 @@ class LightningModel(pl.LightningModule):
             if "prior_ffn" in name or "prior_layernorm" in name:
                 self.new_prior_params.append(param)
             else:
-                param.requires_grad = True
+                param.requires_grad = True # Ensure original parameters are trainable
                 self.original_params.append(param)
         log.info(
             f"Found {len(self.original_params)} original parameters and "
             f"{len(self.new_prior_params)} new prior parameters."
         )
 
-    def forward(self, **inputs):
-        # The custom layer returns an extra element (prior_loss).
-        # We must manually iterate through the layers to capture it.
+    def forward(self, **inputs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Get current training iteration for dynamic gating
+        current_iter = self.global_step
+        gate_warmup_iters = self.training_cfg.gate_warmup_iters
+        dynamic_k = self.model_cfg.dynamic_k
+
         hidden_states = self.model.model.embed_tokens(inputs["input_ids"])
         attention_mask = inputs.get("attention_mask")
         
-        prior_losses = []
+        prior_losses_per_layer = []
+        gate_vecs_per_layer = []
+
+        # Iterate through the dynamically modified layers
         for layer in self.model.model.layers:
-            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
-            hidden_states = layer_outputs[0]
-            prior_losses.append(layer_outputs[-1])
+            # Pass new gating parameters to the forward pass of each layer
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=inputs.get("position_ids"), # Llama Decoder layer expects position_ids
+                current_iter=current_iter,
+                gate_warmup_iters=gate_warmup_iters,
+                dynamic_k=dynamic_k,
+            )
+            hidden_states = layer_outputs[0] # The final output of the block
+            prior_losses_per_layer.append(layer_outputs[-2]) # Second to last is prior_loss
+            gate_vecs_per_layer.append(layer_outputs[-1]) # Last is gate_vec
 
         hidden_states = self.model.model.norm(hidden_states)
         logits = self.model.lm_head(hidden_states)
         
-        avg_prior_loss = torch.stack(prior_losses).mean()
-        return logits, avg_prior_loss
+        # Aggregate prior losses and gate statistics
+        avg_prior_loss = torch.stack(prior_losses_per_layer).mean()
+        avg_gate_activation = torch.stack(gate_vecs_per_layer).mean() # Mean across layers and batch
 
-    def _calculate_loss(self, batch):
-        logits, prior_loss = self.forward(**batch)
+        return logits, avg_prior_loss, avg_gate_activation
+
+    def _calculate_loss(self, batch) -> Tuple[torch.Tensor, ...]:
+        logits, prior_loss, gate_activation = self.forward(**batch)
         
         # Shift so that models predicting the next token
         shift_logits = logits[..., :-1, :].contiguous()
@@ -92,27 +111,32 @@ class LightningModel(pl.LightningModule):
         # Perplexity
         perplexity = torch.exp(lm_loss)
 
-        return total_loss, lm_loss, prior_loss, perplexity
+        return total_loss, lm_loss, prior_loss, perplexity, gate_activation
 
     def training_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity = self._calculate_loss(batch)
+        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
         self.log("train/loss", total_loss)
         self.log("train/lm_loss", lm_loss, prog_bar=True)
         self.log("train/prior_loss", prior_loss, prog_bar=True)
         self.log("train/perplexity", perplexity)
+        self.log("train/gate_activation", gate_activation, prog_bar=True) # Log gate activation
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity = self._calculate_loss(batch)
+        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
         self.log("val/loss", total_loss)
         self.log("val/lm_loss", lm_loss, prog_bar=True)
         self.log("val/perplexity", perplexity)
+        self.log("val/prior_loss", prior_loss, prog_bar=False)
+        self.log("val/gate_activation", gate_activation, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity = self._calculate_loss(batch)
+        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
         self.log("test/loss", total_loss)
         self.log("test/lm_loss", lm_loss)
         self.log("test/perplexity", perplexity)
+        self.log("test/prior_loss", prior_loss)
+        self.log("test/gate_activation", gate_activation)
 
     def configure_optimizers(self):
         param_groups = [
@@ -122,10 +146,18 @@ class LightningModel(pl.LightningModule):
         optimizer = torch.optim.AdamW(
             param_groups, weight_decay=self.training_cfg.optimizer.weight_decay
         )
+        total_training_steps = self.trainer.estimated_stepping_batches
+        if total_training_steps is None:
+            # Fallback for scheduler if estimated_stepping_batches is not available at this stage.
+            # This happens if `trainer.fit` hasn't been called.
+            # We assume `max_iters` represents the total training steps.
+            log.warning("`trainer.estimated_stepping_batches` is None. Using `max_iters` for total training steps for scheduler setup.")
+            total_training_steps = self.training_cfg.max_iters
+
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=self.training_cfg.scheduler.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_training_steps=total_training_steps,
         )
         return {
             "optimizer": optimizer,
