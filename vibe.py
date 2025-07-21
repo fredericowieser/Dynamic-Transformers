@@ -1,42 +1,52 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig # Import AutoConfig
-import os # Import os for path operations
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+import os
 
-# --- IMPORTANT: MODEL PATH CONFIGURATION ---
-# This path is extracted directly from your screenshot's log output.
-# It points to the directory where your fine-tuned model and tokenizer are saved.
-# No changes are needed if your environment is set up similarly to the screenshot's log.
 MODEL_PATH = "outputs/llama3.2-1b-dynamic-finetune-openassistant_guanaco-2025-07-21_13-00-37/final_model" 
-
-# --- Your prompt to test the model ---
 prompt = "The quick brown fox jumps over the lazy"
 
-# --- Model Loading ---
 print(f"Loading model from: {MODEL_PATH}...")
 try:
-    # Load the configuration first, so we can modify it if needed
     config = AutoConfig.from_pretrained(MODEL_PATH)
     
-    # --- CRITICAL PATCH: Ensure max_position_embeddings is an int ---
-    # The error "list < int" suggests max_position_embeddings might be a list.
-    if hasattr(config, "max_position_embeddings"):
-        if isinstance(config.max_position_embeddings, list):
-            original_value = config.max_position_embeddings
-            # Assume it should be a single integer; take the maximum if it's a list of options.
-            config.max_position_embeddings = max(original_value) 
-            print(f"WARNING: `max_position_embeddings` was a list ({original_value}), patched to: {config.max_position_embeddings}")
-        # Ensure it's treated as an int even if it was a float, which can happen.
-        elif not isinstance(config.max_position_embeddings, int):
-            original_value = config.max_position_embeddings
-            config.max_position_embeddings = int(original_value)
-            print(f"WARNING: `max_position_embeddings` was type {type(original_value).__name__} ({original_value}), patched to int: {config.max_position_embeddings}")
-    else:
-        # If it's entirely missing, provide a reasonable default (e.g., Llama2 default context length)
-        print("WARNING: `max_position_embeddings` not found in config, setting to 4096 as a default.")
-        config.max_position_embeddings = 4096
+    # List of common integer-like attributes in LlamaConfig that might sometimes be lists
+    int_attributes_to_check = [
+        "max_position_embeddings",
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "vocab_size",
+        "head_dim", # Llama 3 sometimes defines this directly
+        "pretraining_tp", # Tensor parallelism rank
+        "chunk_size_feed_forward",
+    ]
+
+    # --- AGGRESSIVE PATCH: Ensure common integer attributes are actually integers ---
+    for attr_name in int_attributes_to_check:
+        if hasattr(config, attr_name):
+            current_value = getattr(config, attr_name)
+            if isinstance(current_value, list):
+                if len(current_value) > 0:
+                    patched_value = max(current_value) # Take max as a safe default
+                    print(f"WARNING: `{attr_name}` was a list ({current_value}), patched to: {patched_value}")
+                    setattr(config, attr_name, patched_value)
+                else:
+                    # Handle empty list case (e.g., set to 0 or a reasonable default based on context)
+                    print(f"WARNING: `{attr_name}` was an empty list, setting to 0. You might need to adjust this default.")
+                    setattr(config, attr_name, 0)
+            elif not isinstance(current_value, int):
+                # Attempt to convert to int if it's float or another scalar type
+                try:
+                    patched_value = int(current_value)
+                    print(f"WARNING: `{attr_name}` was type {type(current_value).__name__} ({current_value}), patched to int: {patched_value}")
+                    setattr(config, attr_name, patched_value)
+                except (ValueError, TypeError):
+                    print(f"WARNING: Could not convert `{attr_name}` ({current_value}) to int. Keeping original value. This might cause issues.")
 
 
-    # --- SECONDARY PATCH: Apply rope_scaling fix consistently (from trainer.py) ---
+    # --- PATCH: Apply rope_scaling fix consistently ---
     # This block ensures that the rope_scaling config is well-formed,
     # as this model family sometimes has issues here too.
     if not hasattr(config, "rope_scaling") or config.rope_scaling is None or not isinstance(config.rope_scaling, dict):
@@ -73,9 +83,14 @@ try:
         config.rope_scaling["factor"] = 1.0
     # --- END PATCHES ---
 
-    # DEBUG: Print the critical config attributes *after* patches, *before* model instatiation
-    print(f"DEBUG: Config.max_position_embeddings value after patch: {config.max_position_embeddings} (type: {type(config.max_position_embeddings)})")
-    print(f"DEBUG: Config.rope_scaling value after patch: {config.rope_scaling} (type: {type(config.rope_scaling)})")
+    # --- DEBUG: Print config details after patching ---
+    # This will help identify if the problem persists and which value causes it.
+    print("\n--- CONFIG AFTER PATCHING (relevant attributes) ---")
+    for attr in int_attributes_to_check:
+        if hasattr(config, attr):
+            print(f"  {attr}: {getattr(config, attr)} (type: {type(getattr(config, attr))})")
+    print(f"  rope_scaling: {config.rope_scaling} (type: {type(config.rope_scaling)})")
+    print("--------------------------------------------------\n")
 
 
     # Now load the model with the (potentially patched) config
@@ -85,7 +100,7 @@ try:
 except Exception as e:
     print(f"\nERROR: Failed to load model or tokenizer from '{MODEL_PATH}'.")
     print(f"Please ensure the path is correct and the directory contains `config.json`, `pytorch_model.bin`, and `tokenizer.json` (or similar).")
-    print(f"Details: {type(e).__name__}: {e}") # Print exception type for better debugging
+    print(f"Details: {type(e).__name__}: {e}")
     exit(1) 
 
 # Set pad_token_id if not already set (common for generation)
@@ -101,11 +116,8 @@ model.eval() # Set model to evaluation mode for inference
 # --- Text Generation ---
 print(f"\n--- Input Prompt ---\n'{prompt}'")
 
-# Encode the prompt into token IDs
-# `add_special_tokens=True` ensures BOS token is added if applicable for the model
-input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
+input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
-# Generate text. Adjust parameters as needed for desired output style.
 with torch.no_grad(): # Disable gradient calculations for faster inference and less memory
     generated_output = model.generate(
         input_ids,
@@ -117,12 +129,10 @@ with torch.no_grad(): # Disable gradient calculations for faster inference and l
         eos_token_id=tokenizer.eos_token_id, # Model stops when this token is generated
     )
 
-# Decode the generated tokens back to text.
-# We slice `[0, input_ids.shape[1]:]` to get only the newly generated text, excluding the prompt.
 generated_text = tokenizer.decode(generated_output[0, input_ids.shape[1]:], skip_special_tokens=True)
 
 # --- Output the result ---
-print(f"\n--- Generated Completion ---\n{generated_text.strip()}") # .strip() removes leading/trailing whitespace
+print(f"\n--- Generated Completion ---\n{generated_text.strip()}")
 print("\n" + "="*50)
 print("Vibe check complete! Experiment with different prompts and generation parameters.")
 print("="*50)
