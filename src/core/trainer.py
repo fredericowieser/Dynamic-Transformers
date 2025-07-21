@@ -249,15 +249,18 @@ class LightningModel(pl.LightningModule):
         
         self.log("train/loss", total_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/lm_loss", lm_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/prior_loss", prior_loss, on_step=True, on_epoch=True, prog_bar=False)
-        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True, prog_bar=False)
+        self.log("train/prior_loss", prior_loss, on_step=True, on_epoch=True)
+        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
         self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
         
-        # Log per-layer gate activation stats
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"train/gate_layer_{i}_mean", stats["mean"], on_step=True, on_epoch=True, prog_bar=True)
-            self.log(f"train/gate_layer_{i}_std", stats["std"], on_step=True, on_epoch=True, prog_bar=True)
-            
+        # Log per-layer gate activation stats to the console if it's a logging step
+        if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
+            log_lines = ["--- Per-Layer Gate Activations (Training) ---"]
+            for i, stats in enumerate(per_layer_gate_stats):
+                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
+            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
+            log.info("\n".join(log_lines))
+
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -265,14 +268,20 @@ class LightningModel(pl.LightningModule):
         
         self.log("val/loss", total_loss, on_epoch=True, prog_bar=True)
         self.log("val/lm_loss", lm_loss, on_epoch=True, prog_bar=True)
-        self.log("val/perplexity", perplexity, on_epoch=True, prog_bar=False)
-        self.log("val/prior_loss", prior_loss, on_epoch=True, prog_bar=False)
+        self.log("val/perplexity", perplexity, on_epoch=True)
+        self.log("val/prior_loss", prior_loss, on_epoch=True)
         self.log("val/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True, prog_bar=True)
 
-        # Log per-layer gate activation stats
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"val/gate_layer_{i}_mean", stats["mean"], on_epoch=True, prog_bar=False)
-            self.log(f"val/gate_layer_{i}_std", stats["std"], on_epoch=True, prog_bar=False)
+        # Log per-layer gate activation stats to the console (usually at epoch end for validation)
+        # We don't need a step check here for validation since it's typically less frequent
+        # and we log on_epoch=True for validation metrics by default.
+        # This will print once per validation run.
+        if batch_idx == len(self.trainer.val_dataloaders[0]) - 1: # Last batch of validation dataloader
+            log_lines = ["--- Per-Layer Gate Activations (Validation) ---"]
+            for i, stats in enumerate(per_layer_gate_stats):
+                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
+            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
+            log.info("\n".join(log_lines))
 
     def test_step(self, batch, batch_idx):
         total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
@@ -283,10 +292,12 @@ class LightningModel(pl.LightningModule):
         self.log("test/prior_loss", prior_loss, on_epoch=True)
         self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
 
-        # Log per-layer gate activation stats
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"test/gate_layer_{i}_mean", stats["mean"], on_epoch=True)
-            self.log(f"test/gate_layer_{i}_std", stats["std"], on_epoch=True)
+        if batch_idx == len(self.trainer.test_dataloaders[0]) - 1: # Last batch of test dataloader
+            log_lines = ["--- Per-Layer Gate Activations (Test) ---"]
+            for i, stats in enumerate(per_layer_gate_stats):
+                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
+            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
+            log.info("\n".join(log_lines))
 
 
     def configure_optimizers(self):
