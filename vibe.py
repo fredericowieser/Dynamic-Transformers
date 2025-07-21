@@ -3,13 +3,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import os
 import json 
 
-# --- IMPORTANT: MODEL PATH CONFIGURATION ---
 MODEL_PATH = "outputs/llama3.2-1b-dynamic-finetune-openassistant_guanaco-2025-07-21_13-00-37/final_model" 
-
-# --- Your prompt to test the model ---
 prompt = "The quick brown fox jumps over the lazy"
 
-# --- Model Loading ---
+
 print(f"Loading model from: {MODEL_PATH}...")
 try:
     config = AutoConfig.from_pretrained(MODEL_PATH)
@@ -86,7 +83,6 @@ try:
         config.rope_scaling["factor"] = 1.0
         print(f"WARNING: Config `rope_scaling` lacks 'factor'. Setting to 1.0.")
 
-    # --- DEBUG: Print config details AFTER patching ---
     print("\n--- CONFIG AFTER PATCHING (full dictionary) ---")
     print(json.dumps(config.to_dict(), indent=2))
     print("-----------------------------------------------\n")
@@ -111,7 +107,6 @@ print(f"Using device: {device}")
 model.to(device)
 model.eval() # Set model to evaluation mode for inference
 
-# --- Text Generation ---
 print(f"\n--- Input Prompt ---\n'{prompt}'")
 
 input_encoding = tokenizer.encode_plus(
@@ -123,7 +118,7 @@ input_encoding = tokenizer.encode_plus(
 input_ids = input_encoding["input_ids"].to(device)
 attention_mask = input_encoding["attention_mask"].to(device)
 
-# --- CRITICAL FIX: Use torch.autocast for mixed precision inference ---
+# FIX: Use torch.autocast for mixed precision inference
 # This matches the 'bf16-mixed' precision used during training,
 # preventing dtype mismatches during internal generation operations.
 with torch.no_grad():
@@ -141,7 +136,7 @@ with torch.no_grad():
 
 generated_text = tokenizer.decode(generated_output[0, input_ids.shape[1]:], skip_special_tokens=True)
 
-# --- Output the result ---
+# Output the result
 print(f"\n--- Generated Completion ---\n{generated_text.strip()}")
 print("\n" + "="*50)
 print("Vibe check complete! Experiment with different prompts and generation parameters.")

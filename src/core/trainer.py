@@ -28,7 +28,7 @@ class LightningModel(pl.LightningModule):
         log.info(f"Original config.json for {self.model_cfg.model_name}:")
         log.info(config.to_dict())
 
-        # --- REVISED FIX: Handle potential missing 'type' in 'rope_scaling' with extra robustness ---
+        # FIX: Handle potential missing 'type' in 'rope_scaling' with extra robustness
         # The LlamaRotaryEmbedding constructor uses:
         # self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling["type"])
         # This will KeyError if config.rope_scaling["type"] is missing AND config.rope_scaling.get("rope_type") is None.
@@ -76,7 +76,7 @@ class LightningModel(pl.LightningModule):
 
 
         log.info(f"Modified config.rope_scaling before model loading: {config.rope_scaling}")
-        # --- END REVISED FIX ---
+        
 
 
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -90,14 +90,11 @@ class LightningModel(pl.LightningModule):
         self._modify_model_architecture()
         self._setup_parameter_groups()
 
-        # --- ADDED: Initialize deques for rolling average of per-layer gate activations ---
-        # Each element will be a dict: {'mean': deque, 'std': deque}
         self.per_layer_gate_activation_rolling_history = []
         for _ in range(self.model.config.num_hidden_layers):
             self.per_layer_gate_activation_rolling_history.append(
                 {"mean": deque(maxlen=ROLLING_WINDOW_SIZE), "std": deque(maxlen=ROLLING_WINDOW_SIZE)}
             )
-        # --- END ADDED ---
 
     def _modify_model_architecture(self):
         log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
@@ -137,7 +134,7 @@ class LightningModel(pl.LightningModule):
         device = input_ids.device
         dtype = hidden_states.dtype # Define dtype here
 
-        # --- FIX: Generate position_ids if not provided by the batch ---
+        # FIX: Generate position_ids if not provided by the batch
         position_ids = inputs.get("position_ids")
         if position_ids is None:
             # Generate default position_ids: a tensor of increasing integers (0, 1, 2, ...)
@@ -152,9 +149,8 @@ class LightningModel(pl.LightningModule):
                 .unsqueeze(0) # Add batch dimension
                 .expand(input_ids.shape[0], -1) # Expand to match batch size
             )
-        # --- END FIX ---
 
-        # --- FIX: Prepare the 4D attention mask ---
+        # FIX: Prepare the 4D attention mask
         # Get the original 2D attention_mask (padding mask) from inputs
         padding_attention_mask_2d = inputs.get("attention_mask")
 
@@ -191,7 +187,6 @@ class LightningModel(pl.LightningModule):
         # NOTE: LlamaAttention might expect a specific dimension for num_heads or just 1.
         # It typically expands the mask to num_heads internally if it's 1.
         # So, (batch_size, 1, seq_len, seq_len) should work.
-        # --- END FIX ---
         
         prior_losses_per_layer = []
         gate_vecs_per_layer = []
@@ -214,11 +209,9 @@ class LightningModel(pl.LightningModule):
         
         avg_prior_loss = torch.stack(prior_losses_per_layer).mean()
         
-        # --- MODIFIED RETURN: Return the list of gate_vecs_per_layer directly ---
-        # The aggregation for per-layer stats will happen in _calculate_loss
         return logits, avg_prior_loss, gate_vecs_per_layer
 
-    # --- MODIFIED _calculate_loss signature and logic ---
+
     def _calculate_loss(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, torch.Tensor]]]:
         # forward now returns gate_vecs_per_layer instead of aggregated gate stats
         logits, prior_loss, gate_vecs_per_layer = self.forward(**batch)
@@ -265,7 +258,7 @@ class LightningModel(pl.LightningModule):
         self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
         self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
         
-        # --- ADDED/MODIFIED: Update and log rolling averages for per-layer stats ---
+        # Update and log rolling averages for per-layer stats
         if self.trainer.global_step > 0: # Ensure global_step is initialized
             log_interval = self.trainer.log_every_n_steps
             
@@ -290,7 +283,6 @@ class LightningModel(pl.LightningModule):
                 
                 log_lines.append(f"  (Global Step: {self.trainer.global_step})")
                 log.info("\n".join(log_lines))
-        # --- END ADDED/MODIFIED ---
 
         return total_loss
 

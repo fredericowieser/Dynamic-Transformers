@@ -88,7 +88,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
 
-        # --- Custom: Handle 'position_embeddings' if required by a non-standard LlamaAttention ---
+        # FIX: Handle 'position_embeddings' if required by a non-standard LlamaAttention
         # The LlamaAttention usually computes cos/sin from position_ids internally.
         # If your LlamaAttention.forward truly requires 'position_embeddings'
         # as a separate argument, it expects the (cos, sin) tuple from rotary_emb.
@@ -149,7 +149,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         prior_input = self.prior_layernorm(prev_attention_output)
         prior_prediction = self.prior_ffn(prior_input) # (B, T, C)
 
-        # --- Dynamic Gating Logic (inspired by nanoGPT) ---
+        # Dynamic Gating Logic (inspired by nanoGPT)
         d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1) # (B, T)
         d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1) # (B, T)
 
