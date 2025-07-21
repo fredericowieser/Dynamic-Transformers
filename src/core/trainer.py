@@ -255,8 +255,8 @@ class LightningModel(pl.LightningModule):
         
         # Log per-layer gate activation stats
         for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"train/gate_layer_{i}_mean", stats["mean"], on_step=True, on_epoch=True, prog_bar=False)
-            self.log(f"train/gate_layer_{i}_std", stats["std"], on_step=True, on_epoch=True, prog_bar=False)
+            self.log(f"train/gate_layer_{i}_mean", stats["mean"], on_step=True, on_epoch=True, prog_bar=True)
+            self.log(f"train/gate_layer_{i}_std", stats["std"], on_step=True, on_epoch=True, prog_bar=True)
             
         return total_loss
 
