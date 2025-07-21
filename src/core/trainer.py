@@ -276,7 +276,7 @@ class LightningModel(pl.LightningModule):
         # We don't need a step check here for validation since it's typically less frequent
         # and we log on_epoch=True for validation metrics by default.
         # This will print once per validation run.
-        if batch_idx == len(self.trainer.val_dataloaders[0]) - 1: # Last batch of validation dataloader
+        if batch_idx == len(self.trainer.val_dataloaders) - 1: # Last batch of validation dataloader
             log_lines = ["--- Per-Layer Gate Activations (Validation) ---"]
             for i, stats in enumerate(per_layer_gate_stats):
                 log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
@@ -292,7 +292,7 @@ class LightningModel(pl.LightningModule):
         self.log("test/prior_loss", prior_loss, on_epoch=True)
         self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
 
-        if batch_idx == len(self.trainer.test_dataloaders[0]) - 1: # Last batch of test dataloader
+        if batch_idx == len(self.trainer.test_dataloaders) - 1: # Last batch of test dataloader
             log_lines = ["--- Per-Layer Gate Activations (Test) ---"]
             for i, stats in enumerate(per_layer_gate_stats):
                 log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
