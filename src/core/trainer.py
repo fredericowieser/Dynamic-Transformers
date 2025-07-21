@@ -11,6 +11,8 @@ from collections import deque
 
 log = logging.getLogger(__name__)
 
+# Define the rolling window size
+ROLLING_WINDOW_SIZE = 100
 
 class LightningModel(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
