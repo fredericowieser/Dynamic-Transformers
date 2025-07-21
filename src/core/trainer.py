@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, AutoConfig
 from src.models.dynamic_llama import DynamicLlamaDecoderLayer
-from typing import Tuple
+from typing import Tuple, Optional, Dict, List
 
 log = logging.getLogger(__name__)
 
