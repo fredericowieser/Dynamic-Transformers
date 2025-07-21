@@ -201,12 +201,15 @@ class LightningModel(pl.LightningModule):
         logits = self.model.lm_head(hidden_states)
         
         avg_prior_loss = torch.stack(prior_losses_per_layer).mean()
-        avg_gate_activation = torch.stack(gate_vecs_per_layer).mean()
+        
+        # --- MODIFIED RETURN: Return the list of gate_vecs_per_layer directly ---
+        # The aggregation for per-layer stats will happen in _calculate_loss
+        return logits, avg_prior_loss, gate_vecs_per_layer
 
-        return logits, avg_prior_loss, avg_gate_activation
-
-    def _calculate_loss(self, batch) -> Tuple[torch.Tensor, ...]:
-        logits, prior_loss, gate_activation = self.forward(**batch)
+    # --- MODIFIED _calculate_loss signature and logic ---
+    def _calculate_loss(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, torch.Tensor]]]:
+        # forward now returns gate_vecs_per_layer instead of aggregated gate stats
+        logits, prior_loss, gate_vecs_per_layer = self.forward(**batch)
         
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
@@ -221,32 +224,70 @@ class LightningModel(pl.LightningModule):
         
         perplexity = torch.exp(lm_loss)
 
-        return total_loss, lm_loss, prior_loss, perplexity, gate_activation
+        # Calculate overall mean gate activation for the progress bar
+        # This is essentially what `avg_gate_activation` was before
+        if gate_vecs_per_layer:
+            overall_gate_activation_mean = torch.stack(gate_vecs_per_layer).mean()
+        else:
+            overall_gate_activation_mean = torch.tensor(0.0, device=self.device)
+
+        # Collect per-layer gate statistics (mean and std)
+        per_layer_gate_stats = []
+        for i, gate_vec in enumerate(gate_vecs_per_layer):
+            # gate_vec is (B,), so mean and std are taken across the batch dimension
+            layer_mean = gate_vec.mean()
+            layer_std = gate_vec.std() if gate_vec.numel() > 1 else torch.tensor(0.0, device=self.device) # Handle single-element case
+            per_layer_gate_stats.append(
+                {"mean": layer_mean, "std": layer_std}
+            )
+
+        # Return the overall mean for prog_bar, and the detailed stats separately
+        return total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats
 
     def training_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
-        self.log("train/loss", total_loss)
-        self.log("train/lm_loss", lm_loss, prog_bar=True)
-        self.log("train/prior_loss", prior_loss, prog_bar=True)
-        self.log("train/perplexity", perplexity)
-        self.log("train/gate_activation", gate_activation, prog_bar=True)
+        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
+        
+        self.log("train/loss", total_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/lm_loss", lm_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/prior_loss", prior_loss, on_step=True, on_epoch=True, prog_bar=False)
+        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True, prog_bar=False)
+        self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
+        
+        # Log per-layer gate activation stats
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"train/gate_layer_{i}_mean", stats["mean"], on_step=True, on_epoch=True, prog_bar=False)
+            self.log(f"train/gate_layer_{i}_std", stats["std"], on_step=True, on_epoch=True, prog_bar=False)
+            
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
-        self.log("val/loss", total_loss)
-        self.log("val/lm_loss", lm_loss, prog_bar=True)
-        self.log("val/perplexity", perplexity)
-        self.log("val/prior_loss", prior_loss, prog_bar=False)
-        self.log("val/gate_activation", gate_activation, prog_bar=True)
+        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
+        
+        self.log("val/loss", total_loss, on_epoch=True, prog_bar=True)
+        self.log("val/lm_loss", lm_loss, on_epoch=True, prog_bar=True)
+        self.log("val/perplexity", perplexity, on_epoch=True, prog_bar=False)
+        self.log("val/prior_loss", prior_loss, on_epoch=True, prog_bar=False)
+        self.log("val/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True, prog_bar=True)
+
+        # Log per-layer gate activation stats
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"val/gate_layer_{i}_mean", stats["mean"], on_epoch=True, prog_bar=False)
+            self.log(f"val/gate_layer_{i}_std", stats["std"], on_epoch=True, prog_bar=False)
 
     def test_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, gate_activation = self._calculate_loss(batch)
-        self.log("test/loss", total_loss)
-        self.log("test/lm_loss", lm_loss)
-        self.log("test/perplexity", perplexity)
-        self.log("test/prior_loss", prior_loss)
-        self.log("test/gate_activation", gate_activation)
+        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
+        
+        self.log("test/loss", total_loss, on_epoch=True)
+        self.log("test/lm_loss", lm_loss, on_epoch=True)
+        self.log("test/perplexity", perplexity, on_epoch=True)
+        self.log("test/prior_loss", prior_loss, on_epoch=True)
+        self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
+
+        # Log per-layer gate activation stats
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"test/gate_layer_{i}_mean", stats["mean"], on_epoch=True)
+            self.log(f"test/gate_layer_{i}_std", stats["std"], on_epoch=True)
+
 
     def configure_optimizers(self):
         param_groups = [

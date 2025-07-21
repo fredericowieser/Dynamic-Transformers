@@ -17,7 +17,7 @@ run:
 
 data:
   name: openassistant_guanaco
-  # --- Dataset Configurations ---
+
   slim_orca:
     _target_: src.core.data.HuggingFaceDataModule
     dataset_name: "Open-Orca/SlimOrca-Dedup"
