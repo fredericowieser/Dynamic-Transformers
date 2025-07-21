@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, AutoConfig
 from src.models.dynamic_llama import DynamicLlamaDecoderLayer
 from typing import Tuple, Optional, Dict, List
+from collections import deque
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,15 @@ class LightningModel(pl.LightningModule):
 
         self._modify_model_architecture()
         self._setup_parameter_groups()
+
+        # --- ADDED: Initialize deques for rolling average of per-layer gate activations ---
+        # Each element will be a dict: {'mean': deque, 'std': deque}
+        self.per_layer_gate_activation_rolling_history = []
+        for _ in range(self.model.config.num_hidden_layers):
+            self.per_layer_gate_activation_rolling_history.append(
+                {"mean": deque(maxlen=ROLLING_WINDOW_SIZE), "std": deque(maxlen=ROLLING_WINDOW_SIZE)}
+            )
+        # --- END ADDED ---
 
     def _modify_model_architecture(self):
         log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
@@ -253,13 +263,32 @@ class LightningModel(pl.LightningModule):
         self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
         self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
         
-        # Log per-layer gate activation stats to the console if it's a logging step
-        if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
-            log_lines = ["--- Per-Layer Gate Activations (Training) ---"]
+        # --- ADDED/MODIFIED: Update and log rolling averages for per-layer stats ---
+        if self.trainer.global_step > 0: # Ensure global_step is initialized
+            log_interval = self.trainer.log_every_n_steps
+            
+            # Update history deques for each layer
             for i, stats in enumerate(per_layer_gate_stats):
-                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
-            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
-            log.info("\n".join(log_lines))
+                self.per_layer_gate_activation_rolling_history[i]["mean"].append(stats["mean"].item())
+                self.per_layer_gate_activation_rolling_history[i]["std"].append(stats["std"].item())
+
+            # Log rolling averages if it's a logging step
+            if self.trainer.global_step % log_interval == 0:
+                log_lines = [f"--- Per-Layer Gate Activations (Training, Rolling Avg over last {ROLLING_WINDOW_SIZE} steps) ---"]
+                for i in range(len(self.per_layer_gate_activation_rolling_history)):
+                    history = self.per_layer_gate_activation_rolling_history[i]
+                    
+                    if len(history["mean"]) > 0:
+                        rolling_mean = sum(history["mean"]) / len(history["mean"])
+                        # Calculate rolling std. Convert deque to tensor for torch.std
+                        rolling_std = torch.tensor(list(history["std"])).std().item() if len(history["std"]) > 1 else 0.0
+                        log_lines.append(f"  Layer {i}: Mean = {rolling_mean:.3f}, Std = {rolling_std:.3f}")
+                    else:
+                        log_lines.append(f"  Layer {i}: No data yet for rolling average.")
+                
+                log_lines.append(f"  (Global Step: {self.trainer.global_step})")
+                log.info("\n".join(log_lines))
+        # --- END ADDED/MODIFIED ---
 
         return total_loss
 
@@ -272,11 +301,8 @@ class LightningModel(pl.LightningModule):
         self.log("val/prior_loss", prior_loss, on_epoch=True)
         self.log("val/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True, prog_bar=True)
 
-        # Log per-layer gate activation stats to the console (usually at epoch end for validation)
-        # We don't need a step check here for validation since it's typically less frequent
-        # and we log on_epoch=True for validation metrics by default.
-        # This will print once per validation run.
-        if batch_idx == len(self.trainer.val_dataloaders) - 1: # Last batch of validation dataloader
+        # Log per-layer gate activation stats to the console (at epoch end for validation)
+        if batch_idx == len(self.trainer.val_dataloaders) - 1:
             log_lines = ["--- Per-Layer Gate Activations (Validation) ---"]
             for i, stats in enumerate(per_layer_gate_stats):
                 log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
@@ -292,7 +318,7 @@ class LightningModel(pl.LightningModule):
         self.log("test/prior_loss", prior_loss, on_epoch=True)
         self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
 
-        if batch_idx == len(self.trainer.test_dataloaders) - 1: # Last batch of test dataloader
+        if batch_idx == len(self.trainer.test_dataloaders) - 1:
             log_lines = ["--- Per-Layer Gate Activations (Test) ---"]
             for i, stats in enumerate(per_layer_gate_stats):
                 log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
