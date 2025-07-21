@@ -114,29 +114,30 @@ model.eval() # Set model to evaluation mode for inference
 # --- Text Generation ---
 print(f"\n--- Input Prompt ---\n'{prompt}'")
 
-# Encode the prompt. Crucially, ensure the input_ids are on the correct device.
-# Also, include `return_attention_mask=True` for proper generation.
 input_encoding = tokenizer.encode_plus(
     prompt, 
     return_tensors="pt", 
     add_special_tokens=True,
-    return_attention_mask=True # Ensure attention mask is generated
+    return_attention_mask=True
 )
 input_ids = input_encoding["input_ids"].to(device)
 attention_mask = input_encoding["attention_mask"].to(device)
 
-# Generate text. Adjust parameters as needed for desired output style.
-with torch.no_grad(): # Disable gradient calculations for faster inference and less memory
-    generated_output = model.generate(
-        input_ids,
-        attention_mask=attention_mask, # Pass the generated attention mask
-        max_new_tokens=50,       
-        temperature=0.7,         
-        top_p=0.9,               
-        do_sample=True,          
-        pad_token_id=tokenizer.pad_token_id, 
-        eos_token_id=tokenizer.eos_token_id, 
-    )
+# --- CRITICAL FIX: Use torch.autocast for mixed precision inference ---
+# This matches the 'bf16-mixed' precision used during training,
+# preventing dtype mismatches during internal generation operations.
+with torch.no_grad():
+    with torch.autocast(device_type=device.split(':')[0], dtype=torch.bfloat16): # device.split(':')[0] handles 'cuda:0' vs 'cuda'
+        generated_output = model.generate(
+            input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=50,       
+            temperature=0.7,         
+            top_p=0.9,               
+            do_sample=True,          
+            pad_token_id=tokenizer.pad_token_id, 
+            eos_token_id=tokenizer.eos_token_id, 
+        )
 
 generated_text = tokenizer.decode(generated_output[0, input_ids.shape[1]:], skip_special_tokens=True)
 
