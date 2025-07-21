@@ -5,7 +5,7 @@ import os # Import os for path operations
 # --- IMPORTANT: MODEL PATH CONFIGURATION ---
 # This path is extracted directly from your screenshot's log output.
 # It points to the directory where your fine-tuned model and tokenizer are saved.
-# If you run this script in the same environment, this path should be correct.
+# No changes are needed if your environment is set up similarly to the screenshot's log.
 MODEL_PATH = "outputs/llama3.2-1b-dynamic-finetune-openassistant_guanaco-2025-07-21_13-00-37/final_model" 
 
 # --- Your prompt to test the model ---
@@ -14,22 +14,31 @@ prompt = "The quick brown fox jumps over the lazy"
 # --- Model Loading ---
 print(f"Loading model from: {MODEL_PATH}...")
 try:
-    # Load the configuration first
+    # Load the configuration first, so we can modify it if needed
     config = AutoConfig.from_pretrained(MODEL_PATH)
-    # print(f"Loaded config: {config.to_dict()}") # Uncomment to inspect the full config if needed
-
-    # --- PATCH 1: Handle potential list for max_position_embeddings ---
-    # The error "list < int" suggests max_position_embeddings might be a list.
-    if hasattr(config, "max_position_embeddings") and isinstance(config.max_position_embeddings, list):
-        # Assuming it should be a single integer, take the maximum value from the list
-        # or the first element if it's typically a single-element list.
-        # For max_position_embeddings, taking the max is a safer default.
-        original_max_pos_embed = config.max_position_embeddings
-        config.max_position_embeddings = max(original_max_pos_embed)
-        print(f"WARNING: `max_position_embeddings` was a list ({original_max_pos_embed}), patched to: {config.max_position_embeddings}")
     
-    # --- PATCH 2: Apply rope_scaling fix consistently (from trainer.py) ---
-    # This ensures config used for inference is robust, same as training config.
+    # --- CRITICAL PATCH: Ensure max_position_embeddings is an int ---
+    # The error "list < int" suggests max_position_embeddings might be a list.
+    if hasattr(config, "max_position_embeddings"):
+        if isinstance(config.max_position_embeddings, list):
+            original_value = config.max_position_embeddings
+            # Assume it should be a single integer; take the maximum if it's a list of options.
+            config.max_position_embeddings = max(original_value) 
+            print(f"WARNING: `max_position_embeddings` was a list ({original_value}), patched to: {config.max_position_embeddings}")
+        # Ensure it's treated as an int even if it was a float, which can happen.
+        elif not isinstance(config.max_position_embeddings, int):
+            original_value = config.max_position_embeddings
+            config.max_position_embeddings = int(original_value)
+            print(f"WARNING: `max_position_embeddings` was type {type(original_value).__name__} ({original_value}), patched to int: {config.max_position_embeddings}")
+    else:
+        # If it's entirely missing, provide a reasonable default (e.g., Llama2 default context length)
+        print("WARNING: `max_position_embeddings` not found in config, setting to 4096 as a default.")
+        config.max_position_embeddings = 4096
+
+
+    # --- SECONDARY PATCH: Apply rope_scaling fix consistently (from trainer.py) ---
+    # This block ensures that the rope_scaling config is well-formed,
+    # as this model family sometimes has issues here too.
     if not hasattr(config, "rope_scaling") or config.rope_scaling is None or not isinstance(config.rope_scaling, dict):
         original_rope_scaling_value = getattr(config, "rope_scaling", "N/A")
         print(
@@ -52,7 +61,7 @@ try:
                 "Setting `rope_scaling.type` to 'linear' and `factor` to 1.0."
             )
             config.rope_scaling["type"] = "linear"
-            config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0) # Ensure factor is also set
+            config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0) 
         
         if "rope_type" not in config.rope_scaling or config.rope_scaling["rope_type"] is None:
             config.rope_scaling["rope_type"] = config.rope_scaling["type"]
@@ -63,6 +72,11 @@ try:
         )
         config.rope_scaling["factor"] = 1.0
     # --- END PATCHES ---
+
+    # DEBUG: Print the critical config attributes *after* patches, *before* model instatiation
+    print(f"DEBUG: Config.max_position_embeddings value after patch: {config.max_position_embeddings} (type: {type(config.max_position_embeddings)})")
+    print(f"DEBUG: Config.rope_scaling value after patch: {config.rope_scaling} (type: {type(config.rope_scaling)})")
+
 
     # Now load the model with the (potentially patched) config
     model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, config=config, torch_dtype=torch.bfloat16)
@@ -82,28 +96,33 @@ if tokenizer.pad_token_id is None:
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 model.to(device)
-model.eval() # Set model to evaluation mode
+model.eval() # Set model to evaluation mode for inference
 
 # --- Text Generation ---
 print(f"\n--- Input Prompt ---\n'{prompt}'")
 
-input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+# Encode the prompt into token IDs
+# `add_special_tokens=True` ensures BOS token is added if applicable for the model
+input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
 
-with torch.no_grad():
-    output_tokens = model.generate(
+# Generate text. Adjust parameters as needed for desired output style.
+with torch.no_grad(): # Disable gradient calculations for faster inference and less memory
+    generated_output = model.generate(
         input_ids,
-        max_new_tokens=50,       # Generate up to 50 new tokens
-        temperature=0.7,         # Controls randomness (higher = more random)
-        top_p=0.9,               # Nucleus sampling
-        do_sample=True,          # Enable sampling
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        max_new_tokens=50,       # Maximum number of *new* tokens to generate
+        temperature=0.7,         # Controls randomness. Lower = more deterministic, Higher = more creative/random.
+        top_p=0.9,               # Nucleus sampling: only consider tokens that cumulatively sum to top_p probability
+        do_sample=True,          # If False, greedy decoding is used (no temperature/top_p)
+        pad_token_id=tokenizer.pad_token_id, # Essential for batching and stopping generation
+        eos_token_id=tokenizer.eos_token_id, # Model stops when this token is generated
     )
 
-generated_text = tokenizer.decode(output_tokens[0, input_ids.shape[1]:], skip_special_tokens=True)
+# Decode the generated tokens back to text.
+# We slice `[0, input_ids.shape[1]:]` to get only the newly generated text, excluding the prompt.
+generated_text = tokenizer.decode(generated_output[0, input_ids.shape[1]:], skip_special_tokens=True)
 
-# --- Output ---
-print(f"\n--- Generated Completion ---\n{generated_text.strip()}")
+# --- Output the result ---
+print(f"\n--- Generated Completion ---\n{generated_text.strip()}") # .strip() removes leading/trailing whitespace
 print("\n" + "="*50)
-print("Vibe check complete!")
+print("Vibe check complete! Experiment with different prompts and generation parameters.")
 print("="*50)
