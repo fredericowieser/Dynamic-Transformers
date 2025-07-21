@@ -34,6 +34,7 @@ dependencies = [
     "safetensors>=0.4.2",
     "sentencepiece>=0.2.0", # Often a required tokenizer dependency
     "tensorboard>=2.19.0",
+    "huggingface-hub>=0.33.1",
 ]
 
 [project.urls]
