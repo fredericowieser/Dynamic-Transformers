@@ -298,6 +298,7 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         if use_cache:
             outputs += (attn_outputs[2],)
         outputs += (prior_loss,) # The specific loss for the prior FFN
-        outputs += (gate_vec,) # The gate decision vector for logging or auxiliary uses
-
+        # Average gate_vec over the token dimension to get (B,)
+        outputs += (gate_vec.mean(dim=1),)  # The gate decision vector (B,)
+        
         return outputs
