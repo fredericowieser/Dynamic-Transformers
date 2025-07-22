@@ -285,7 +285,7 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         gate_vec = (CE | CU).float() # (B, T) - 1.0 means activate posterior, 0.0 means activate original input
 
         # Mix the block output based on the gate
-        gate = gate_vec.view(-1, 1, 1) # Reshape for broadcasting (B,1,1)
+        gate = gate_vec.unsqueeze(-1) # Reshape for broadcasting (B, T)
         hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block # (B, T, C)
 
         # Prediction-loss for the prior FFN
