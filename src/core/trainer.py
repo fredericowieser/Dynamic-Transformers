@@ -5,7 +5,7 @@ from torch import nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, AutoConfig
-from src.models.dynamic_llama import DynamicLlamaDecoderLayer
+from src.models.dynamic_llama import DynamicLlamaBlockWiseDecoderLayer, DynamicLlamaTokenWiseDecoderLayer
 from typing import Tuple, Optional, Dict, List
 from collections import deque
 
@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 # Define the rolling window size
 ROLLING_WINDOW_SIZE = 100
 
-class LightningModel(pl.LightningModule):
+class DynamicLlamaTrainer(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -97,14 +97,24 @@ class LightningModel(pl.LightningModule):
             )
 
     def _modify_model_architecture(self):
-        log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
-        new_layers = nn.ModuleList()
-        for i, layer in enumerate(self.model.model.layers):
-            custom_layer = DynamicLlamaDecoderLayer(self.model.config, i) 
-            custom_layer.load_state_dict(layer.state_dict(), strict=False)
-            new_layers.append(custom_layer)
-        self.model.model.layers = new_layers
-        log.info("All Llama decoder layers have been replaced.")
+        if self.model_cfg.token_wise:
+            log.info("Replacing LlamaDecoderLayer with DynamicLlamaTokenWiseDecoderLayer...")
+            new_layers = nn.ModuleList()
+            for i, layer in enumerate(self.model.model.layers):
+                custom_layer = DynamicLlamaTokenWiseDecoderLayer(self.model.config, i)
+                custom_layer.load_state_dict(layer.state_dict(), strict=False)
+                new_layers.append(custom_layer)
+            self.model.model.layers = new_layers
+            log.info("All Llama decoder layers have been replaced with token-wise layers.")
+        else:
+            log.info("Replacing LlamaDecoderLayer with DynamicLlamaBlockWiseDecoderLayer...")
+            new_layers = nn.ModuleList()
+            for i, layer in enumerate(self.model.model.layers):
+                custom_layer = DynamicLlamaBlockWiseDecoderLayer(self.model.config, i)
+                custom_layer.load_state_dict(layer.state_dict(), strict=False)
+                new_layers.append(custom_layer)
+            self.model.model.layers = new_layers
+            log.info("All Llama decoder layers have been replaced.")
 
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")

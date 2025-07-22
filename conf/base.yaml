@@ -52,11 +52,12 @@ data:
     train_subset_ratio: null
 
 model:
-  _target_: src.core.trainer.LightningModel
+  _target_: src.core.trainer.DynamicLlamaTrainer
   model_cfg:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
     dynamic_k: 0.9 # Threshold for Conditional Unconditional (CU) gate
+    token_wise: true # Use token-wise dynamic gating
 
 training:
   max_iters: 5000

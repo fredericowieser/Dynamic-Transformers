@@ -28,7 +28,7 @@ class FeedForward(nn.Module):
         return self.dropout(x)
 
 
-class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
+class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
     """
     A custom version of the LlamaDecoderLayer that inserts our Prior FFN.
     We inherit from the original to reuse as much of the existing logic as possible.
@@ -167,6 +167,123 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
 
         gate_vec = (CE | CU).float() # (B,) - 1.0 means activate posterior, 0.0 means activate original input
         
+        # Mix the block output based on the gate
+        gate = gate_vec.view(-1, 1, 1) # Reshape for broadcasting (B,1,1)
+        hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block # (B, T, C)
+
+        # Prediction-loss for the prior FFN
+        prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach()) # Scalar
+
+        # Prepare outputs (standard Llama output + prior_loss + gate_vec)
+        outputs = (hidden_states_final,) # New primary output
+        if output_attentions:
+            outputs += (attn_outputs[1],)
+        if use_cache:
+            outputs += (attn_outputs[2],)
+        outputs += (prior_loss,) # The specific loss for the prior FFN
+        outputs += (gate_vec,) # The gate decision vector for logging or auxiliary uses
+
+        return outputs
+
+
+class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
+    """
+    A custom version of the LlamaDecoderLayer that inserts our Prior FFN.
+    We inherit from the original to reuse as much of the existing logic as possible.
+    """
+
+    def __init__(self, config, layer_idx: int):
+        super().__init__(config, layer_idx)
+        self.self_attn = LlamaAttention(config, layer_idx)
+        self.mlp = LlamaMLP(config)
+        self.prior_ffn = FeedForward(config)
+        self.prior_layernorm = nn.LayerNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+        # Initialize the new components' weights.
+        log.info(f"Initializing new prior_ffn for layer {layer_idx}")
+        for module in [self.prior_ffn, self.prior_layernorm]:
+            for name, param in module.named_parameters():
+                if "weight" in name:
+                    nn.init.normal_(param, mean=0.0, std=0.02)
+                elif "bias" in name:
+                    nn.init.zeros_(param)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        current_iter: int = 0,
+        gate_warmup_iters: int = 1000,
+        dynamic_k: float = 0.5,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, ...]:
+        
+        original_input_to_block = hidden_states # (B, T, C)
+
+        # Standard Llama Decoder Path
+        # Self-attention part
+        residual_attn = hidden_states
+        hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
+        
+        # Explicitly prepare arguments for self.self_attn
+        attn_args = {
+            "hidden_states": hidden_states_pre_attn_ln,
+            "output_attentions": output_attentions,
+            "use_cache": use_cache,
+        }
+        if attention_mask is not None:
+            attn_args["attention_mask"] = attention_mask
+        if past_key_value is not None:
+            attn_args["past_key_value"] = past_key_value
+        position_embeddings = None
+        if position_ids is not None:
+            batch_size, seq_len, hidden_size = hidden_states_pre_attn_ln.shape
+            num_heads = self.self_attn.num_heads
+            head_dim = self.self_attn.head_dim
+            dummy_value_states = hidden_states_pre_attn_ln.reshape(
+                batch_size, seq_len, num_heads, head_dim
+            ).transpose(1, 2) # -> (B, num_heads, T, head_dim)
+            cos, sin = self.self_attn.rotary_emb(dummy_value_states, position_ids)
+            position_embeddings = (cos, sin)
+        if position_embeddings is not None: attn_args["position_embeddings"] = position_embeddings
+        attn_outputs = self.self_attn(**attn_args)
+        attention_output = attn_outputs[0] # (B, T, C)
+        hidden_states_after_attn = residual_attn + attention_output # This is 'mha_out'
+
+        # Main MLP part (Posterior)
+        residual_mlp = hidden_states_after_attn
+        hidden_states_pre_mlp_ln = self.post_attention_layernorm(hidden_states_after_attn)
+        posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln) # (B, T, C)
+        posterior_full_path_output = residual_mlp + posterior_mlp_output # (B, T, C)
+
+        # Prior FFN prediction
+        prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0))
+        prior_input = self.prior_layernorm(prev_attention_output)
+        prior_prediction = self.prior_ffn(prior_input) # (B, T, C)
+
+        # Dynamic Gating Logic (inspired by nanoGPT)
+        d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1) # (B, T)
+        d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1) # (B, T)
+
+        D_st = d_st_tok # (B, T)
+        D_ch = d_ch_tok # (B, T)
+
+        # Training Time Biasing
+        if gate_warmup_iters > 0:
+            bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
+            beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
+            D_ch = D_ch + beta # (B,)
+
+        CE = D_st > D_ch # (B, T) bool
+        CU = D_st > dynamic_k * D_st.detach().mean() # (B, T) bool
+
+        gate_vec = (CE | CU).float() # (B, T) - 1.0 means activate posterior, 0.0 means activate original input
+
         # Mix the block output based on the gate
         gate = gate_vec.view(-1, 1, 1) # Reshape for broadcasting (B,1,1)
         hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block # (B, T, C)
