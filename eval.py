@@ -4,6 +4,7 @@ import argparse
 import math
 import torch
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     pipeline,
@@ -15,9 +16,29 @@ import evaluate
 # UTILS
 # -----------------------------------------------------------------------------
 def load_model_and_tokenizer(model_path: str, device: str):
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(model_path).to(device)
+    # 1) Load config, patch pad_token_id if it’s a list
+    config = AutoConfig.from_pretrained(model_path)
+    if isinstance(config.pad_token_id, (list, tuple)):
+        # take the first element
+        config.pad_token_id = int(config.pad_token_id[0])
+
+    # 2) Instantiate model with the fixed config
+    model = AutoModelForCausalLM.from_pretrained(model_path, config=config)
+    model.to(device)
     model.eval()
+
+    # 3) Load tokenizer and patch its pad_token_id too
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if isinstance(tokenizer.pad_token_id, (list, tuple)):
+        tokenizer.pad_token_id = int(tokenizer.pad_token_id[0])
+        # keep the model.config in sync
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+    # 4) Ensure eos_token_id is set
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        model.config.pad_token_id = tokenizer.eos_token_id
+
     return model, tokenizer
 
 def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
