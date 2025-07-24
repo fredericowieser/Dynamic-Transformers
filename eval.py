@@ -151,7 +151,7 @@ if __name__ == "__main__":
 
     print("\n1) Perplexity benchmarks")
 
-    # WikiText-103 Raw
+    # --- WikiText-103 raw (validation split) ---
     wt_ds = load_dataset(
         "wikitext",
         "wikitext-103-raw-v1",
@@ -160,14 +160,27 @@ if __name__ == "__main__":
     wt_ppl = compute_ppl(model, tokenizer, wt_ds, device)
     print(f"  • WikiText-103-raw-v1 (validation) → PPL = {wt_ppl:.2f}")
 
-    # The Pile
-    pile_ds = load_dataset(
-        "EleutherAI/pile",
-        split="test",
-        trust_remote_code=True,
-    )
-    pile_ppl = compute_ppl(model, tokenizer, pile_ds, device)
-    print(f"  • The Pile (test) → PPL = {pile_ppl:.2f}")
+    # --- Try EleutherAI/pile (test split) with trust_remote_code=True ---
+    try:
+        pile_ds = load_dataset(
+            "EleutherAI/pile",
+            split="test",
+            trust_remote_code=True,
+        )
+        pile_ppl = compute_ppl(model, tokenizer, pile_ds, device)
+        print(f"  • The Pile (test) → PPL = {pile_ppl:.2f}")
+    except Exception as e:
+        print(f"  ! Skipping EleutherAI/pile due to: {type(e).__name__}: {e}")
+        print("    Falling back to English C4 (validation) for PPL.")
+
+        # --- Fallback: C4 English validation ---
+        c4_ds = load_dataset(
+            "allenai/c4",
+            "en",
+            split="validation",
+        )
+        c4_ppl = compute_ppl(model, tokenizer, c4_ds, device)
+        print(f"  • C4 (en, validation) → PPL = {c4_ppl:.2f}")
 
     print("\n2) Multiple-choice reasoning")
     for task in [
