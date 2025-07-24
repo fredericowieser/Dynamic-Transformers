@@ -161,7 +161,11 @@ if __name__ == "__main__":
     print(f"  • WikiText-103-raw-v1 (validation) → PPL = {wt_ppl:.2f}")
 
     # The Pile
-    pile_ds = load_dataset("EleutherAI/pile", split="test")
+    pile_ds = load_dataset(
+        "EleutherAI/pile",
+        split="test",
+        trust_remote_code=True,
+    )
     pile_ppl = compute_ppl(model, tokenizer, pile_ds, device)
     print(f"  • The Pile (test) → PPL = {pile_ppl:.2f}")
 
