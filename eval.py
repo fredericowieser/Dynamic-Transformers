@@ -35,6 +35,13 @@ def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = F
     if isinstance(config.pad_token_id, (list, tuple)):
         config.pad_token_id = int(config.pad_token_id[0])
 
+    if (
+        hasattr(config, "rope_scaling")
+        and isinstance(config.rope_scaling, dict)
+        and "type" not in config.rope_scaling
+    ):
+        config.rope_scaling = None
+
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         config=config,
