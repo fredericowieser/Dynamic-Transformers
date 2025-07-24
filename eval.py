@@ -72,46 +72,39 @@ def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
     avg_loss = total_loss / n_batches
     return math.exp(avg_loss)
 
-def mc_accuracy(
-    model, tokenizer, ds, device,
-    prompt_key: str,
-    choices_key: str,
-    answer_key: str,
-):
-    """
-    Multiple-choice accuracy: pick the choice with highest log-likelihood.
-    """
-    metric = evaluate.load("accuracy")
-    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+def mc_accuracy(model, tokenizer, ds, device,
+                prompt_key, choices_key, label_key):
+    import torch
+    loss_fn = torch.nn.CrossEntropyLoss()
+    correct = 0
+    total   = 0
+
     for ex in ds:
         prompt = ex[prompt_key]
+        choices = ex[choices_key]
+        gold = ex[label_key]
+
         best_score = None
-        best_choice = None
-        for choice in ex[choices_key]:
+        best_idx   = None
+
+        for i, choice in enumerate(choices):
             text = prompt + " " + choice
-            enc = tokenizer(text, return_tensors="pt").to(device)
-            # we compute NLL on the *choice* portion only
-            input_ids = enc.input_ids
+            enc = tokenizer(text, return_tensors="pt",
+                            truncation=True).to(device)
             with torch.no_grad():
-                out = model(input_ids, labels=input_ids)
-            # out.loss is averaged over all tokens including prompt, so
-            # we re-compute token-wise and mask prompt:
-            logits = out.logits[:, :-1, :].contiguous()
-            labels = input_ids[:, 1:].contiguous()
-            # mask out prompt tokens
-            prompt_len = tokenizer(prompt, return_tensors="pt").input_ids.size(1)
-            labels[:, : prompt_len - 1] = -100
-            token_loss = loss_fct(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
-            )  # shape=(num_tokens,)
-            nll = token_loss[labels.view(-1) != -100].sum().item()
-            score = -nll  # higher is better
+                # we’ll use the averaged negative log-likelihood as score
+                out = model(enc.input_ids, labels=enc.input_ids)
+            # out.loss is average over all tokens → smaller=better
+            score = -out.loss.item()
             if best_score is None or score > best_score:
                 best_score = score
-                best_choice = choice
-        metric.add(prediction=best_choice, reference=ex[answer_key])
-    return metric.compute()["accuracy"]
+                best_idx   = i
+
+        if best_idx == gold:
+            correct += 1
+        total += 1
+
+    return correct / total if total else 0.0
 
 def generative_exact_match(
     qa_pipeline, ds, question_key, context_key, answers_key
@@ -207,17 +200,51 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    print("\n2) Multiple-choice reasoning")
-    for task in [
-        ("HellaSwag",      "hellaswag",      "validation", "context", "endings", "label"),
-        ("Winogrande",     "winogrande",     "validation", "sentence", "options", "answer"),
-        ("PIQA",           "piqa",           "validation", "goal", "sol1",    "label0"),  # label0/label1
-        ("CSQA",           "commonsense_qa", "validation", "question", "choices", "answerKey"),
-    ]:
-        name, ds_id, split, qk, ck, ak = task
-        ds = load_dataset(ds_id, split=split)
-        acc = mc_accuracy(model, tokenizer, ds, device, qk, ck, ak)
-        print(f"  • {name} → accuracy = {acc*100:.2f}%")
+    # HellaSwag
+    hs = load_dataset("hellaswag", "default",
+                    split=f"validation[:{N}]")
+    acc_hs = mc_accuracy(model, tokenizer, hs, device,
+                        prompt_key="ctx",
+                        choices_key="endings",
+                        label_key="label")
+    print(f"  • HellaSwag → {acc_hs*100:.2f}%")
+
+    # Winogrande
+    wg = load_dataset("winogrande", "winogrande_xl",
+                    split=f"validation[:{N}]")
+    acc_wg = mc_accuracy(model, tokenizer, wg, device,
+                        prompt_key="sentence",
+                        choices_key="options",
+                        label_key="answer")
+    print(f"  • Winogrande → {acc_wg*100:.2f}%")
+
+    # PiQA  (two‐choice)
+    piqa = load_dataset("piqa", split=f"validation[:{N}]")
+    # transform each ex: choices = [sol1, sol2]; gold = label (0 or 1)
+    piqa = piqa.map(lambda ex: {
+        "choices": [ex["sol1"], ex["sol2"]],
+        "gold": ex["label"],
+        "prompt": ex["goal"]
+    })
+    acc_piqa = mc_accuracy(model, tokenizer, piqa, device,
+                        prompt_key="prompt",
+                        choices_key="choices",
+                        label_key="gold")
+    print(f"  • PIQA → {acc_piqa*100:.2f}%")
+
+    # CommonsenseQA
+    csqa = load_dataset("commonsense_qa", split=f"validation[:{N}]")
+    # choices are csqa["choices"]["text"], gold is answerKey (string)
+    csqa = csqa.map(lambda ex: {
+        "prompt": ex["question"],
+        "choices": ex["choices"]["text"],
+        "gold_idx": ex["choices"]["text"].index(ex["answerKey"])
+    })
+    acc_csqa = mc_accuracy(model, tokenizer, csqa, device,
+                        prompt_key="prompt",
+                        choices_key="choices",
+                        label_key="gold_idx")
+    print(f"  • CommonsenseQA → {acc_csqa*100:.2f}%")
 
     print("\n3) MMLU (5-shot)")
     subjects = [
