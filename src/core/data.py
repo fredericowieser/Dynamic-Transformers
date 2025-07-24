@@ -4,6 +4,7 @@ from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorForLanguageModeling
 import logging
 import json
+import re
 from typing import Optional
 import torch
 
@@ -35,47 +36,85 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
     def _format_text(self, examples):
         # Handles different structures like SlimOrca's list of dicts
-        raw_text_data = examples[self.hparams.text_column]
+        raw = examples[self.hparams.text_column]
 
-        if isinstance(raw_text_data, list) and all(isinstance(i, dict) for i in raw_text_data):
-            # This is likely a conversational dataset like SlimOrca
-            # It expects {"from": "human", "value": "..."}
-            # The tokenizer's apply_chat_template expects {"role": "user", "content": "..."}
-            
-            # Map 'from' to 'role' and 'value' to 'content'
+        # If it's already a list of dicts, use existing logic:
+        if isinstance(raw, list) and all(isinstance(u, dict) for u in raw):
+            # — your existing conversation formatting here —
             formatted_conversations = []
-            for turn in raw_text_data:
-                role = turn.get("from")
-                content = turn.get("value")
-
-                # Basic mapping: 'human' -> 'user', 'gpt' -> 'assistant'
+            for turn in raw:
+                role = turn.get("from") or turn.get("role")
+                content = turn.get("value") or turn.get("content") or ""
                 if role == "human":
                     role = "user"
-                elif role == "gpt":
+                elif role in ("gpt", "assistant"):
                     role = "assistant"
-                # Add other role mappings if necessary (e.g., 'system' for special turns)
-
-                if role and content:
-                    formatted_conversations.append({"role": role, "content": content})
                 else:
-                    # Fallback if a turn doesn't have expected keys
-                    log.warning(f"Skipping malformed turn: {turn}")
-            
-            if formatted_conversations:
+                    role = role.lower()
+                formatted_conversations.append({"role": role, "content": content})
+            try:
+                return {
+                    "text": self.tokenizer.apply_chat_template(
+                        formatted_conversations, tokenize=False
+                    )
+                }
+            except Exception as e:
+                log.warning(
+                    f"apply_chat_template failed on list-of-dicts: {e}. "
+                    "Falling back to JSON dump."
+                )
+                return {"text": json.dumps(raw)}
+
+        # If it's a raw string, try to parse out ### Human / ### Assistant blocks
+        if isinstance(raw, str):
+            conv = []
+            # split on "###" and parse each block
+            for block in re.split(r"###\s*", raw):
+                if not block.strip():
+                    continue
+                m = re.match(r"(Human|Assistant)\s*:\s*(.*)", block, flags=re.S)
+                if m:
+                    role, content = m.group(1), m.group(2).strip()
+                    if role == "Human":
+                        conv.append({"role": "user", "content": content})
+                    else:
+                        conv.append({"role": "assistant", "content": content})
+                else:
+                    log.warning(
+                        "Could not parse block as 'Human:' or 'Assistant:' "
+                        f"→ '{block[:50]}...'"
+                    )
+
+            # If we got at least one turn, re‐template it:
+            if conv:
                 try:
-                    # Apply chat template for conversational data
-                    return {"text": self.tokenizer.apply_chat_template(formatted_conversations, tokenize=False)}
+                    templated = self.tokenizer.apply_chat_template(
+                        conv, tokenize=False
+                    )
+                    return {"text": templated}
                 except Exception as e:
-                    log.warning(f"Could not apply chat template even after formatting: {e}. Falling back to JSON dump.")
-                    return {"text": json.dumps(raw_text_data)} # Fallback to original raw data JSON dump
-            else:
-                log.warning(f"No valid conversations after formatting. Falling back to JSON dump of original raw data.")
-                return {"text": json.dumps(raw_text_data)}
+                    log.warning(
+                        f"apply_chat_template failed on parsed turns: {e}. "
+                        "Falling back to simple Role: content."
+                    )
+                    joined = "\n".join(
+                        f"{t['role'].capitalize()}: {t['content']}" for t in conv
+                    )
+                    return {"text": joined}
 
+            # No turns parsed? Strip ### and return the raw text
+            log.warning(
+                "No valid ### Human / ### Assistant turns found; "
+                "stripping markers and returning raw text."
+            )
+            cleaned = re.sub(r"###\s*", "", raw)
+            return {"text": cleaned.strip()}
 
-        # For simple text columns (like 'prompt_response' in open_code_instruct)
-        # This path remains unchanged and works as before.
-        return {"text": raw_text_data}
+        # Anything else: JSON‐dump
+        log.warning(
+            f"Unexpected example type {type(raw)}; JSON‐dumping the raw value."
+        )
+        return {"text": json.dumps(raw)}
 
     def setup(self, stage: str | None = None) -> None:
         log.info(f"Setting up data for stage: {stage}")
