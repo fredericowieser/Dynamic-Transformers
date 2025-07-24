@@ -40,7 +40,7 @@ def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = F
         config=config,
         device_map="auto" if device == "cuda" else None,
     )
-    model.to(device).eval()
+    model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if isinstance(tokenizer.pad_token_id, (list, tuple)):
@@ -65,7 +65,7 @@ def compute_ppl_from_texts(
             padding="longest",
             truncation=True,
             max_length=block_size,
-        ).to(device)
+        ).to(model.device)
         with torch.no_grad():
             out = model(
                 input_ids=enc.input_ids,
@@ -112,7 +112,7 @@ def mc_accuracy(
             else:
                 text = prompt + " " + choice
 
-            enc = tokenizer(text, return_tensors="pt").to(device)
+            enc = tokenizer(text, return_tensors="pt").to(model.device)
             input_ids = enc.input_ids
             prompt_len = len(tokenizer(prompt, return_tensors="pt").input_ids[0])
 
@@ -137,16 +137,12 @@ def mc_accuracy(
     return correct / total if total > 0 else 0.0
 
 
-def generative_exact_match(qa_pipeline, ds, question_key, context_key, answers_key):
+def generative_exact_match(gen_pipe, ds, question_key, context_key, answers_key):
     em = evaluate.load("exact_match")
     f1 = evaluate.load("f1")
     for ex in tqdm(ds, desc="Generative EM/F1"):
-        pred = qa_pipeline(
-            question=ex[question_key],
-            context=ex[context_key],
-            max_length=256,
-            truncation=True,
-        )["answer"]
+        prompt = f"Question: {ex[question_key]}\nContext: {ex[context_key]}\nAnswer:"
+        pred = gen_pipe(prompt, max_new_tokens=32, do_sample=False)[0]["generated_text"].split("Answer:")[-1].strip()
         refs = (
             ex[answers_key]["text"]
             if isinstance(ex[answers_key], dict)
@@ -468,15 +464,17 @@ if __name__ == "__main__":
 
     print("\n4) Reading comprehension")
     try:
-        qa_pipe = pipeline(
-            "question-answering",
+        gen_pipe = pipeline(
+            "text-generation",
             model=model,
             tokenizer=tokenizer,
-            device=0 if device.startswith("cuda") else -1,
+            max_new_tokens=256,
+            temperature=0.0,
+            do_sample=False,
         )
         squad = load_dataset("squad_v2", split=f"validation[:{N}]")
         em_squad, f1_squad = generative_exact_match(
-            qa_pipe, squad, "question", "context", "answers"
+            gen_pipe, squad, "question", "context", "answers"
         )
         print(
             f"  • SQuAD v2 → EM = {em_squad['exact_match']:.2f}%, F1 = {f1_squad['f1']:.2f}%"
@@ -494,7 +492,6 @@ if __name__ == "__main__":
             "text-generation",
             model=model,
             tokenizer=tokenizer,
-            device=0 if device.startswith("cuda") else -1,
             max_new_tokens=256,
             temperature=0.0,
             do_sample=False,
