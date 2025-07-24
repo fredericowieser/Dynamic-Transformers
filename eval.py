@@ -72,19 +72,45 @@ def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
     avg_loss = total_loss / n_batches
     return math.exp(avg_loss)
 
-def mc_accuracy(model, tokenizer, ds, device):
+def mc_accuracy(
+    model,
+    tokenizer,
+    ds,
+    device,
+    prompt_key,
+    choices_key,
+    label_key,
+):
+    """
+    model:        your AutoModelForCausalLM
+    tokenizer:    your AutoTokenizer
+    ds:           HuggingFace dataset (already sliced to N examples)
+    device:       'cuda' or 'cpu'
+    prompt_key:   name of the field with the question/prompt
+    choices_key:  name of the list-of-strings field with candidate answers
+    label_key:    name of the integer field with the correct index
+    """
     import torch
-    correct, total = 0, 0
+
+    correct = 0
+    total   = 0
+
     for ex in ds:
-        prompt, choices, gold = ex["prompt"], ex["choices"], ex["gold"]
-        best_score, best_idx = None, None
+        prompt  = ex[prompt_key]
+        choices = ex[choices_key]
+        gold    = ex[label_key]  # integer index
+
+        best_score = None
+        best_idx   = None
+
         for i, choice in enumerate(choices):
-            # wrap in the llama3.2 chat template
+            # Build the exact chat format the model was trained on:
             conv = [
                 {"role": "user",      "content": prompt},
                 {"role": "assistant", "content": choice},
             ]
             text = tokenizer.apply_chat_template(conv, tokenize=False)
+
             enc = tokenizer(
                 text,
                 return_tensors="pt",
@@ -94,9 +120,14 @@ def mc_accuracy(model, tokenizer, ds, device):
             ).to(device)
 
             with torch.no_grad():
-                out = model(enc.input_ids, attention_mask=enc.attention_mask,
-                            labels=enc.input_ids)
+                out = model(
+                    enc.input_ids,
+                    attention_mask=enc.attention_mask,
+                    labels=enc.input_ids,
+                )
+            # we use negative loss (higher is better)
             score = -out.loss.item()
+
             if best_score is None or score > best_score:
                 best_score, best_idx = score, i
 
@@ -104,7 +135,7 @@ def mc_accuracy(model, tokenizer, ds, device):
             correct += 1
         total += 1
 
-    return correct / total if total else 0.0
+    return correct / total if total > 0 else 0.0
 
 def generative_exact_match(
     qa_pipeline, ds, question_key, context_key, answers_key
