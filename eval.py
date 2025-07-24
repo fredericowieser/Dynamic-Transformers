@@ -75,30 +75,22 @@ def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
 def mc_accuracy(model, tokenizer, ds, device,
                 prompt_key, choices_key, label_key):
     import torch
-    loss_fn = torch.nn.CrossEntropyLoss()
-    correct = 0
-    total   = 0
-
+    correct, total = 0, 0
     for ex in ds:
         prompt = ex[prompt_key]
         choices = ex[choices_key]
-        gold = ex[label_key]
+        gold    = ex[label_key]
 
-        best_score = None
-        best_idx   = None
-
+        best_score, best_idx = None, None
         for i, choice in enumerate(choices):
             text = prompt + " " + choice
             enc = tokenizer(text, return_tensors="pt",
                             truncation=True).to(device)
             with torch.no_grad():
-                # we’ll use the averaged negative log-likelihood as score
                 out = model(enc.input_ids, labels=enc.input_ids)
-            # out.loss is average over all tokens → smaller=better
-            score = -out.loss.item()
+            score = -out.loss.item()  # higher is better
             if best_score is None or score > best_score:
-                best_score = score
-                best_idx   = i
+                best_score, best_idx = score, i
 
         if best_idx == gold:
             correct += 1
@@ -200,7 +192,7 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    # HellaSwag
+    # HellaSwag (ctx, endings, label) — unchanged
     hs = load_dataset("hellaswag", "default",
                     split=f"validation[:{N}]")
     acc_hs = mc_accuracy(model, tokenizer, hs, device,
@@ -209,22 +201,27 @@ if __name__ == "__main__":
                         label_key="label")
     print(f"  • HellaSwag → {acc_hs*100:.2f}%")
 
-    # Winogrande
+    # Winogrande (sentence, option1/option2, answer)
     wg = load_dataset("winogrande", "winogrande_xl",
                     split=f"validation[:{N}]")
+    # remap into unified fields
+    wg = wg.map(lambda ex: {
+        "prompt":  ex["sentence"],
+        "choices": [ex["option1"], ex["option2"]],
+        "gold":     ex["answer"],           # 0 or 1
+    })
     acc_wg = mc_accuracy(model, tokenizer, wg, device,
-                        prompt_key="sentence",
-                        choices_key="options",
-                        label_key="answer")
+                        prompt_key="prompt",
+                        choices_key="choices",
+                        label_key="gold")
     print(f"  • Winogrande → {acc_wg*100:.2f}%")
 
-    # PiQA  (two‐choice)
+    # PiQA (sol1, sol2, label) — unchanged
     piqa = load_dataset("piqa", split=f"validation[:{N}]")
-    # transform each ex: choices = [sol1, sol2]; gold = label (0 or 1)
     piqa = piqa.map(lambda ex: {
+        "prompt":  ex["goal"],
         "choices": [ex["sol1"], ex["sol2"]],
-        "gold": ex["label"],
-        "prompt": ex["goal"]
+        "gold":     ex["label"],
     })
     acc_piqa = mc_accuracy(model, tokenizer, piqa, device,
                         prompt_key="prompt",
@@ -232,18 +229,18 @@ if __name__ == "__main__":
                         label_key="gold")
     print(f"  • PIQA → {acc_piqa*100:.2f}%")
 
-    # CommonsenseQA
-    csqa = load_dataset("commonsense_qa", split=f"validation[:{N}]")
-    # choices are csqa["choices"]["text"], gold is answerKey (string)
+    # CommonsenseQA (question, choices.text, answerKey → index)
+    csqa = load_dataset("commonsense_qa",
+                        split=f"validation[:{N}]")
     csqa = csqa.map(lambda ex: {
-        "prompt": ex["question"],
+        "prompt":  ex["question"],
         "choices": ex["choices"]["text"],
-        "gold_idx": ex["choices"]["text"].index(ex["answerKey"])
+        "gold":    ex["choices"]["text"].index(ex["answerKey"]),
     })
     acc_csqa = mc_accuracy(model, tokenizer, csqa, device,
                         prompt_key="prompt",
                         choices_key="choices",
-                        label_key="gold_idx")
+                        label_key="gold")
     print(f"  • CommonsenseQA → {acc_csqa*100:.2f}%")
 
     print("\n3) MMLU (5-shot)")
