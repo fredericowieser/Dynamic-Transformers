@@ -43,27 +43,33 @@ def load_model_and_tokenizer(model_path: str, device: str):
 
 def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
     """
-    Compute perplexity on a dataset `ds` with column "text".
+    Compute perplexity on a HF Dataset 'ds' with a 'text' column by
+    tokenizing+padding each small batch manually to avoid collate errors.
     """
-    # tokenize+pad
-    def tok(ex):
-        return tokenizer(
-            ex["text"],
+    total_loss = 0.0
+    n_batches  = 0
+
+    for i in range(0, len(ds), batch_size):
+        # grab a slice of raw strings
+        batch_texts = ds[i : i + batch_size]["text"]
+        # tokenize+pad/truncate to block_size
+        enc = tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding="longest",
             truncation=True,
             max_length=block_size,
-        )
-    ds = ds.map(tok, batched=True, remove_columns=ds.column_names)
-    ds.set_format("torch", columns=["input_ids", "attention_mask"])
-    loader = torch.utils.data.DataLoader(ds, batch_size=batch_size)
-    total_loss = 0.0
-    n_batches = 0
-    for batch in loader:
-        input_ids = batch["input_ids"].to(device)
-        attn = batch["attention_mask"].to(device)
+        ).to(device)
+
         with torch.no_grad():
-            out = model(input_ids, attention_mask=attn, labels=input_ids)
+            out = model(
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                labels=enc.input_ids,
+            )
         total_loss += out.loss.item()
-        n_batches += 1
+        n_batches  += 1
+
     avg_loss = total_loss / n_batches
     return math.exp(avg_loss)
 
