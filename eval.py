@@ -72,23 +72,31 @@ def compute_ppl(model, tokenizer, ds, device, block_size=1024, batch_size=4):
     avg_loss = total_loss / n_batches
     return math.exp(avg_loss)
 
-def mc_accuracy(model, tokenizer, ds, device,
-                prompt_key, choices_key, label_key):
+def mc_accuracy(model, tokenizer, ds, device):
     import torch
     correct, total = 0, 0
     for ex in ds:
-        prompt = ex[prompt_key]
-        choices = ex[choices_key]
-        gold    = ex[label_key]
-
+        prompt, choices, gold = ex["prompt"], ex["choices"], ex["gold"]
         best_score, best_idx = None, None
         for i, choice in enumerate(choices):
-            text = prompt + " " + choice
-            enc = tokenizer(text, return_tensors="pt",
-                            truncation=True).to(device)
+            # wrap in the llama3.2 chat template
+            conv = [
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": choice},
+            ]
+            text = tokenizer.apply_chat_template(conv, tokenize=False)
+            enc = tokenizer(
+                text,
+                return_tensors="pt",
+                padding="longest",
+                truncation=True,
+                max_length=1024,
+            ).to(device)
+
             with torch.no_grad():
-                out = model(enc.input_ids, labels=enc.input_ids)
-            score = -out.loss.item()  # higher is better
+                out = model(enc.input_ids, attention_mask=enc.attention_mask,
+                            labels=enc.input_ids)
+            score = -out.loss.item()
             if best_score is None or score > best_score:
                 best_score, best_idx = score, i
 
@@ -235,7 +243,7 @@ if __name__ == "__main__":
     csqa = csqa.map(lambda ex: {
         "prompt":  ex["question"],
         "choices": ex["choices"]["text"],
-        "gold":    ex["choices"]["text"].index(ex["answerKey"]),
+        "gold":    ex["choices"]["label"].index(ex["answerKey"]),
     })
     acc_csqa = mc_accuracy(model, tokenizer, csqa, device,
                         prompt_key="prompt",
