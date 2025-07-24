@@ -60,8 +60,8 @@ model:
     token_wise: true # Use token-wise dynamic gating
 
 training:
-  max_iters: 5000
-  eval_interval: 500
+  max_iters: 1000
+  eval_interval: 100
   optimizer:
     base_lr: 5.0e-5
     prior_ffn_lr: 5.0e-4 # Higher learning rate for the newly initialized parts
@@ -74,6 +74,6 @@ logging:
   tensorboard:
     enabled: true
   wandb:
-    enabled: false # Set to true to use WandB
-    project: "dynamic-llama"
-    entity: null # <<< YOUR WANDB ENTITY HERE
+    enabled: true # Set to true to use WandB
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"

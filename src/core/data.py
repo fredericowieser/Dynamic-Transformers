@@ -31,7 +31,12 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
     def prepare_data(self) -> None:
         log.info(f"Downloading dataset '{self.hparams.dataset_name}'...")
-        load_dataset(self.hparams.dataset_name, self.hparams.dataset_config, trust_remote_code=True)
+        load_dataset(
+            self.hparams.dataset_name,
+            self.hparams.dataset_config,
+            trust_remote_code=True,
+            download_mode="force_redownload",
+        )
         log.info("Dataset download complete.")
 
     def _format_text(self, examples):
@@ -119,7 +124,10 @@ class HuggingFaceDataModule(pl.LightningDataModule):
     def setup(self, stage: str | None = None) -> None:
         log.info(f"Setting up data for stage: {stage}")
         raw_datasets = load_dataset(
-            self.hparams.dataset_name, self.hparams.dataset_config, trust_remote_code=True
+            self.hparams.dataset_name,
+            self.hparams.dataset_config,
+            trust_remote_code=True,
+            download_mode="force_redownload",
         )
         
         # Format and tokenize
