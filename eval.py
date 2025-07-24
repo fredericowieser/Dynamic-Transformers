@@ -17,28 +17,26 @@ import evaluate
 # UTILS
 # -----------------------------------------------------------------------------
 def load_model_and_tokenizer(model_path: str, device: str):
-    # 1) Load config, patch pad_token_id if it’s a list
+    # 1) Load config and patch pad_token_id if needed
     config = AutoConfig.from_pretrained(model_path)
     if isinstance(config.pad_token_id, (list, tuple)):
-        # take the first element
+        # Rarely HF writes pad_token_id as a list; just grab the first slot
         config.pad_token_id = int(config.pad_token_id[0])
 
-    # 2) Instantiate model with the fixed config
+    # 2) Load model with your (now clean) config
     model = AutoModelForCausalLM.from_pretrained(model_path, config=config)
-    model.to(device)
-    model.eval()
+    model.to(device).eval()
 
-    # 3) Load tokenizer and patch its pad_token_id too
+    # 3) Load tokenizer and patch its pad_token_id
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if isinstance(tokenizer.pad_token_id, (list, tuple)):
         tokenizer.pad_token_id = int(tokenizer.pad_token_id[0])
-        # keep the model.config in sync
-        model.config.pad_token_id = tokenizer.pad_token_id
-
-    # 4) Ensure eos_token_id is set
     if tokenizer.pad_token_id is None:
+        # fallback to eos_token_id if pad is still unset
         tokenizer.pad_token_id = tokenizer.eos_token_id
-        model.config.pad_token_id = tokenizer.eos_token_id
+
+    # 4) Sync model.config to tokenizer
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     return model, tokenizer
 
@@ -170,8 +168,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = args.device
-    model = AutoModelForCausalLM.from_pretrained(args.model_path).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model, tokenizer = load_model_and_tokenizer(args.model_path, device)
 
     N = args.max_eval_samples
     print("1) Perplexity benchmarks (N =", N, "per split)")
