@@ -163,29 +163,29 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
         lm_datasets = tokenized_datasets.map(group_texts, batched=True)
 
-        # ==== FILTER OUT ANY EXAMPLES WITH OUT-OF-RANGE LABELS ====
-        vocab_size = self.tokenizer.vocab_size
-        pad_id = self.tokenizer.pad_token_id
+        # # ==== FILTER OUT ANY EXAMPLES WITH OUT-OF-RANGE LABELS ====
+        # vocab_size = self.tokenizer.vocab_size
+        # pad_id = self.tokenizer.pad_token_id
 
-        def valid_example(example):
-            # allow pad_id, but no other out-of-range labels
-            for lbl in example["labels"]:
-                if lbl == pad_id:
-                    continue
-                if lbl < 0 or lbl >= vocab_size:
-                    return False
-            return True
+        # def valid_example(example):
+        #     # allow pad_id, but no other out-of-range labels
+        #     for lbl in example["labels"]:
+        #         if lbl == pad_id:
+        #             continue
+        #         if lbl < 0 or lbl >= vocab_size:
+        #             return False
+        #     return True
 
-        log.info(
-            f"Filtering train split: dropping examples with labels <0 or ≥{vocab_size}"
-        )
-        lm_datasets["train"] = lm_datasets["train"].filter(
-            valid_example, num_proc=4
-        )
+        # log.info(
+        #     f"Filtering train split: dropping examples with labels <0 or ≥{vocab_size}"
+        # )
+        # lm_datasets["train"] = lm_datasets["train"].filter(
+        #     valid_example, num_proc=4
+        # )
 
-        log.info(
-            f"After filtering, train size = {len(lm_datasets['train'])}"
-        )
+        # log.info(
+        #     f"After filtering, train size = {len(lm_datasets['train'])}"
+        # )
 
         full_dataset = lm_datasets["train"]
 

@@ -229,11 +229,25 @@ class DynamicLlamaTrainer(pl.LightningModule):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
 
+        pad_id = self.tokenizer.pad_token_id
+        vocab_size = self.model.config.vocab_size
+
+        # 1) Mask any padding tokens (or truly invalid tokens) to -100
+        mask = (shift_labels == pad_id) | (shift_labels < 0) | (shift_labels >= vocab_size)
+        shift_labels = shift_labels.masked_fill(mask, -100)
+
+        # 2) Compute cross‐entropy with ignore_index=-100
         lm_loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
-            ignore_index=self.tokenizer.pad_token_id,
+            ignore_index=-100,
         )
+
+        # lm_loss = F.cross_entropy(
+        #     shift_logits.view(-1, shift_logits.size(-1)),
+        #     shift_labels.view(-1),
+        #     ignore_index=self.tokenizer.pad_token_id,
+        # )
 
         total_loss = lm_loss + self.model_cfg.prior_loss_weight * prior_loss
         
