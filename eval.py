@@ -3,6 +3,7 @@
 import argparse
 import math
 import torch
+import itertools
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -138,49 +139,76 @@ def generative_exact_match(
 # -----------------------------------------------------------------------------
 # MAIN BENCHMARK SUITE
 # -----------------------------------------------------------------------------
+def compute_ppl_from_texts(model, tokenizer, texts, device,
+                           block_size=1024, batch_size=8):
+    """Per‐batch tokenization+ppl over a list of raw strings."""
+    total_loss = 0.0
+    n_batches  = 0
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        enc = tokenizer(
+            batch,
+            return_tensors="pt",
+            padding="longest",
+            truncation=True,
+            max_length=block_size,
+        ).to(device)
+        with torch.no_grad():
+            out = model(input_ids=enc.input_ids,
+                        attention_mask=enc.attention_mask,
+                        labels=enc.input_ids)
+        total_loss += out.loss.item()
+        n_batches  += 1
+    return math.exp(total_loss / n_batches)
+
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--model_path", required=True,
-                   help="Path or HF ID of your trained model")
-    p.add_argument("--device", default="cuda",
-                   help="cpu, cuda, or mps")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", required=True)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--max_eval_samples", type=int, default=512,
+                        help="How many examples to sample per benchmark")
+    args = parser.parse_args()
 
     device = args.device
-    model, tokenizer = load_model_and_tokenizer(args.model_path, device)
+    model = AutoModelForCausalLM.from_pretrained(args.model_path).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
-    print("\n1) Perplexity benchmarks")
+    N = args.max_eval_samples
+    print("1) Perplexity benchmarks (N =", N, "per split)")
 
-    # --- WikiText-103 raw (validation split) ---
-    wt_ds = load_dataset(
-        "wikitext",
-        "wikitext-103-raw-v1",
-        split="validation",
-    )
-    wt_ppl = compute_ppl(model, tokenizer, wt_ds, device)
-    print(f"  • WikiText-103-raw-v1 (validation) → PPL = {wt_ppl:.2f}")
+    # -- 1a) Wikitext-2-raw-v1 (tiny) --
+    wt2 = load_dataset("wikitext", "wikitext-2-raw-v1",
+                       split=f"validation[:{N}]")
+    wt2_texts = wt2["text"]
+    wt2_ppl = compute_ppl_from_texts(model, tokenizer, wt2_texts, device)
+    print(f"   • Wikitext-2-raw-v1[0:{N}] → PPL = {wt2_ppl:.2f}")
 
-    # --- Try EleutherAI/pile (test split) with trust_remote_code=True ---
+    # -- 1b) Pile: streaming sample N examples (no full download) --
     try:
-        pile_ds = load_dataset(
+        pile_stream = load_dataset(
             "EleutherAI/pile",
             split="test",
+            streaming=True,
             trust_remote_code=True,
         )
-        pile_ppl = compute_ppl(model, tokenizer, pile_ds, device)
-        print(f"  • The Pile (test) → PPL = {pile_ppl:.2f}")
+        pile_texts = [ex["text"] for ex in itertools.islice(pile_stream, N)]
+        pile_ppl = compute_ppl_from_texts(model, tokenizer, pile_texts, device)
+        print(f"   • Pile[stream first {N}] → PPL = {pile_ppl:.2f}")
     except Exception as e:
-        print(f"  ! Skipping EleutherAI/pile due to: {type(e).__name__}: {e}")
-        print("    Falling back to English C4 (validation) for PPL.")
+        print(f"   ! Skipping Pile streaming ({type(e).__name__}): {e}")
 
-        # --- Fallback: C4 English validation ---
-        c4_ds = load_dataset(
-            "allenai/c4",
-            "en",
+    # -- 1c) (Optional) C4 fallback, streaming mode --
+    try:
+        c4_stream = load_dataset(
+            "allenai/c4", "en",
             split="validation",
+            streaming=True,
         )
-        c4_ppl = compute_ppl(model, tokenizer, c4_ds, device)
-        print(f"  • C4 (en, validation) → PPL = {c4_ppl:.2f}")
+        c4_texts = [ex["text"] for ex in itertools.islice(c4_stream, N)]
+        c4_ppl = compute_ppl_from_texts(model, tokenizer, c4_texts, device)
+        print(f"   • C4-en[stream first {N}] → PPL = {c4_ppl:.2f}")
+    except Exception:
+        pass
 
     print("\n2) Multiple-choice reasoning")
     for task in [
