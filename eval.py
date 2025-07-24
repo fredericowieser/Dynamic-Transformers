@@ -144,13 +144,20 @@ if __name__ == "__main__":
     model, tokenizer = load_model_and_tokenizer(args.model_path, device)
 
     print("\n1) Perplexity benchmarks")
-    for ds_name, split in [
-        ("wikitext", "wikitext-103-raw-v1"),
-        ("EleutherAI/pile", "test"),
-    ]:
-        ds = load_dataset(ds_name, split="validation" if ds_name=="wikitext" else split)
-        ppl = compute_ppl(model, tokenizer, ds, device)
-        print(f"  • {ds_name} → PPL = {ppl:.2f}")
+
+    # WikiText-103 Raw
+    wt_ds = load_dataset(
+        "wikitext",
+        "wikitext-103-raw-v1",
+        split="validation",
+    )
+    wt_ppl = compute_ppl(model, tokenizer, wt_ds, device)
+    print(f"  • WikiText-103-raw-v1 (validation) → PPL = {wt_ppl:.2f}")
+
+    # The Pile
+    pile_ds = load_dataset("EleutherAI/pile", split="test")
+    pile_ppl = compute_ppl(model, tokenizer, pile_ds, device)
+    print(f"  • The Pile (test) → PPL = {pile_ppl:.2f}")
 
     print("\n2) Multiple-choice reasoning")
     for task in [
