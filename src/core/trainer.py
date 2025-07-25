@@ -220,10 +220,8 @@ class DynamicLlamaTrainer(pl.LightningModule):
         logits = self.model.lm_head(hidden_states)
         
         avg_prior_loss = torch.stack(prior_losses).mean()
-        avg_ce = torch.stack(ce_proportions).mean()
-        avg_cu = torch.stack(cu_proportions).mean()
         
-        return logits, avg_prior_loss, gate_vecs, avg_ce, avg_cu
+        return logits, avg_prior_loss, gate_vecs, ce_proportions, cu_proportions
 
 
     def _calculate_loss(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, torch.Tensor]]]:
