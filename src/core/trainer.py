@@ -271,20 +271,20 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.log(f"{prefix}/perplexity", perplexity, on_step=on_step, on_epoch=on_epoch)
         
         # Log overall gate, CE, and CU metrics
-        self.log(f"{prefix}/overall_gate_activation_mean", overall_gate_activation_mean, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
-        self.log(f"{prefix}/overall_avg_ce_proportion", overall_avg_ce, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
-        self.log(f"{prefix}/overall_avg_cu_proportion", overall_avg_cu, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}_dynamic_model/overall_gate_activation_mean", overall_gate_activation_mean, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}_dynamic_model/overall_avg_ce_proportion", overall_avg_ce, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}_dynamic_model/overall_avg_cu_proportion", overall_avg_cu, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
 
         # Log per-layer metrics
         for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"{prefix}/gate_mean/layer_{i}", stats["mean"], on_step=on_step, on_epoch=on_epoch)
-            self.log(f"{prefix}/gate_std/layer_{i}", stats["std"], on_step=on_step, on_epoch=on_epoch)
-        
+            self.log(f"{prefix}_dynamic_layer/gate_mean/layer_{i}", stats["mean"], on_step=on_step, on_epoch=on_epoch)
+            self.log(f"{prefix}_dynamic_layer/gate_std/layer_{i}", stats["std"], on_step=on_step, on_epoch=on_epoch)
+
         for i, prop in enumerate(ce_proportions_per_layer):
-            self.log(f"{prefix}/ce_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
+            self.log(f"{prefix}_dynamic_layer/ce_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
 
         for i, prop in enumerate(cu_proportions_per_layer):
-            self.log(f"{prefix}/cu_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
+            self.log(f"{prefix}_dynamic_layer/cu_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
 
     def training_step(self, batch, batch_idx):
         outputs = self._calculate_loss(batch)
