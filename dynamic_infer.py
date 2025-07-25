@@ -6,12 +6,7 @@ from transformers import (
     AutoModelForCausalLM,
 )
 import sys
-from pathlib import Path
-
-# Add the project's src directory to the Python path to ensure modules can be found
-# This makes the script more portable
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-from models.dynamic_llama_causal import DynamicLlamaForCausalLM
+from src.models.dynamic_llama_causal import DynamicLlamaForCausalLM
 
 
 def _patch_pad_token_id(config):
