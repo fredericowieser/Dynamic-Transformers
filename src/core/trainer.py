@@ -135,6 +135,7 @@ class DynamicLlamaTrainer(pl.LightningModule):
         current_iter = self.global_step
         gate_warmup_iters = self.training_cfg.gate_warmup_iters
         dynamic_k = self.model_cfg.dynamic_k
+        ce_bias = self.model_cfg.ce_bias
 
         input_ids = inputs["input_ids"]
         hidden_states = self.model.model.embed_tokens(inputs["input_ids"])
@@ -208,6 +209,7 @@ class DynamicLlamaTrainer(pl.LightningModule):
                 current_iter=current_iter,
                 gate_warmup_iters=gate_warmup_iters,
                 dynamic_k=dynamic_k,
+                ce_bias=ce_bias,
             )
             hidden_states = layer_outputs[0]
             # Unpack new metrics: (..., avg_ce, avg_cu, prior_loss, gate_vec)

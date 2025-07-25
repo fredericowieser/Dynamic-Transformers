@@ -67,6 +67,7 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
         current_iter: int = 0,
         gate_warmup_iters: int = 1000,
         dynamic_k: float = 0.5,
+        ce_bias: float = 0.0,
         **kwargs,
     ) -> Tuple[torch.Tensor, ...]:
         
@@ -162,7 +163,7 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
             beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
             D_ch = D_ch - beta # (B,)
 
-        CE = D_st > D_ch # (B,) bool
+        CE = D_st > D_ch - ce_bias # (B,) bool
         CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
 
         gate_vec = (CE | CU).float() # (B,) - 1.0 means activate posterior, 0.0 means activate original input
@@ -225,6 +226,7 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         current_iter: int = 0,
         gate_warmup_iters: int = 1000,
         dynamic_k: float = 0.5,
+        ce_bias: float = 0.0,
         **kwargs,
     ) -> Tuple[torch.Tensor, ...]:
         
@@ -284,7 +286,7 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
             beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
             D_ch = D_ch - beta # (B,)
 
-        CE = D_st > D_ch # (B, T) bool
+        CE = D_st > D_ch - ce_bias # (B, T) bool
         CU = D_st > dynamic_k * D_st.detach().mean() # (B, T) bool
 
         gate_vec = (CE | CU).float() # (B, T) - 1.0 means activate posterior, 0.0 means activate original input
