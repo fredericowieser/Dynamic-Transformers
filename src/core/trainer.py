@@ -282,7 +282,12 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
         self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
         
-        # Update and log rolling averages for per-layer stats
+        # Log per-layer gate activations
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"train/gate_mean/layer_{i}", stats["mean"], on_step=True, on_epoch=True)
+            self.log(f"train/gate_std/layer_{i}", stats["std"], on_step=True, on_epoch=True)
+
+        # Update and log rolling averages for per-layer stats (console only)
         if self.trainer.global_step > 0: # Ensure global_step is initialized
             log_interval = self.trainer.log_every_n_steps
             
@@ -319,6 +324,11 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.log("val/prior_loss", prior_loss, on_epoch=True)
         self.log("val/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True, prog_bar=True)
 
+        # Log per-layer gate activations for validation to the logger
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"val/gate_mean/layer_{i}", stats["mean"], on_epoch=True)
+            self.log(f"val/gate_std/layer_{i}", stats["std"], on_epoch=True)
+
         # Log per-layer gate activation stats to the console (at epoch end for validation)
         if batch_idx == len(self.trainer.val_dataloaders) - 1:
             log_lines = ["--- Per-Layer Gate Activations (Validation) ---"]
@@ -335,6 +345,11 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.log("test/perplexity", perplexity, on_epoch=True)
         self.log("test/prior_loss", prior_loss, on_epoch=True)
         self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
+
+        # Log per-layer gate activations for test to the logger
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"test/gate_mean/layer_{i}", stats["mean"], on_epoch=True)
+            self.log(f"test/gate_std/layer_{i}", stats["std"], on_epoch=True)
 
         if batch_idx == len(self.trainer.test_dataloaders) - 1:
             log_lines = ["--- Per-Layer Gate Activations (Test) ---"]
