@@ -78,7 +78,10 @@ def main(cfg: DictConfig) -> None:
     # Save final model
     log.info("--- Saving Final Model ---")
     save_path = os.path.join(cfg.run.output_dir, "final_model")
-    model.model.save_pretrained(save_path, safe_serialization=True)
+    model.config.architectures = ["models.dynamic_llama_causal.DynamicLlamaForCausalLM"]
+    model.config.dynamic_k = cfg.model.dynamic_k
+    model.config.token_wise = cfg.model.token_wise
+    model.save_pretrained(save_path, safe_serialization=True)
     model.tokenizer.save_pretrained(save_path)
     log.info(f"Final model saved to {save_path}")
 
