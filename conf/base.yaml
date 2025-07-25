@@ -56,7 +56,7 @@ model:
   model_cfg:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
-    dynamic_k: 0.9 # Threshold for Conditional Unconditional (CU) gate
+    dynamic_k: 0.8 # Threshold for Conditional Unconditional (CU) gate
     token_wise: true # Use token-wise dynamic gating
 
 training:
@@ -68,7 +68,7 @@ training:
     weight_decay: 0.01
   scheduler:
     warmup_steps: 100
-  gate_warmup_iters: 0 # Steps to warm up the dynamic gating mechanism
+  gate_warmup_iters: 250 # Steps to warm up the dynamic gating mechanism
 
 logging:
   tensorboard:
