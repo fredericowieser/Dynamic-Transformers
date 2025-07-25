@@ -76,3 +76,6 @@ ignore = []
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
