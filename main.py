@@ -78,10 +78,20 @@ def main(cfg: DictConfig) -> None:
     # Save final model
     log.info("--- Saving Final Model ---")
     save_path = os.path.join(cfg.run.output_dir, "final_model")
-    model.config.architectures = ["models.dynamic_llama_causal.DynamicLlamaForCausalLM"]
-    model.config.dynamic_k = cfg.model.dynamic_k
-    model.config.token_wise = cfg.model.token_wise
-    model.save_pretrained(save_path, safe_serialization=True)
+
+    # --- FIX: Access the underlying Hugging Face model ---
+    # The `model` variable is the LightningModule. The actual HF model is `model.model`.
+    hf_model = model.model
+
+    # Set the custom architecture and other params in the model's config
+    # This allows AutoModelForCausalLM.from_pretrained to load the custom class
+    hf_model.config.architectures = ["models.dynamic_llama_causal.DynamicLlamaForCausalLM"]
+    hf_model.config.dynamic_k = cfg.model.dynamic_k
+    hf_model.config.token_wise = cfg.model.token_wise
+
+    # Save the underlying Hugging Face model with the updated config
+    hf_model.save_pretrained(save_path, safe_serialization=True)
+    # Save the tokenizer
     model.tokenizer.save_pretrained(save_path)
     log.info(f"Final model saved to {save_path}")
 
