@@ -166,6 +166,10 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
         CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
 
         gate_vec = (CE | CU).float() # (B,) - 1.0 means activate posterior, 0.0 means activate original input
+
+        # Calculate average proportions of CE and CU
+        avg_ce_proportion = CE.float().mean()
+        avg_cu_proportion = CU.float().mean()
         
         # Mix the block output based on the gate
         gate = gate_vec.view(-1, 1, 1) # Reshape for broadcasting (B,1,1)
@@ -174,14 +178,15 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
         # Prediction-loss for the prior FFN
         prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach()) # Scalar
 
-        # Prepare outputs (standard Llama output + prior_loss + gate_vec)
-        outputs = (hidden_states_final,) # New primary output
+        # Prepare outputs
+        outputs = (hidden_states_final,)
         if output_attentions:
             outputs += (attn_outputs[1],)
         if use_cache:
             outputs += (attn_outputs[2],)
-        outputs += (prior_loss,) # The specific loss for the prior FFN
-        outputs += (gate_vec,) # The gate decision vector for logging or auxiliary uses
+        
+        # --- NEW: Add metrics to output tuple ---
+        outputs += (avg_ce_proportion, avg_cu_proportion, prior_loss, gate_vec)
 
         return outputs
 
@@ -277,12 +282,16 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         if gate_warmup_iters > 0:
             bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
             beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
-            D_ch = D_ch + beta # (B,)
+            D_ch = D_ch - beta # (B,)
 
         CE = D_st > D_ch # (B, T) bool
         CU = D_st > dynamic_k * D_st.detach().mean() # (B, T) bool
 
         gate_vec = (CE | CU).float() # (B, T) - 1.0 means activate posterior, 0.0 means activate original input
+
+        # Calculate average proportions of CE and CU
+        avg_ce_proportion = CE.float().mean()
+        avg_cu_proportion = CU.float().mean()
 
         # Mix the block output based on the gate
         gate = gate_vec.unsqueeze(-1) # Reshape for broadcasting (B, T)
@@ -291,14 +300,14 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         # Prediction-loss for the prior FFN
         prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach()) # Scalar
 
-        # Prepare outputs (standard Llama output + prior_loss + gate_vec)
-        outputs = (hidden_states_final,) # New primary output
+        # Prepare outputs
+        outputs = (hidden_states_final,)
         if output_attentions:
             outputs += (attn_outputs[1],)
         if use_cache:
             outputs += (attn_outputs[2],)
-        outputs += (prior_loss,) # The specific loss for the prior FFN
-        # Average gate_vec over the token dimension to get (B,)
-        outputs += (gate_vec.mean(dim=1),)  # The gate decision vector (B,)
+        
+        # --- NEW: Add metrics to output tuple ---
+        outputs += (avg_ce_proportion, avg_cu_proportion, prior_loss, gate_vec.mean(dim=1))
         
         return outputs

@@ -198,8 +198,7 @@ class DynamicLlamaTrainer(pl.LightningModule):
         # It typically expands the mask to num_heads internally if it's 1.
         # So, (batch_size, 1, seq_len, seq_len) should work.
         
-        prior_losses_per_layer = []
-        gate_vecs_per_layer = []
+        prior_losses, gate_vecs, ce_proportions, cu_proportions = [], [], [], []
 
         for layer in self.model.model.layers:
             layer_outputs = layer(
@@ -211,153 +210,112 @@ class DynamicLlamaTrainer(pl.LightningModule):
                 dynamic_k=dynamic_k,
             )
             hidden_states = layer_outputs[0]
-            prior_losses_per_layer.append(layer_outputs[-2])
-            gate_vecs_per_layer.append(layer_outputs[-1])
+            # Unpack new metrics: (..., avg_ce, avg_cu, prior_loss, gate_vec)
+            ce_proportions.append(layer_outputs[-4])
+            cu_proportions.append(layer_outputs[-3])
+            prior_losses.append(layer_outputs[-2])
+            gate_vecs.append(layer_outputs[-1])
 
         hidden_states = self.model.model.norm(hidden_states)
         logits = self.model.lm_head(hidden_states)
         
-        avg_prior_loss = torch.stack(prior_losses_per_layer).mean()
+        avg_prior_loss = torch.stack(prior_losses).mean()
+        avg_ce = torch.stack(ce_proportions).mean()
+        avg_cu = torch.stack(cu_proportions).mean()
         
-        return logits, avg_prior_loss, gate_vecs_per_layer
+        return logits, avg_prior_loss, gate_vecs, avg_ce, avg_cu
 
 
     def _calculate_loss(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, torch.Tensor]]]:
-        # forward now returns gate_vecs_per_layer instead of aggregated gate stats
-        logits, prior_loss, gate_vecs_per_layer = self.forward(**batch)
+        # --- NEW: Unpack per-layer lists ---
+        logits, prior_loss, gate_vecs_per_layer, ce_proportions_per_layer, cu_proportions_per_layer = self.forward(**batch)
         
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
 
-        pad_id = self.tokenizer.pad_token_id
-        vocab_size = self.model.config.vocab_size
-
-        # 1) Mask any padding tokens (or truly invalid tokens) to -100
-        mask = (shift_labels == pad_id) | (shift_labels < 0) | (shift_labels >= vocab_size)
-        shift_labels = shift_labels.masked_fill(mask, -100)
-
-        # 2) Compute cross‐entropy with ignore_index=-100
         lm_loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
-            ignore_index=-100,
+            ignore_index=self.tokenizer.pad_token_id,
         )
 
-        # lm_loss = F.cross_entropy(
-        #     shift_logits.view(-1, shift_logits.size(-1)),
-        #     shift_labels.view(-1),
-        #     ignore_index=self.tokenizer.pad_token_id,
-        # )
-
         total_loss = lm_loss + self.model_cfg.prior_loss_weight * prior_loss
-        
         perplexity = torch.exp(lm_loss)
 
-        # Calculate overall mean gate activation for the progress bar
-        # This is essentially what `avg_gate_activation` was before
-        if gate_vecs_per_layer:
-            overall_gate_activation_mean = torch.stack(gate_vecs_per_layer).mean()
-        else:
-            overall_gate_activation_mean = torch.tensor(0.0, device=self.device)
+        # --- NEW: Calculate overall averages from the per-layer lists ---
+        overall_avg_ce = torch.stack(ce_proportions_per_layer).mean() if ce_proportions_per_layer else torch.tensor(0.0, device=self.device)
+        overall_avg_cu = torch.stack(cu_proportions_per_layer).mean() if cu_proportions_per_layer else torch.tensor(0.0, device=self.device)
+        overall_gate_activation_mean = torch.stack(gate_vecs_per_layer).mean() if gate_vecs_per_layer else torch.tensor(0.0, device=self.device)
 
-        # Collect per-layer gate statistics (mean and std)
         per_layer_gate_stats = []
-        for i, gate_vec in enumerate(gate_vecs_per_layer):
-            # gate_vec is (B,), so mean and std are taken across the batch dimension
+        for gate_vec in gate_vecs_per_layer:
             layer_mean = gate_vec.mean()
-            layer_std = gate_vec.std() if gate_vec.numel() > 1 else torch.tensor(0.0, device=self.device) # Handle single-element case
-            per_layer_gate_stats.append(
-                {"mean": layer_mean, "std": layer_std}
-            )
+            layer_std = gate_vec.std() if gate_vec.numel() > 1 else torch.tensor(0.0, device=self.device)
+            per_layer_gate_stats.append({"mean": layer_mean, "std": layer_std})
 
-        # Return the overall mean for prog_bar, and the detailed stats separately
-        return total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats
+        # --- NEW: Return all metrics for logging ---
+        return (total_loss, lm_loss, prior_loss, perplexity, 
+                overall_gate_activation_mean, per_layer_gate_stats,
+                overall_avg_ce, overall_avg_cu, 
+                ce_proportions_per_layer, cu_proportions_per_layer)
+
+    def _log_step_metrics(self, prefix: str, outputs: tuple, on_step: bool, on_epoch: bool):
+        (total_loss, lm_loss, prior_loss, perplexity, 
+         overall_gate_activation_mean, per_layer_gate_stats,
+         overall_avg_ce, overall_avg_cu, 
+         ce_proportions_per_layer, cu_proportions_per_layer) = outputs
+
+        self.log(f"{prefix}/loss", total_loss, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/lm_loss", lm_loss, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
+        self.log(f"{prefix}/perplexity", perplexity, on_step=on_step, on_epoch=on_epoch)
+        
+        # Log overall gate, CE, and CU metrics
+        self.log(f"{prefix}/overall_gate_activation_mean", overall_gate_activation_mean, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/overall_avg_ce_proportion", overall_avg_ce, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/overall_avg_cu_proportion", overall_avg_cu, on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+
+        # Log per-layer metrics
+        for i, stats in enumerate(per_layer_gate_stats):
+            self.log(f"{prefix}/gate_mean/layer_{i}", stats["mean"], on_step=on_step, on_epoch=on_epoch)
+            self.log(f"{prefix}/gate_std/layer_{i}", stats["std"], on_step=on_step, on_epoch=on_epoch)
+        
+        for i, prop in enumerate(ce_proportions_per_layer):
+            self.log(f"{prefix}/ce_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
+
+        for i, prop in enumerate(cu_proportions_per_layer):
+            self.log(f"{prefix}/cu_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
 
     def training_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
+        outputs = self._calculate_loss(batch)
+        self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
         
-        self.log("train/loss", total_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/lm_loss", lm_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/prior_loss", prior_loss, on_step=True, on_epoch=True)
-        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
-        self.log("train/overall_gate_activation_mean", overall_gate_activation_mean, on_step=True, on_epoch=True, prog_bar=True)
-        
-        # Log per-layer gate activations
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"train/gate_mean/layer_{i}", stats["mean"], on_step=True, on_epoch=True)
-            self.log(f"train/gate_std/layer_{i}", stats["std"], on_step=True, on_epoch=True)
-
-        # Update and log rolling averages for per-layer stats (console only)
-        if self.trainer.global_step > 0: # Ensure global_step is initialized
+        # Console logging for rolling averages
+        per_layer_gate_stats = outputs[5]
+        if self.trainer.global_step > 0:
             log_interval = self.trainer.log_every_n_steps
-            
-            # Update history deques for each layer
             for i, stats in enumerate(per_layer_gate_stats):
                 self.per_layer_gate_activation_rolling_history[i]["mean"].append(stats["mean"].item())
                 self.per_layer_gate_activation_rolling_history[i]["std"].append(stats["std"].item())
 
-            # Log rolling averages if it's a logging step
             if self.trainer.global_step % log_interval == 0:
                 log_lines = [f"--- Per-Layer Gate Activations (Training, Rolling Avg over last {ROLLING_WINDOW_SIZE} steps) ---"]
-                for i in range(len(self.per_layer_gate_activation_rolling_history)):
-                    history = self.per_layer_gate_activation_rolling_history[i]
-                    
-                    if len(history["mean"]) > 0:
+                for i, history in enumerate(self.per_layer_gate_activation_rolling_history):
+                    if history["mean"]:
                         rolling_mean = sum(history["mean"]) / len(history["mean"])
-                        # Calculate rolling std. Convert deque to tensor for torch.std
                         rolling_std = torch.tensor(list(history["std"])).std().item() if len(history["std"]) > 1 else 0.0
                         log_lines.append(f"  Layer {i}: Mean = {rolling_mean:.3f}, Std = {rolling_std:.3f}")
-                    else:
-                        log_lines.append(f"  Layer {i}: No data yet for rolling average.")
-                
-                log_lines.append(f"  (Global Step: {self.trainer.global_step})")
                 log.info("\n".join(log_lines))
 
-        return total_loss
+        return outputs[0] # Return total loss
 
     def validation_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
-        
-        self.log("val/loss", total_loss, on_epoch=True, prog_bar=True)
-        self.log("val/lm_loss", lm_loss, on_epoch=True, prog_bar=True)
-        self.log("val/perplexity", perplexity, on_epoch=True)
-        self.log("val/prior_loss", prior_loss, on_epoch=True)
-        self.log("val/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True, prog_bar=True)
-
-        # Log per-layer gate activations for validation to the logger
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"val/gate_mean/layer_{i}", stats["mean"], on_epoch=True)
-            self.log(f"val/gate_std/layer_{i}", stats["std"], on_epoch=True)
-
-        # Log per-layer gate activation stats to the console (at epoch end for validation)
-        if batch_idx == len(self.trainer.val_dataloaders) - 1:
-            log_lines = ["--- Per-Layer Gate Activations (Validation) ---"]
-            for i, stats in enumerate(per_layer_gate_stats):
-                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
-            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
-            log.info("\n".join(log_lines))
+        outputs = self._calculate_loss(batch)
+        self._log_step_metrics("val", outputs, on_step=False, on_epoch=True)
 
     def test_step(self, batch, batch_idx):
-        total_loss, lm_loss, prior_loss, perplexity, overall_gate_activation_mean, per_layer_gate_stats = self._calculate_loss(batch)
-        
-        self.log("test/loss", total_loss, on_epoch=True)
-        self.log("test/lm_loss", lm_loss, on_epoch=True)
-        self.log("test/perplexity", perplexity, on_epoch=True)
-        self.log("test/prior_loss", prior_loss, on_epoch=True)
-        self.log("test/overall_gate_activation_mean", overall_gate_activation_mean, on_epoch=True)
-
-        # Log per-layer gate activations for test to the logger
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(f"test/gate_mean/layer_{i}", stats["mean"], on_epoch=True)
-            self.log(f"test/gate_std/layer_{i}", stats["std"], on_epoch=True)
-
-        if batch_idx == len(self.trainer.test_dataloaders) - 1:
-            log_lines = ["--- Per-Layer Gate Activations (Test) ---"]
-            for i, stats in enumerate(per_layer_gate_stats):
-                log_lines.append(f"  Layer {i}: Mean = {stats['mean']:.3f}, Std = {stats['std']:.3f}")
-            log_lines.append(f"  (Global Step: {self.trainer.global_step})")
-            log.info("\n".join(log_lines))
-
+        outputs = self._calculate_loss(batch)
+        self._log_step_metrics("test", outputs, on_step=False, on_epoch=True)
 
     def configure_optimizers(self):
         param_groups = [
@@ -369,7 +327,6 @@ class DynamicLlamaTrainer(pl.LightningModule):
         )
         total_training_steps = self.trainer.estimated_stepping_batches
         if total_training_steps is None:
-            log.warning("`trainer.estimated_stepping_batches` is None. Using `max_iters` for total training steps for scheduler setup.")
             total_training_steps = self.training_cfg.max_iters
 
         scheduler = get_linear_schedule_with_warmup(
