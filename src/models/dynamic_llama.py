@@ -160,7 +160,7 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
         if gate_warmup_iters > 0:
             bias_scale = max(0.0, 1.0 - current_iter / gate_warmup_iters)
             beta = D_ch.detach().mean() * bias_scale # Scalar, mean over batch
-            D_ch = D_ch + beta # (B,)
+            D_ch = D_ch - beta # (B,)
 
         CE = D_st > D_ch # (B,) bool
         CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
