@@ -6,6 +6,13 @@ from transformers import (
     AutoModelForCausalLM,
 )
 import sys
+from pathlib import Path
+
+# Add the project's src directory to the Python path to ensure modules can be found
+# This makes the script more portable
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
+from models.dynamic_llama_causal import DynamicLlamaForCausalLM
+
 
 def _patch_pad_token_id(config):
     """Fixes pad_token_id if it's a list, which causes errors."""
@@ -22,64 +29,36 @@ def _patch_rope_scaling(config):
         print(f"INFO: Patching missing/invalid rope_scaling (was {rs!r}) -> {{'type':'linear', ...}}", file=sys.stderr)
         config.rope_scaling = {"type": "linear", "rope_type": "linear", "factor": 1.0}
         return
-
-    # Ensure 'type' exists, falling back to 'rope_type' or 'linear'
     if "type" not in rs or rs["type"] is None:
         new_type = rs.get("rope_type") or "linear"
         print(f"INFO: Patching rope_scaling['type'] from {rs.get('type')!r} -> {new_type!r}", file=sys.stderr)
         rs["type"] = new_type
-
-    # Ensure 'rope_type' exists, falling back to 'type'
     if "rope_type" not in rs or rs["rope_type"] is None:
         print(f"INFO: Patching rope_scaling['rope_type'] from {rs.get('rope_type')!r} -> {rs['type']!r}", file=sys.stderr)
         rs["rope_type"] = rs["type"]
-
-    # Ensure 'factor' exists
     if "factor" not in rs or rs["factor"] is None:
         print(f"INFO: Patching rope_scaling['factor'] from {rs.get('factor')!r} -> 1.0", file=sys.stderr)
         rs["factor"] = 1.0
-
     config.rope_scaling = rs
 
 def main():
     parser = argparse.ArgumentParser(
         description="Run inference with a DynamicLlama model and inspect gate activations."
     )
-    parser.add_argument(
-        "model_path",
-        type=str,
-        help="Path to the saved model directory (e.g., outputs/.../final_model).",
-    )
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        required=True,
-        help="The input prompt for the model.",
-    )
-    parser.add_argument(
-        "--dynamic_k",
-        type=float,
-        default=None,
-        help="Override the model's default dynamic_k gating threshold.",
-    )
-    parser.add_argument(
-        "--print_gates",
-        action="store_true",
-        help="Enable and print the per-layer gate activations after generation.",
-    )
+    parser.add_argument("model_path", type=str, help="Path to the saved model directory.")
+    parser.add_argument("--prompt", type=str, required=True, help="The input prompt for the model.")
+    parser.add_argument("--dynamic_k", type=float, default=None, help="Override the model's default dynamic_k.")
+    parser.add_argument("--print_gates", action="store_true", help="Enable and print per-layer gate activations.")
     args = parser.parse_args()
 
     print("--- Loading Model ---", file=sys.stderr)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    # 1. Load and patch the configuration BEFORE loading the model
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     _patch_pad_token_id(config)
     _patch_rope_scaling(config)
 
-    # 2. Load the tokenizer and the model using the patched config
-    #    trust_remote_code=True is essential for loading your custom class
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
@@ -88,38 +67,38 @@ def main():
         trust_remote_code=True,
     )
     
-    # Ensure tokenizer pad token is set for open-ended generation
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
         model.config.pad_token_id = tokenizer.eos_token_id
 
     model.to(device).eval()
-    print("Model loaded successfully.", file=sys.stderr)
 
-    # 3. Configure the dynamic model for inference
-    if hasattr(model, "set_dynamic_k"):
-        if args.dynamic_k is not None:
-            model.set_dynamic_k(args.dynamic_k)
-            print(f"Set dynamic_k to: {args.dynamic_k}", file=sys.stderr)
+    # --- CRITICAL CHECK ---
+    # Verify that the correct custom model class was actually loaded.
+    if not isinstance(model, DynamicLlamaForCausalLM):
+        print("\n--- FATAL ERROR ---", file=sys.stderr)
+        print("The loaded model is NOT the custom 'DynamicLlamaForCausalLM'.", file=sys.stderr)
+        print("This means the custom architecture was not found and the extra layers were discarded.", file=sys.stderr)
+        print("\nTo fix this, please install your project in editable mode:", file=sys.stderr)
+        print("  uv pip install -e .", file=sys.stderr)
+        print("\nThen, re-run this script.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Model loaded successfully as DynamicLlamaForCausalLM.", file=sys.stderr)
+
+    if hasattr(model, "set_dynamic_k") and args.dynamic_k is not None:
+        model.set_dynamic_k(args.dynamic_k)
+        print(f"Set dynamic_k to: {args.dynamic_k}", file=sys.stderr)
     
-    if args.print_gates:
-        if hasattr(model, "enable_gate_logging"):
-            model.enable_gate_logging(True)
-            print("Gate activation logging is enabled.", file=sys.stderr)
-        else:
-            print("WARNING: --print_gates was passed, but model has no 'enable_gate_logging' method.", file=sys.stderr)
+    if args.print_gates and hasattr(model, "enable_gate_logging"):
+        model.enable_gate_logging(True)
+        print("Gate activation logging is enabled.", file=sys.stderr)
 
-    # 4. Tokenize prompt and generate completion
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
     with torch.no_grad(), torch.autocast(device_type=device.split(':')[0], dtype=torch.bfloat16):
         output_ids = model.generate(
-            **inputs,
-            max_new_tokens=64,
-            temperature=0.7,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
+            **inputs, max_new_tokens=64, temperature=0.7, top_p=0.9, do_sample=True, pad_token_id=tokenizer.eos_token_id
         )
 
     completion = tokenizer.decode(output_ids[0, inputs.input_ids.shape[1]:], skip_special_tokens=True)
@@ -127,7 +106,6 @@ def main():
     print("\n--- Completion ---")
     print(completion.strip())
 
-    # 5. Report gate activations if requested
     if args.print_gates and hasattr(model, "get_last_gate_means"):
         gate_means = model.get_last_gate_means()
         if gate_means:
