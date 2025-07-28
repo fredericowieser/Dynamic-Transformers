@@ -22,7 +22,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config)
 
-        # --- hyper-params ----------------------------------------------------
+        # hyper-params
         self.dynamic_k = float(getattr(config, "dynamic_k", 0.9))
         self.token_wise = bool(getattr(config, "token_wise", True))
 
@@ -30,7 +30,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         self._log_gates = False
         self._last_gate_means = None
 
-        # --- swap decoder layers --------------------------------------------
+        # swap decoder layers
         custom_cls = (
             DynamicLlamaTokenWiseDecoderLayer
             if self.token_wise

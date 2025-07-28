@@ -6,7 +6,6 @@ from transformers.models.llama.modeling_llama import (
     LlamaDecoderLayer,
     LlamaAttention,
     LlamaMLP,
-    LlamaRotaryEmbedding,
 )
 from typing import Tuple, Optional
 
@@ -14,8 +13,6 @@ log = logging.getLogger(__name__)
 
 
 class FeedForward(nn.Module):
-    """A standard Feed-Forward Network, as used in Llama."""
-
     def __init__(self, config):
         super().__init__()
         self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
@@ -29,19 +26,10 @@ class FeedForward(nn.Module):
 
 
 class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
-    """
-    A custom version of the LlamaDecoderLayer that inserts our Prior FFN.
-    We inherit from the original to reuse as much of the existing logic as possible.
-    """
-
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
-
-        # Explicitly create LlamaAttention.
-        # This will initialize its internal self.rotary_emb.
         self.self_attn = LlamaAttention(config, layer_idx)
         self.mlp = LlamaMLP(config)
-        
         self.prior_ffn = FeedForward(config)
         self.prior_layernorm = nn.LayerNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -90,24 +78,14 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
             attn_args["past_key_value"] = past_key_value
 
         # FIX: Handle 'position_embeddings' if required by a non-standard LlamaAttention
-        # The LlamaAttention usually computes cos/sin from position_ids internally.
-        # If your LlamaAttention.forward truly requires 'position_embeddings'
-        # as a separate argument, it expects the (cos, sin) tuple from rotary_emb.
-        # We need to manually compute it here using the LlamaAttention's own rotary_emb module.
         position_embeddings = None
         if position_ids is not None:
-            # We need a tensor with the correct shape for rotary_emb, specifically its head_dim.
-            # LlamaRotaryEmbedding's forward signature is `forward(value_states, position_ids, seq_len=None)`.
-            # value_states typically has shape (batch_size, num_heads, seq_len, head_dim).
-            # We can create a dummy tensor from hidden_states to match the expected shape and dtype.
-            
             # hidden_states_pre_attn_ln is (B, T, C)
             batch_size, seq_len, hidden_size = hidden_states_pre_attn_ln.shape
             num_heads = self.self_attn.num_heads
             head_dim = self.self_attn.head_dim # LlamaAttention sets this attribute
 
             # Create a dummy tensor of (B, num_heads, T, head_dim) for rotary_emb's first arg.
-            # The actual values don't matter, only shape and device/dtype.
             dummy_value_states = hidden_states_pre_attn_ln.reshape(
                 batch_size, seq_len, num_heads, head_dim
             ).transpose(1, 2) # -> (B, num_heads, T, head_dim)
@@ -117,23 +95,11 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
             position_embeddings = (cos, sin)
         
         # If position_embeddings is computed, add it to attn_args.
-        # This is passed as a *keyword argument* here, but the error suggests it might be a *positional* one.
-        # If it's a positional argument, the order matters. But keyword args are usually more robust.
-        # Let's add it as a keyword, as that's the most common way.
         if position_embeddings is not None:
             attn_args["position_embeddings"] = position_embeddings
         # The `position_ids` argument itself should ideally NOT be passed if `position_embeddings` is.
-        # The original LlamaAttention uses `position_ids` to *compute* `cos, sin`.
-        # If `position_embeddings` is expected, it means the `cos, sin` are directly provided.
-        # So we explicitly *do not* pass `position_ids` here to avoid a conflict.
-        # If position_ids is expected to also be present in this non-standard LlamaAttention,
-        # then the initial problem was even deeper.
-
 
         # Call self_attn with explicitly constructed arguments
-        # If the LlamaAttention is truly modified to require 'position_embeddings' as
-        # a *positional* argument, this might still fail if it's the Nth positional arg.
-        # But this is the most logical way to pass pre-computed embeddings.
         attn_outputs = self.self_attn(**attn_args)
         
         attention_output = attn_outputs[0] # (B, T, C)
@@ -193,11 +159,6 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
 
 
 class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
-    """
-    A custom version of the LlamaDecoderLayer that inserts our Prior FFN.
-    We inherit from the original to reuse as much of the existing logic as possible.
-    """
-
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
         self.self_attn = LlamaAttention(config, layer_idx)
@@ -233,7 +194,6 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         original_input_to_block = hidden_states # (B, T, C)
 
         # Standard Llama Decoder Path
-        # Self-attention part
         residual_attn = hidden_states
         hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
         

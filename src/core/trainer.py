@@ -4,9 +4,17 @@ import torch.nn.functional as F
 from torch import nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, AutoConfig
-from src.models.dynamic_llama import DynamicLlamaBlockWiseDecoderLayer, DynamicLlamaTokenWiseDecoderLayer
-from typing import Tuple, Optional, Dict, List
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    get_linear_schedule_with_warmup,
+    AutoConfig,
+)
+from src.models.dynamic_llama import (
+    DynamicLlamaBlockWiseDecoderLayer,
+    DynamicLlamaTokenWiseDecoderLayer,
+)
+from typing import Tuple, Dict, List
 from collections import deque
 
 log = logging.getLogger(__name__)
