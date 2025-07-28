@@ -84,6 +84,12 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
 
 
     def forward(self, *args, **kwargs):
+        # ─────────── NEW: Pop your gating params ───────────
+        dynamic_k        = kwargs.pop("dynamic_k", None)
+        gate_warmup_iters= kwargs.pop("gate_warmup_iters", None)
+        ce_bias          = kwargs.pop("ce_bias", None)
+        # ───────────────────────────────────────────────────
+
         # The decoder layers already look up dynamic_k from self.model_cfg,
         # so we simply make it available as an attribute:
         self.model_cfg = type("Cfg", (), {"dynamic_k": self.dynamic_k})
