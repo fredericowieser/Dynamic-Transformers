@@ -3,7 +3,6 @@ import torch
 from transformers import (
     AutoConfig,
     AutoTokenizer,
-    AutoModelForCausalLM,
 )
 import sys
 from src.models.dynamic_llama_causal import DynamicLlamaForCausalLM
@@ -50,16 +49,15 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(args.model_path)
     _patch_pad_token_id(config)
     _patch_rope_scaling(config)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model = DynamicLlamaForCausalLM.from_pretrained(
         args.model_path,
         config=config,
         torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
     )
     
     if tokenizer.pad_token_id is None:
