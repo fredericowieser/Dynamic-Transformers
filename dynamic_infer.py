@@ -90,15 +90,19 @@ def main():
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
     with torch.no_grad(), torch.autocast(device_type=device.split(':')[0], dtype=torch.bfloat16):
+        # before generate:
+        model.set_dynamic_k(args.dynamic_k)
+        model.set_gate_warmup_iters(0)      # disable warm-up bias at inference
+        model.set_ce_bias(0.00)              # (optional—usually zero)
+
+        # then:
         output_ids = model.generate(
-            **inputs,
-            max_new_tokens=64,
-            temperature=0.7,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
-            dynamic_k=model.dynamic_k if hasattr(model, 'dynamic_k') else None,
-            gate_warmup_iters=0
+        **inputs,
+        max_new_tokens=64,
+        temperature=0.7,
+        top_p=0.9,
+        do_sample=True,
+        pad_token_id=tokenizer.eos_token_id,
         )
 
     completion = tokenizer.decode(output_ids[0, inputs.input_ids.shape[1]:], skip_special_tokens=True)

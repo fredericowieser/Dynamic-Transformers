@@ -46,6 +46,31 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     def set_dynamic_k(self, k: float):
         self.dynamic_k = float(k)
 
+    def set_gate_warmup_iters(self, iters: int):
+        self.gate_warmup_iters = iters
+
+    def set_ce_bias(self, bias: float):
+        self.ce_bias = bias
+
+    def prepare_inputs_for_generation(self,
+            input_ids,
+            past_key_values=None,
+            attention_mask=None,
+            **kwargs
+        ):
+        # first get the normal prepared inputs
+        model_inputs = super().prepare_inputs_for_generation(
+            input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        # now inject your dynamic params
+        model_inputs["dynamic_k"]        = self.dynamic_k
+        model_inputs["gate_warmup_iters"]= getattr(self, "gate_warmup_iters", 0)
+        model_inputs["ce_bias"]          = getattr(self, "ce_bias", 0.0)
+        return model_inputs
+
     def enable_gate_logging(self, flag: bool = True):
         self._log_gates = flag
         self._last_gate_means = None
