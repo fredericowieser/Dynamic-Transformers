@@ -59,6 +59,11 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
         **kwargs,
     ) -> Tuple[torch.Tensor, ...]:
         
+        # Override From Config (Used at Inference)
+        dynamic_k = getattr(self.config, "dynamic_k", dynamic_k)
+        gate_warmup_iters = getattr(self.config, "gate_warmup_iters", gate_warmup_iters)
+        ce_bias = getattr(self.config, "ce_bias", ce_bias)
+        
         original_input_to_block = hidden_states # (B, T, C)
 
         # Standard Llama Decoder Path
@@ -190,6 +195,11 @@ class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
         ce_bias: float = 0.0,
         **kwargs,
     ) -> Tuple[torch.Tensor, ...]:
+        
+        # Override From Config (Used at Inference)
+        dynamic_k = getattr(self.config, "dynamic_k", dynamic_k)
+        gate_warmup_iters = getattr(self.config, "gate_warmup_iters", gate_warmup_iters)
+        ce_bias = getattr(self.config, "ce_bias", ce_bias)
         
         original_input_to_block = hidden_states # (B, T, C)
 
