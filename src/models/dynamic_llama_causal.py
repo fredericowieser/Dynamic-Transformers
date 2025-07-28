@@ -38,7 +38,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         )
         new_layers = nn.ModuleList()
         for i, old in enumerate(self.model.layers):
-            new = custom_cls(self.config, i)
+            new = custom_cls(config, i)
             new.load_state_dict(old.state_dict(), strict=False)
             new_layers.append(new)
         self.model.layers = new_layers
