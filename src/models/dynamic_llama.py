@@ -28,6 +28,7 @@ class FeedForward(nn.Module):
 class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
+        self.config = config
         self.self_attn = LlamaAttention(config, layer_idx)
         self.mlp = LlamaMLP(config)
         self.prior_ffn = FeedForward(config)
@@ -166,6 +167,7 @@ class DynamicLlamaBlockWiseDecoderLayer(LlamaDecoderLayer):
 class DynamicLlamaTokenWiseDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config, layer_idx: int):
         super().__init__(config, layer_idx)
+        self.config = config
         self.self_attn = LlamaAttention(config, layer_idx)
         self.mlp = LlamaMLP(config)
         self.prior_ffn = FeedForward(config)
