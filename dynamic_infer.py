@@ -1,5 +1,6 @@
 import argparse
 import torch
+import torch.nn as nn
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -93,6 +94,21 @@ def main():
         model.enable_gate_logging(True)
         print("Gate activation logging is enabled.", file=sys.stderr)
 
+    num_layers = model.config.num_hidden_layers
+    accum_gate_means = [[] for _ in range(num_layers)]  # List of lists: accum_gate_means[i] = means for layer i across all tokens
+
+    # Monkey-patch model's forward to collect gate means after each call (each generated token)
+    original_forward = model.forward
+    def wrapped_forward(*args, **kwargs):
+        out = original_forward(*args, **kwargs)
+        if model._log_gates:
+            last_means = model.get_last_gate_means()
+            if last_means:  # Ensure something was recorded
+                for i, mean_val in enumerate(last_means):
+                    accum_gate_means[i].append(mean_val)
+        return out
+    model.forward = wrapped_forward
+
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
     with torch.no_grad(), torch.autocast(device_type=device.split(':')[0], dtype=torch.bfloat16):
@@ -110,14 +126,18 @@ def main():
     print("\n--- Completion ---")
     print(completion.strip())
 
-    if args.print_gates and hasattr(model, "get_last_gate_means"):
-        gate_means = model.get_last_gate_means()
-        if gate_means:
-            print("\n--- Per-Layer Mean Gate Activations (during generation) ---")
-            for i, mean_val in enumerate(gate_means):
-                print(f"Layer {i:2d}: {mean_val:.4f}")
-        else:
-            print("\n--- No gate activations were recorded. ---", file=sys.stderr)
+    if args.print_gates:
+            print(f"\n--- Per-Layer Gate Stats (mean ± std across all {len(accum_gate_means[0]) if accum_gate_means else 0} generated tokens) ---")
+            for i in range(num_layers):
+                layer_means = accum_gate_means[i]
+                if layer_means:
+                    # Convert to tensor for mean/std
+                    layer_tensor = torch.tensor(layer_means)
+                    overall_mean = layer_tensor.mean().item()
+                    overall_std = layer_tensor.std().item() if len(layer_tensor) > 1 else 0.0
+                    print(f"Layer {i:2d}: {overall_mean:.4f} ± {overall_std:.4f}")
+                else:
+                    print(f"Layer {i:2d}: No data (logging may have failed)", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
