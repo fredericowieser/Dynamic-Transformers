@@ -36,7 +36,7 @@ dataset_configs:
 
   # 3. For Coding and Programming Instructions
   - _target_: src.core.data.HuggingFaceDataModule
-    dataset_name: "WizardLM/WizardCoder-Evol-Instruct-70k-V2.0"
+    dataset_name: "WizardLMTeam/WizardLM_evol_instruct_70k"
     text_column: "conversations" # High-quality, complex code instructions.
     # Use the entire dataset to maximize coding ability.
     train_subset_ratio: 1.0
