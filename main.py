@@ -13,10 +13,9 @@ def main(cfg: DictConfig) -> None:
     log.info(f"--- Config ---\n{OmegaConf.to_yaml(cfg)}")
     pl.seed_everything(cfg.run.seed, workers=True)
 
-    # Instantiate DataModule from the correct sub-config
-    datamodule_cfg = cfg.data[cfg.data.name]
-    log.info(f"Instantiating DataModule <{datamodule_cfg._target_}>")
-    datamodule = hydra.utils.instantiate(datamodule_cfg)
+    # Instantiate DataModule
+    log.info(f"Instantiating DataModule <{cfg.data._target_}>")
+    datamodule = hydra.utils.instantiate(cfg.data)
 
     # Instantiate Model
     log.info(f"Instantiating Model <{cfg.model._target_}>")
