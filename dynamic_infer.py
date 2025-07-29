@@ -119,8 +119,8 @@ def main():
     with torch.no_grad(), torch.autocast(device_type=device.split(':')[0], dtype=torch.bfloat16):
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=64,
-            temperature=0.7,
+            max_new_tokens=128,
+            temperature=0.1,
             top_p=0.9,
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id,
