@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorFor
 import logging
 import json
 import re
-from typing import Optional
+from typing import Optional, Any, Dict, List
 import torch
 
 log = logging.getLogger(__name__)
