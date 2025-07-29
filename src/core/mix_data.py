@@ -10,6 +10,16 @@ import collections.abc as cab
 
 log = logging.getLogger(__name__)
 
+
+def _get_val(cfg, key, default="<unknown>"):
+    """
+    Helper that works for both DictConfig and plain dict produced when
+    _convert_='partial'.
+    """
+    if isinstance(cfg, cab.Mapping):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
 class MixedDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -61,34 +71,32 @@ class MixedDataModule(pl.LightningDataModule):
         Processes and concatenates all datasets.
         """
         log.info("Setting up mixed dataset...")
-        all_train_datasets = []
-        all_val_datasets = []
+        all_train_datasets, all_val_datasets = [], []
 
-        for config in self.hparams.dataset_configs:
-            log.info(f"--- Processing dataset: {config.dataset_name} ---")
-            # We instantiate the single DataModule to handle all its specific logic
-            # (text formatting, tokenizing, etc.)
-            single_datamodule = hydra.utils.instantiate(
-                config,
+        for cfg in self.hparams.dataset_configs:
+            ds_name = _get_val(cfg, "dataset_name", _get_val(cfg, "path"))
+            log.info(f"--- Processing dataset: {ds_name} ---")
+
+            single_dm = hydra.utils.instantiate(
+                cfg,
                 tokenizer_name=self.hparams.tokenizer_name,
                 block_size=self.hparams.block_size,
-                # These are placeholders; the final batching is handled by this MixedDataModule
                 batch_size=self.hparams.batch_size,
                 validation_split_percentage=self.hparams.validation_split_percentage,
             )
-            single_datamodule.setup(stage)
+            single_dm.setup(stage)
 
-            if len(single_datamodule.train_dataset) > 0:
-                all_train_datasets.append(single_datamodule.train_dataset)
-                log.info(f"  + Added {len(single_datamodule.train_dataset):,} training samples.")
-            if len(single_datamodule.val_dataset) > 0:
-                all_val_datasets.append(single_datamodule.val_dataset)
-                log.info(f"  + Added {len(single_datamodule.val_dataset):,} validation samples.")
+            if len(single_dm.train_dataset):
+                all_train_datasets.append(single_dm.train_dataset)
+                log.info(f"  + Added {len(single_dm.train_dataset):,} training samples.")
+            if len(single_dm.val_dataset):
+                all_val_datasets.append(single_dm.val_dataset)
+                log.info(f"  + Added {len(single_dm.val_dataset):,} validation samples.")
 
-        # Concatenate all processed datasets
+        # concatenate …
         self.train_dataset = ConcatDataset(all_train_datasets)
-        self.val_dataset = ConcatDataset(all_val_datasets)
-        self.test_dataset = self.val_dataset # Use the combined validation set for testing
+        self.val_dataset   = ConcatDataset(all_val_datasets)
+        self.test_dataset  = self.val_dataset
 
         log.info("-" * 50)
         log.info(f"Total mixed training samples: {len(self.train_dataset):,}")
