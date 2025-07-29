@@ -102,13 +102,25 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
         # (query / response) or (prompt / completion) dual-column pattern
         if raw is None:
-            q = examples.get("query") or examples.get("prompt") or examples.get("instruction")
-            a = examples.get("response") or examples.get("answer") or examples.get("completion")
-            if q is not None and a is not None:
-                return _dict_list_to_chat(
-                    self.tokenizer,
-                    [{"role": "user", "content": q}, {"role": "assistant", "content": a}],
+                q = (
+                    examples.get("query")
+                    or examples.get("prompt")
+                    or examples.get("instruction")
                 )
+                a = (
+                    examples.get("response")
+                    or examples.get("answer")
+                    or examples.get("completion")
+                    or examples.get("output")
+                )
+                if q is not None and a is not None:
+                    return _dict_list_to_chat(
+                        self.tokenizer,
+                        [
+                            {"role": "user",      "content": q},
+                            {"role": "assistant", "content": a},
+                        ],
+                    )
 
         # -------------------------------------------------- #
         # 1️⃣  list-of-dict chat already?
