@@ -6,6 +6,7 @@ from omegaconf import DictConfig
 from typing import List, Optional
 import hydra
 import logging
+import collections.abc as cab
 
 log = logging.getLogger(__name__)
 
@@ -37,17 +38,19 @@ class MixedDataModule(pl.LightningDataModule):
         self.data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
 
     def prepare_data(self) -> None:
-        """
-        Downloads all necessary datasets by instantiating their DataModules.
-        """
         log.info(f"Preparing {len(self.hparams.dataset_configs)} datasets for mixing...")
-        for config in self.hparams.dataset_configs:
-            log.info(f"--- Preparing dataset: {config.dataset_name} ---")
-            # We must provide all required __init__ arguments for instantiation,
-            # even if prepare_data() itself doesn't use all of them.
+        for cfg in self.hparams.dataset_configs:
+            # cfg is DictConfig when _convert_ is "none", but a plain dict when
+            # _convert_ is "partial".  Handle both.
+            if isinstance(cfg, cab.Mapping):
+                ds_name = cfg.get("dataset_name", cfg.get("path", "<unknown>"))
+            else:  # still a DictConfig or Structured config
+                ds_name = getattr(cfg, "dataset_name", "<unknown>")
+
+            log.info(f"--- Preparing dataset: {ds_name} ---")
+
             hydra.utils.instantiate(
-                config,
-                # Pass down the required parameters from the parent config
+                cfg,                                 # works for dict or DictConfig
                 tokenizer_name=self.hparams.tokenizer_name,
                 block_size=self.hparams.block_size,
                 batch_size=self.hparams.batch_size,
