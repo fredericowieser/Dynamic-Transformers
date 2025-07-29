@@ -7,8 +7,6 @@
 defaults:
   - _self_
   - data: sft_mix # This sets sft_mix as the default configuration.
-  - override hydra/hydra_logging: colorlog
-  - override hydra/job_logging: default
 
 run:
   name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}"
