@@ -45,7 +45,6 @@ help:
 	@echo "  flush-gpu   Flushes GPU memory by killing processes using NVIDIA devices (requires sudo)."
 	@echo "  run         Legacy: Runs main training script with full stack traces (use 'train' instead)."
 	@echo "  clean       Removes virtual environment and __pycache__ folders."
-	@echo "  help        Displays this help message."
 	@echo ""
 	@echo "Environment notes: All Python runs enable HYDRA_FULL_ERROR=1 and CUDA_LAUNCH_BLOCKING=1 for full stack traces."
 	@echo "After running 'make setup', remember to activate the environment manually:"
