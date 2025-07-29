@@ -63,7 +63,7 @@ model:
     ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
 
 training:
-  max_iters: 1000
+  max_iters: 2000
   eval_interval: 100
   optimizer:
     base_lr: 5.0e-5
