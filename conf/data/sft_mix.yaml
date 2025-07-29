@@ -5,7 +5,7 @@
 # To use this mix, run:
 # python main.py data=sft_mix
 
-_target_: src.core.data.MixedDataModule
+_target_: src.core.mix_data.MixedDataModule
 
 # --- Overall parameters for the SFT mix ---
 batch_size: 4 # The final, combined batch size that must fit on the GPU.
