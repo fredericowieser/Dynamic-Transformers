@@ -6,6 +6,8 @@
 # python main.py data=lang_mix
 
 _target_: src.core.mix_data.MixedDataModule
+_recursive_: false   # <- DO NOT instantiate children automatically
+_convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
 # --- Overall parameters for the language mix ---
 batch_size: 4

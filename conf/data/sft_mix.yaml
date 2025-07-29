@@ -6,6 +6,8 @@
 # python main.py data=sft_mix
 
 _target_: src.core.mix_data.MixedDataModule
+_recursive_: false   # <- DO NOT instantiate children automatically
+_convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
 # --- Overall parameters for the SFT mix ---
 batch_size: 4 # The final, combined batch size that must fit on the GPU.
@@ -17,6 +19,7 @@ validation_split_percentage: 2 # A small percentage is sufficient for these larg
 # Each dataset is chosen to contribute a specific skill. The subset ratios
 # are balanced to create a well-rounded final training set.
 dataset_configs:
+  
   # 1. For High-Quality General Instructions (The Foundation)
   - _target_: src.core.data.HuggingFaceDataModule
     dataset_name: "HuggingFaceH4/ultrafeedback_binarized"
