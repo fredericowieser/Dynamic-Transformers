@@ -31,6 +31,7 @@ model:
     ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
 
 training:
+  accumulate_grad_batches: 4
   max_iters: 2000
   eval_interval: 100
   
