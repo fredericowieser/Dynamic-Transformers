@@ -43,7 +43,9 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         # Try the configured column first
         raw = examples.get(self.hparams.text_column)
 
-        # Fallback order for common field names
+        # --------------------------------------------------
+        # 1. fall-backs for list-of-dict chat columns
+        # --------------------------------------------------
         if raw is None:
             for alt in ("messages", "conversations", "prompt_response", "text"):
                 raw = examples.get(alt)
@@ -54,11 +56,18 @@ class HuggingFaceDataModule(pl.LightningDataModule):
                     )
                     break
 
-        if raw is None:
-            raise KeyError(
-                f"None of the expected text columns found in the example keys "
-                f"{list(examples.keys())}"
-            )
+        # --------------------------------------------------
+        # 2. NEW: handle 2-column (instruction / response) datasets
+        # --------------------------------------------------
+        if raw is None and "query" in examples and "response" in examples:
+            # MetaMathQA, GSM-8K, etc.
+            conv = [
+                {"role": "user",      "content": examples["query"]},
+                {"role": "assistant", "content": examples["response"]},
+            ]
+            return {
+                "text": self.tokenizer.apply_chat_template(conv, tokenize=False)
+            }
 
         # If it's already a list of dicts, use existing logic:
         if isinstance(raw, list) and all(isinstance(u, dict) for u in raw):
