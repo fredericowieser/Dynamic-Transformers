@@ -42,8 +42,15 @@ class MixedDataModule(pl.LightningDataModule):
         log.info(f"Preparing {len(self.hparams.dataset_configs)} datasets for mixing...")
         for config in self.hparams.dataset_configs:
             log.info(f"--- Preparing dataset: {config.dataset_name} ---")
-            # Instantiate the specific datamodule to trigger its prepare_data method
-            hydra.utils.instantiate(config, tokenizer_name=self.hparams.tokenizer_name)
+            # We must provide all required __init__ arguments for instantiation,
+            # even if prepare_data() itself doesn't use all of them.
+            hydra.utils.instantiate(
+                config,
+                # Pass down the required parameters from the parent config
+                tokenizer_name=self.hparams.tokenizer_name,
+                block_size=self.hparams.block_size,
+                batch_size=self.hparams.batch_size,
+            )
 
     def setup(self, stage: Optional[str] = None) -> None:
         """
