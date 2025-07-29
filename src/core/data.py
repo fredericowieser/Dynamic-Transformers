@@ -40,8 +40,25 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         log.info("Dataset download complete.")
 
     def _format_text(self, examples):
-        # Handles different structures like SlimOrca's list of dicts
-        raw = examples[self.hparams.text_column]
+        # Try the configured column first
+        raw = examples.get(self.hparams.text_column)
+
+        # Fallback order for common field names
+        if raw is None:
+            for alt in ("messages", "conversations", "prompt_response", "text"):
+                raw = examples.get(alt)
+                if raw is not None:
+                    log.warning(
+                        f"Column '{self.hparams.text_column}' missing, "
+                        f"using '{alt}' instead."
+                    )
+                    break
+
+        if raw is None:
+            raise KeyError(
+                f"None of the expected text columns found in the example keys "
+                f"{list(examples.keys())}"
+            )
 
         # If it's already a list of dicts, use existing logic:
         if isinstance(raw, list) and all(isinstance(u, dict) for u in raw):

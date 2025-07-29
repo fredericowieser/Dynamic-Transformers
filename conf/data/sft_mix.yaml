@@ -30,7 +30,7 @@ dataset_configs:
   # 2. For Mathematical and Logical Reasoning
   - _target_: src.core.data.HuggingFaceDataModule
     dataset_name: "meta-math/MetaMathQA"
-    text_column: "conversations" # Formatted as a chat.
+    text_column: "messages" # Formatted as a chat.
     # MetaMath is smaller but crucial for reasoning. We use a larger portion.
     train_subset_ratio: 0.50
 
