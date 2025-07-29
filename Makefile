@@ -52,7 +52,7 @@ help:
 	@echo "  source .venv/bin/activate"
 	@echo "Tip: Pass arguments to targets like 'make train data=sft_mix'."
 
-# Capture all arguments passed to targets
+# Capture all arguments passed to targets (excluding the target name itself)
 ARGS := $(filter-out $@,$(MAKECMDGOALS))
 # Prevent Make from trying to interpret ARGS as targets
 $(eval $(ARGS):;@:)
