@@ -57,10 +57,10 @@ model:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
     # CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
-    dynamic_k: 0.85 # Threshold for Conditional Unconditional (CU) gate 
+    dynamic_k: 0.95 # Threshold for Conditional Unconditional (CU) gate 
     token_wise: true # Use token-wise dynamic gating
     # CE = D_st > D_ch - ce_bias # (B,) bool
-    ce_bias: 0.05 # Bias for the Conditional Expectation (CE) gate
+    ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
 
 training:
   max_iters: 1000
