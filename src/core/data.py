@@ -39,113 +39,132 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         )
         log.info("Dataset download complete.")
 
-    def _format_text(self, examples):
-        # Try the configured column first
-        raw = examples.get(self.hparams.text_column)
+    def _dict_list_to_chat(
+        tokenizer, conv: List[Dict[str, Any]]
+    ) -> Dict[str, str]:
+        """Takes [{'role': 'user', 'content': '…'}, …] -> {'text': '…'}"""
+        # Map role aliases
+        norm = []
+        for turn in conv:
+            role = (turn.get("role") or turn.get("from") or "").lower()
+            if role in {"human", "user"}:
+                role = "user"
+            elif role in {"assistant", "gpt", "model"}:
+                role = "assistant"
+            # Other roles (system, tool, critic, …) are kept as is
+            norm.append({"role": role, "content": turn.get("content") or turn.get("value") or ""})
 
-        # --------------------------------------------------
-        # 1. fall-backs for list-of-dict chat columns
-        # --------------------------------------------------
+        # Drop empty turns
+        norm = [t for t in norm if t["content"].strip()]
+        if not norm:
+            return None
+
+        try:
+            return {"text": tokenizer.apply_chat_template(norm, tokenize=False)}
+        except Exception:
+            # Fall back to a simple "Role: content" format if the tokenizer
+            # has no chat template.
+            joined = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in norm)
+            return {"text": joined}
+
+
+    def _format_text(self, examples):
+        """
+        Extremely tolerant normaliser:
+        - list-of-dict chats               -> chat template
+        - (query, response) / (prompt, completion) columns
+        - strings with '### Human:' / 'Human:' / 'User:' markers
+        - raw strings                         (fallback)
+        """
+
+        # -------------------------------------------------- #
+        # 0️⃣  Pick the source field
+        # -------------------------------------------------- #
+        preferred = self.hparams.text_column
+        raw = examples.get(preferred)
+
+        # Common alternatives
         if raw is None:
-            for alt in ("messages", "conversations", "prompt_response", "text"):
-                raw = examples.get(alt)
-                if raw is not None:
-                    log.warning(
-                        f"Column '{self.hparams.text_column}' missing, "
-                        f"using '{alt}' instead."
-                    )
+            for alt in (
+                "messages",
+                "conversation",
+                "conversations",
+                "prompt_response",
+                "text",
+                "chosen",        # UltraFeedback
+                "chosen_response",
+                "response",
+                "completion",
+            ):
+                if alt in examples:
+                    raw = examples[alt]
                     break
 
-        # --------------------------------------------------
-        # 2. NEW: handle 2-column (instruction / response) datasets
-        # --------------------------------------------------
-        if raw is None and "query" in examples and "response" in examples:
-            # MetaMathQA, GSM-8K, etc.
-            conv = [
-                {"role": "user",      "content": examples["query"]},
-                {"role": "assistant", "content": examples["response"]},
-            ]
-            return {
-                "text": self.tokenizer.apply_chat_template(conv, tokenize=False)
-            }
-
-        # If it's already a list of dicts, use existing logic:
-        if isinstance(raw, list) and all(isinstance(u, dict) for u in raw):
-            # — your existing conversation formatting here —
-            formatted_conversations = []
-            for turn in raw:
-                role = turn.get("from") or turn.get("role")
-                content = turn.get("value") or turn.get("content") or ""
-                if role == "human":
-                    role = "user"
-                elif role in ("gpt", "assistant"):
-                    role = "assistant"
-                else:
-                    role = role.lower()
-                formatted_conversations.append({"role": role, "content": content})
-            try:
-                return {
-                    "text": self.tokenizer.apply_chat_template(
-                        formatted_conversations, tokenize=False
-                    )
-                }
-            except Exception as e:
-                log.warning(
-                    f"apply_chat_template failed on list-of-dicts: {e}. "
-                    "Falling back to JSON dump."
+        # (query / response) or (prompt / completion) dual-column pattern
+        if raw is None:
+            q = examples.get("query") or examples.get("prompt") or examples.get("instruction")
+            a = examples.get("response") or examples.get("answer") or examples.get("completion")
+            if q is not None and a is not None:
+                return _dict_list_to_chat(
+                    self.tokenizer,
+                    [{"role": "user", "content": q}, {"role": "assistant", "content": a}],
                 )
-                return {"text": json.dumps(raw)}
 
-        # If it's a raw string, try to parse out ### Human / ### Assistant blocks
+        # -------------------------------------------------- #
+        # 1️⃣  list-of-dict chat already?
+        # -------------------------------------------------- #
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            out = _dict_list_to_chat(self.tokenizer, raw)
+            if out:
+                return out
+
+        # -------------------------------------------------- #
+        # 2️⃣  Maybe the entry is a JSON string?
+        # -------------------------------------------------- #
+        if isinstance(raw, str) and raw.strip().startswith(("{", "[")):
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, list):
+                    out = _dict_list_to_chat(self.tokenizer, obj)
+                    if out:
+                        return out
+            except Exception:
+                pass  # fall through
+
+        # -------------------------------------------------- #
+        # 3️⃣  '### Human:' / 'Human:' style multi-turn string
+        # -------------------------------------------------- #
         if isinstance(raw, str):
+            s = raw.strip()
+
+            # 3a. '###' markers
+            if "###" in s:
+                blocks = re.split(r"###\s*", s)
+            else:
+                # 3b. plain 'Human:/Assistant:' lines
+                blocks = re.split(r"\n(?=\s*(Human|Assistant|User):)", s)
+
             conv = []
-            # split on "###" and parse each block
-            for block in re.split(r"###\s*", raw):
-                if not block.strip():
-                    continue
-                m = re.match(r"(Human|Assistant)\s*:\s*(.*)", block, flags=re.S)
+            for blk in blocks:
+                m = re.match(r"\s*(Human|Assistant|User)\s*:\s*(.*)", blk, flags=re.S)
                 if m:
-                    role, content = m.group(1), m.group(2).strip()
-                    if role == "Human":
-                        conv.append({"role": "user", "content": content})
-                    else:
-                        conv.append({"role": "assistant", "content": content})
-                else:
-                    log.warning(
-                        "Could not parse block as 'Human:' or 'Assistant:' "
-                        f"→ '{block[:50]}...'"
-                    )
+                    role = "user" if m.group(1) in {"Human", "User"} else "assistant"
+                    conv.append({"role": role, "content": m.group(2).strip()})
 
-            # If we got at least one turn, re‐template it:
             if conv:
-                try:
-                    templated = self.tokenizer.apply_chat_template(
-                        conv, tokenize=False
-                    )
-                    return {"text": templated}
-                except Exception as e:
-                    log.warning(
-                        f"apply_chat_template failed on parsed turns: {e}. "
-                        "Falling back to simple Role: content."
-                    )
-                    joined = "\n".join(
-                        f"{t['role'].capitalize()}: {t['content']}" for t in conv
-                    )
-                    return {"text": joined}
+                out = _dict_list_to_chat(self.tokenizer, conv)
+                if out:
+                    return out
 
-            # No turns parsed? Strip ### and return the raw text
-            log.warning(
-                "No valid ### Human / ### Assistant turns found; "
-                "stripping markers and returning raw text."
+        # -------------------------------------------------- #
+        # 4️⃣  Fallback: keep whatever we have as plain text
+        # -------------------------------------------------- #
+        if raw is None:
+            raise KeyError(
+                f"Could not locate usable text in example keys {list(examples.keys())}"
             )
-            cleaned = re.sub(r"###\s*", "", raw)
-            return {"text": cleaned.strip()}
 
-        # Anything else: JSON‐dump
-        log.warning(
-            f"Unexpected example type {type(raw)}; JSON‐dumping the raw value."
-        )
-        return {"text": json.dumps(raw)}
+        return {"text": str(raw).strip()}
 
     def setup(self, stage: str | None = None) -> None:
         """
