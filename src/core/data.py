@@ -10,6 +10,34 @@ import torch
 
 log = logging.getLogger(__name__)
 
+def _dict_list_to_chat(
+    tokenizer, conv: List[Dict[str, Any]]
+) -> Dict[str, str]:
+    """Takes [{'role': 'user', 'content': '…'}, …] -> {'text': '…'}"""
+    # Map role aliases
+    norm = []
+    for turn in conv:
+        role = (turn.get("role") or turn.get("from") or "").lower()
+        if role in {"human", "user"}:
+            role = "user"
+        elif role in {"assistant", "gpt", "model"}:
+            role = "assistant"
+        # Other roles (system, tool, critic, …) are kept as is
+        norm.append({"role": role, "content": turn.get("content") or turn.get("value") or ""})
+
+    # Drop empty turns
+    norm = [t for t in norm if t["content"].strip()]
+    if not norm:
+        return None
+
+    try:
+        return {"text": tokenizer.apply_chat_template(norm, tokenize=False)}
+    except Exception:
+        # Fall back to a simple "Role: content" format if the tokenizer
+        # has no chat template.
+        joined = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in norm)
+        return {"text": joined}
+
 class HuggingFaceDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -38,34 +66,6 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             # download_mode="force_redownload",
         )
         log.info("Dataset download complete.")
-
-    def _dict_list_to_chat(
-        tokenizer, conv: List[Dict[str, Any]]
-    ) -> Dict[str, str]:
-        """Takes [{'role': 'user', 'content': '…'}, …] -> {'text': '…'}"""
-        # Map role aliases
-        norm = []
-        for turn in conv:
-            role = (turn.get("role") or turn.get("from") or "").lower()
-            if role in {"human", "user"}:
-                role = "user"
-            elif role in {"assistant", "gpt", "model"}:
-                role = "assistant"
-            # Other roles (system, tool, critic, …) are kept as is
-            norm.append({"role": role, "content": turn.get("content") or turn.get("value") or ""})
-
-        # Drop empty turns
-        norm = [t for t in norm if t["content"].strip()]
-        if not norm:
-            return None
-
-        try:
-            return {"text": tokenizer.apply_chat_template(norm, tokenize=False)}
-        except Exception:
-            # Fall back to a simple "Role: content" format if the tokenizer
-            # has no chat template.
-            joined = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in norm)
-            return {"text": joined}
 
 
     def _format_text(self, examples):

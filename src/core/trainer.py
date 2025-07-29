@@ -90,6 +90,11 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_cfg.model_name, torch_dtype=torch.bfloat16, config=config # Pass the potentially modified config
         )
+        # Enable gradient checkpointing for memory efficiency
+        self.model.gradient_checkpointing_enable()
+        self.model.enable_input_require_grads()
+
+        # Set the tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
