@@ -17,6 +17,7 @@ class MixedDataModule(pl.LightningDataModule):
         block_size: int,
         batch_size: int,
         validation_split_percentage: int = 5,
+        **unused_kwargs,
     ):
         """
         A DataModule that mixes multiple HuggingFace datasets.
