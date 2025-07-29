@@ -122,18 +122,50 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         return {"text": json.dumps(raw)}
 
     def setup(self, stage: str | None = None) -> None:
+        """
+        Loads and processes the dataset, creating train/val splits.
+        """
         log.info(f"Setting up data for stage: {stage}")
+
         raw_datasets = load_dataset(
             self.hparams.dataset_name,
             self.hparams.dataset_config,
             trust_remote_code=True,
-            # download_mode="force_redownload",
         )
-        
-        # Format and tokenize
-        # The filter is moved after formatting, as `_format_text` might create empty strings for malformed entries
+
+        # ------------------------------------------------------------
+        # 1️⃣  Guarantee we have a DatasetDict that contains a "train" split
+        # ------------------------------------------------------------
+        if isinstance(raw_datasets, Dataset):
+            # single unnamed split → make it the train split
+            raw_datasets = DatasetDict({"train": raw_datasets})
+
+        if "train" not in raw_datasets:
+            # take the very first available split as train
+            first_key = next(iter(raw_datasets.keys()))
+            log.warning(
+                f"No 'train' split found in {self.hparams.dataset_name!r}. "
+                f"Using '{first_key}' as the training split."
+            )
+            raw_datasets = DatasetDict({"train": raw_datasets[first_key]})
+
+        # ------------------------------------------------------------
+        # 2️⃣  Continue exactly as before
+        # ------------------------------------------------------------
         formatted_datasets = raw_datasets.map(self._format_text, batched=False)
-        
+
+        # remove empty texts …
+        formatted_datasets["train"] = formatted_datasets["train"].filter(
+            lambda x: x.get("text") is not None and len(x["text"]) > 0
+        )
+
+        tokenized_datasets = formatted_datasets.map(
+            lambda e: self.tokenizer(e["text"]),
+            batched=True,
+            remove_columns=formatted_datasets["train"].column_names,
+        )
+
+        # Group into blocks        
         # Filter out empty or problematic text entries after formatting
         for split in formatted_datasets:
             # Check if 'text' column exists and filter out empty strings
