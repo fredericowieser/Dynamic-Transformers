@@ -1,9 +1,10 @@
-import hydra
-from omegaconf import DictConfig, OmegaConf
-import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 import logging
 import os
+
+import hydra
+import pytorch_lightning as pl
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 log = logging.getLogger(__name__)
 
@@ -19,9 +20,7 @@ def main(cfg: DictConfig) -> None:
 
     # Instantiate Model
     log.info(f"Instantiating Model <{cfg.model._target_}>")
-    model = hydra.utils.instantiate(
-        cfg.model, training_cfg=cfg.training
-    )
+    model = hydra.utils.instantiate(cfg.model, training_cfg=cfg.training)
 
     # Instantiate Loggers
     loggers = []
@@ -82,7 +81,9 @@ def main(cfg: DictConfig) -> None:
     hf_model = model.model
 
     # --- FIX: Access config values from the correct path (model.model_cfg) ---
-    hf_model.config.architectures = ["models.dynamic_llama_causal.DynamicLlamaForCausalLM"]
+    hf_model.config.architectures = [
+        "models.dynamic_llama_causal.DynamicLlamaForCausalLM"
+    ]
     hf_model.config.dynamic_k = cfg.model.model_cfg.dynamic_k
     hf_model.config.token_wise = cfg.model.model_cfg.token_wise
 

@@ -39,6 +39,7 @@ dependencies = [
     "scikit-learn>=1.7.1",
     "zstandard>=0.23.0",
     "wandb>=0.20.1",
+    "ruff>=0.12.4",
 ]
 
 [project.urls]
@@ -66,7 +67,7 @@ dev = [
 
 [tool.ruff]
 # See https://docs.astral.sh/ruff/configuration/
-line-length = 88
+line-length = 80
 indent-width = 4
 
 [tool.ruff.lint]

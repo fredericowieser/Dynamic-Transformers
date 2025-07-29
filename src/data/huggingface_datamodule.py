@@ -1,18 +1,22 @@
-import pytorch_lightning as pl
-from torch.utils.data import DataLoader, random_split
-from datasets import load_dataset, Dataset, DatasetDict
-from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorForLanguageModeling
-import logging
 import json
+import logging
 import re
-from typing import Optional, Any, Dict, List
+from typing import Any
+
+import pytorch_lightning as pl
 import torch
+from datasets import Dataset, DatasetDict, load_dataset
+from torch.utils.data import DataLoader, random_split
+from transformers import (
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    PreTrainedTokenizerBase,
+)
 
 log = logging.getLogger(__name__)
 
-def _dict_list_to_chat(
-    tokenizer, conv: List[Dict[str, Any]]
-) -> Dict[str, str]:
+
+def _dict_list_to_chat(tokenizer, conv: list[dict[str, Any]]) -> dict[str, str]:
     """Takes [{'role': 'user', 'content': '…'}, …] -> {'text': '…'}"""
     # Map role aliases
     norm = []
@@ -23,7 +27,9 @@ def _dict_list_to_chat(
         elif role in {"assistant", "gpt", "model"}:
             role = "assistant"
         # Other roles (system, tool, critic, …) are kept as is
-        norm.append({"role": role, "content": turn.get("content") or turn.get("value") or ""})
+        norm.append(
+            {"role": role, "content": turn.get("content") or turn.get("value") or ""}
+        )
 
     # Drop empty turns
     norm = [t for t in norm if t["content"].strip()]
@@ -38,6 +44,7 @@ def _dict_list_to_chat(
         joined = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in norm)
         return {"text": joined}
 
+
 class HuggingFaceDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -48,14 +55,18 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         text_column: str,
         dataset_config: str = None,
         validation_split_percentage: int = 5,
-        train_subset_ratio: Optional[float] = None,
+        train_subset_ratio: float | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+            tokenizer_name
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
+        self.data_collator = DataCollatorForLanguageModeling(
+            tokenizer=self.tokenizer, mlm=False
+        )
 
     def prepare_data(self) -> None:
         log.info(f"Downloading dataset '{self.hparams.dataset_name}'...")
@@ -67,7 +78,6 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         )
         log.info("Dataset download complete.")
 
-
     def _format_text(self, examples):
         """
         Extremely tolerant normaliser:
@@ -77,9 +87,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         - raw strings                         (fallback)
         """
 
-        # -------------------------------------------------- #
-        # 0️⃣  Pick the source field
-        # -------------------------------------------------- #
+        # Pick the source field
         preferred = self.hparams.text_column
         raw = examples.get(preferred)
 
@@ -91,7 +99,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
                 "conversations",
                 "prompt_response",
                 "text",
-                "chosen",        # UltraFeedback
+                "chosen",
                 "chosen_response",
                 "response",
                 "completion",
@@ -100,39 +108,35 @@ class HuggingFaceDataModule(pl.LightningDataModule):
                     raw = examples[alt]
                     break
 
-        # (query / response) or (prompt / completion) dual-column pattern
+        # (query / response) dual-column patterns
         if raw is None:
-                q = (
-                    examples.get("query")
-                    or examples.get("prompt")
-                    or examples.get("instruction")
+            q = (
+                examples.get("query")
+                or examples.get("prompt")
+                or examples.get("instruction")
+            )
+            a = (
+                examples.get("response")
+                or examples.get("answer")
+                or examples.get("completion")
+                or examples.get("output")
+            )
+            if q is not None and a is not None:
+                return _dict_list_to_chat(
+                    self.tokenizer,
+                    [
+                        {"role": "user", "content": q},
+                        {"role": "assistant", "content": a},
+                    ],
                 )
-                a = (
-                    examples.get("response")
-                    or examples.get("answer")
-                    or examples.get("completion")
-                    or examples.get("output")
-                )
-                if q is not None and a is not None:
-                    return _dict_list_to_chat(
-                        self.tokenizer,
-                        [
-                            {"role": "user",      "content": q},
-                            {"role": "assistant", "content": a},
-                        ],
-                    )
 
-        # -------------------------------------------------- #
-        # 1️⃣  list-of-dict chat already?
-        # -------------------------------------------------- #
+        # list-of-dict chat already?
         if isinstance(raw, list) and raw and isinstance(raw[0], dict):
             out = _dict_list_to_chat(self.tokenizer, raw)
             if out:
                 return out
 
-        # -------------------------------------------------- #
-        # 2️⃣  Maybe the entry is a JSON string?
-        # -------------------------------------------------- #
+        # Maybe the entry is a JSON string?
         if isinstance(raw, str) and raw.strip().startswith(("{", "[")):
             try:
                 obj = json.loads(raw)
@@ -143,9 +147,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             except Exception:
                 pass  # fall through
 
-        # -------------------------------------------------- #
-        # 3️⃣  '### Human:' / 'Human:' style multi-turn string
-        # -------------------------------------------------- #
+        # '### Human:' / 'Human:' style multi-turn string
         if isinstance(raw, str):
             s = raw.strip()
 
@@ -168,9 +170,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
                 if out:
                     return out
 
-        # -------------------------------------------------- #
-        # 4️⃣  Fallback: keep whatever we have as plain text
-        # -------------------------------------------------- #
+        # Fallback: keep whatever we have as plain text
         if raw is None:
             raise KeyError(
                 f"Could not locate usable text in example keys {list(examples.keys())}"
@@ -222,14 +222,18 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             remove_columns=formatted_datasets["train"].column_names,
         )
 
-        # Group into blocks        
+        # Group into blocks
         # Filter out empty or problematic text entries after formatting
         for split in formatted_datasets:
             # Check if 'text' column exists and filter out empty strings
-            if 'text' in formatted_datasets[split].column_names:
-                formatted_datasets[split] = formatted_datasets[split].filter(lambda x: x["text"] is not None and len(x["text"]) > 0)
+            if "text" in formatted_datasets[split].column_names:
+                formatted_datasets[split] = formatted_datasets[split].filter(
+                    lambda x: x["text"] is not None and len(x["text"]) > 0
+                )
             else:
-                log.warning(f"Split '{split}' does not have a 'text' column after formatting. This might indicate a problem.")
+                log.warning(
+                    f"Split '{split}' does not have a 'text' column after formatting. This might indicate a problem."
+                )
 
         tokenized_datasets = formatted_datasets.map(
             lambda e: self.tokenizer(e["text"]),
@@ -242,9 +246,14 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         def group_texts(examples):
             concatenated = {k: sum(examples[k], []) for k in examples.keys()}
             total_length = len(concatenated[list(examples.keys())[0]])
-            total_length = (total_length // self.hparams.block_size) * self.hparams.block_size
+            total_length = (
+                total_length // self.hparams.block_size
+            ) * self.hparams.block_size
             result = {
-                k: [t[i : i + self.hparams.block_size] for i in range(0, total_length, self.hparams.block_size)]
+                k: [
+                    t[i : i + self.hparams.block_size]
+                    for i in range(0, total_length, self.hparams.block_size)
+                ]
                 for k, t in concatenated.items()
             }
             result["labels"] = result["input_ids"].copy()
@@ -255,32 +264,47 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         full_dataset = lm_datasets["train"]
 
         # Apply training data subsetting if specified
-        if self.hparams.train_subset_ratio is not None and 0.0 < self.hparams.train_subset_ratio < 1.0:
-            num_samples_to_use = int(len(full_dataset) * self.hparams.train_subset_ratio)
+        if (
+            self.hparams.train_subset_ratio is not None
+            and 0.0 < self.hparams.train_subset_ratio < 1.0
+        ):
+            num_samples_to_use = int(
+                len(full_dataset) * self.hparams.train_subset_ratio
+            )
             if num_samples_to_use == 0 and len(full_dataset) > 0:
-                num_samples_to_use = 1 # Ensure at least one sample if dataset is not empty
-            
+                num_samples_to_use = (
+                    1  # Ensure at least one sample if dataset is not empty
+                )
+
             # Randomly select indices for the subset
             # Using torch.randperm for reproducibility (if seed_everything is set)
             indices = torch.randperm(len(full_dataset))[:num_samples_to_use].tolist()
             full_dataset = full_dataset.select(indices)
-            log.info(f"Reduced training dataset to {num_samples_to_use} samples ({self.hparams.train_subset_ratio*100:.2f}% of original).")
+            log.info(
+                f"Reduced training dataset to {num_samples_to_use} samples ({self.hparams.train_subset_ratio*100:.2f}% of original)."
+            )
 
         # Create train/val splits
-        val_size = int(len(full_dataset) * (self.hparams.validation_split_percentage / 100))
+        val_size = int(
+            len(full_dataset) * (self.hparams.validation_split_percentage / 100)
+        )
         train_size = len(full_dataset) - val_size
-        
+
         # Ensure that validation_split_percentage doesn't result in empty split
         if train_size == 0 or val_size == 0:
-            log.warning(f"Training or validation split size is zero. Train size: {train_size}, Val size: {val_size}. "
-                        "Consider adjusting validation_split_percentage or batch_size if this is unexpected.")
+            log.warning(
+                f"Training or validation split size is zero. Train size: {train_size}, Val size: {val_size}. "
+                "Consider adjusting validation_split_percentage or batch_size if this is unexpected."
+            )
             # If one is zero, make them equal if possible, or raise error.
             # For simplicity here, we'll allow it and let downstream parts handle potential empty dataloaders.
             # A common approach for small datasets is to use all data for train and test/val on a subset
             # of train or another dedicated test set if available.
 
-        self.train_dataset, self.val_dataset = random_split(full_dataset, [train_size, val_size])
-        
+        self.train_dataset, self.val_dataset = random_split(
+            full_dataset, [train_size, val_size]
+        )
+
         log.info(f"Train dataset size: {len(self.train_dataset)}")
         log.info(f"Validation dataset size: {len(self.val_dataset)}")
 
@@ -290,18 +314,28 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True,
-            num_workers=4, pin_memory=True, collate_fn=self.data_collator,
+            self.train_dataset,
+            batch_size=self.hparams.batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=self.data_collator,
         )
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.val_dataset, batch_size=self.hparams.batch_size,
-            num_workers=4, pin_memory=True, collate_fn=self.data_collator,
+            self.val_dataset,
+            batch_size=self.hparams.batch_size,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=self.data_collator,
         )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.test_dataset, batch_size=self.hparams.batch_size,
-            num_workers=4, pin_memory=True, collate_fn=self.data_collator,
+            self.test_dataset,
+            batch_size=self.hparams.batch_size,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=self.data_collator,
         )

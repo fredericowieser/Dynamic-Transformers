@@ -20,7 +20,7 @@ data:
   name: ${hydra:runtime.choices.data}
 
 model:
-  _target_: src.core.trainer.DynamicLlamaTrainer
+  _target_: src.trainers.dynamic_llama_trainer.DynamicLlamaTrainer  # Updated: New path to trainer
   model_cfg:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1

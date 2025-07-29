@@ -5,7 +5,7 @@
 # To use this mix, run:
 # python main.py data=lang_mix
 
-_target_: src.core.mix_data.MixedDataModule
+_target_: src.data.mixed_datamodule.MixedDataModule  # Updated: New path to MixedDataModule
 _recursive_: false   # <- DO NOT instantiate children automatically
 _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
@@ -21,35 +21,35 @@ validation_split_percentage: 1 # 1% is plenty for validation on these huge datas
 # The subset ratios are small because the absolute size of these datasets is enormous.
 dataset_configs:
   # 1. General Web Text (Foundation)
-  - _target_: src.core.data.HuggingFaceDataModule
+  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path to HuggingFaceDataModule
     dataset_name: "togethercomputer/RedPajama-Data-1T"
     dataset_config: "common_crawl"
     text_column: "text"
     train_subset_ratio: 0.01 # 1% of Common Crawl is still millions of documents.
 
   # 2. Long-form Coherence and Narrative
-  - _target_: src.core.data.HuggingFaceDataModule
+  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "togethercomputer/RedPajama-Data-1T"
     dataset_config: "book"
     text_column: "text"
     train_subset_ratio: 0.05 # 5% of the books data.
 
   # 3. Foundational Code Understanding
-  - _target_: src.core.data.HuggingFaceDataModule
+  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "togethercomputer/RedPajama-Data-1T"
     dataset_config: "github"
     text_column: "text"
     train_subset_ratio: 0.05 # 5% of the GitHub data.
 
   # 4. Technical and Academic Language
-  - _target_: src.core.data.HuggingFaceDataModule
+  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "togethercomputer/RedPajama-Data-1T"
     dataset_config: "arxiv"
     text_column: "text"
     train_subset_ratio: 0.10 # 10% of ArXiv papers.
 
   # 5. Conversational and Q&A Style
-  - _target_: src.core.data.HuggingFaceDataModule
+  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "togethercomputer/RedPajama-Data-1T"
     dataset_config: "stackexchange"
     text_column: "text"

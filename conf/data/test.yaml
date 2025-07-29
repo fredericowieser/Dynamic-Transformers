@@ -5,7 +5,7 @@
 # To use this config, run:
 # python main.py data=test
 
-_target_: src.core.data.HuggingFaceDataModule
+_target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path to HuggingFaceDataModule
 
 dataset_name: "timdettmers/openassistant-guanaco"
 dataset_config: null

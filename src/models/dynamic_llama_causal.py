@@ -1,11 +1,12 @@
 # src/models/dynamic_llama_causal.py
-import torch
 import torch.nn as nn
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
 from .dynamic_llama import (
     DynamicLlamaBlockWiseDecoderLayer,
     DynamicLlamaTokenWiseDecoderLayer,
 )
+
 
 class DynamicLlamaForCausalLM(LlamaForCausalLM):
     """
@@ -52,23 +53,20 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     def set_ce_bias(self, bias: float):
         self.ce_bias = bias
 
-    def prepare_inputs_for_generation(self,
-            input_ids,
-            past_key_values=None,
-            attention_mask=None,
-            **kwargs
-        ):
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, attention_mask=None, **kwargs
+    ):
         # first get the normal prepared inputs
         model_inputs = super().prepare_inputs_for_generation(
             input_ids,
             past_key_values=past_key_values,
             attention_mask=attention_mask,
-            **kwargs
+            **kwargs,
         )
         # now inject your dynamic params
-        model_inputs["dynamic_k"]        = self.dynamic_k
-        model_inputs["gate_warmup_iters"]= getattr(self, "gate_warmup_iters", 0)
-        model_inputs["ce_bias"]          = getattr(self, "ce_bias", 0.0)
+        model_inputs["dynamic_k"] = self.dynamic_k
+        model_inputs["gate_warmup_iters"] = getattr(self, "gate_warmup_iters", 0)
+        model_inputs["ce_bias"] = getattr(self, "ce_bias", 0.0)
         return model_inputs
 
     def enable_gate_logging(self, flag: bool = True):
@@ -82,13 +80,10 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         """
         return self._last_gate_means
 
-
     def forward(self, *args, **kwargs):
-        # ─────────── NEW: Pop your gating params ───────────
-        dynamic_k        = kwargs.pop("dynamic_k", None)
-        gate_warmup_iters= kwargs.pop("gate_warmup_iters", None)
-        ce_bias          = kwargs.pop("ce_bias", None)
-        # ───────────────────────────────────────────────────
+        dynamic_k = kwargs.pop("dynamic_k", None)
+        gate_warmup_iters = kwargs.pop("gate_warmup_iters", None)
+        ce_bias = kwargs.pop("ce_bias", None)
 
         # The decoder layers already look up dynamic_k from self.model_cfg,
         # so we simply make it available as an attribute:
@@ -104,9 +99,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
                 self._gate_means_tmp.append(gate_vec.mean().item())
                 return outputs
 
-            hooks = [
-                l.register_forward_hook(_collect) for l in self.model.layers
-            ]
+            hooks = [l.register_forward_hook(_collect) for l in self.model.layers]
         else:
             hooks = []
 

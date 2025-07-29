@@ -1,4 +1,5 @@
 import argparse
+
 from transformers import AutoConfig, AutoModelForCausalLM
 
 
@@ -29,7 +30,9 @@ def _patch_rope_scaling(config):
 
     # Ensure 'rope_type'
     if "rope_type" not in rs or rs["rope_type"] is None:
-        print(f"Patching rope_scaling['rope_type'] from {rs.get('rope_type')!r} → {rs['type']!r}")
+        print(
+            f"Patching rope_scaling['rope_type'] from {rs.get('rope_type')!r} → {rs['type']!r}"
+        )
         rs["rope_type"] = rs["type"]
 
     # Ensure 'factor'
@@ -47,9 +50,7 @@ def count_model_params(model_name_or_path: str) -> None:
     total/trainable/non-trainable parameter counts.
     """
     # 1) Load & patch config
-    config = AutoConfig.from_pretrained(
-        model_name_or_path, trust_remote_code=True
-    )
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
 
     # Patch pad_token_id if it's a list
     pad_val = getattr(config, "pad_token_id", None)

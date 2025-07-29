@@ -8,11 +8,16 @@
 # --max_eval_samples 512
 
 import argparse
-import math
-import re
-import torch
 import itertools
 import json
+import math
+import re
+
+import evaluate
+import torch
+from datasets import load_dataset
+from human_eval.data import read_problems
+from human_eval.evaluation import evaluate_functional_correctness
 from tqdm import tqdm
 from transformers import (
     AutoConfig,
@@ -20,10 +25,6 @@ from transformers import (
     AutoTokenizer,
     pipeline,
 )
-from datasets import load_dataset
-import evaluate
-from human_eval.data import read_problems
-from human_eval.evaluation import evaluate_functional_correctness
 
 # -----------------------------------------------------------------------------
 # UTILS
@@ -126,7 +127,9 @@ def mc_accuracy(
             with torch.no_grad():
                 logits = model(input_ids).logits
                 logprobs = torch.log_softmax(logits, dim=-1)
-                choice_logprobs = logprobs[0, prompt_len - 1 : -1]  # Skip BOS if present
+                choice_logprobs = logprobs[
+                    0, prompt_len - 1 : -1
+                ]  # Skip BOS if present
                 choice_ids = input_ids[0, prompt_len:]
                 gathered = torch.gather(
                     choice_logprobs, dim=1, index=choice_ids.unsqueeze(-1)
@@ -149,7 +152,11 @@ def generative_exact_match(gen_pipe, ds, question_key, context_key, answers_key)
     f1 = evaluate.load("f1")
     for ex in tqdm(ds, desc="Generative EM/F1"):
         prompt = f"Question: {ex[question_key]}\nContext: {ex[context_key]}\nAnswer:"
-        pred = gen_pipe(prompt, max_new_tokens=32, do_sample=False)[0]["generated_text"].split("Answer:")[-1].strip()
+        pred = (
+            gen_pipe(prompt, max_new_tokens=32, do_sample=False)[0]["generated_text"]
+            .split("Answer:")[-1]
+            .strip()
+        )
         refs = (
             ex[answers_key]["text"]
             if isinstance(ex[answers_key], dict)
@@ -180,7 +187,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--is_instruct", action="store_true", help="Model is instruct-tuned"
     )
-    parser.add_argument("--output_file", default="results.json", help="Output JSON file")
+    parser.add_argument(
+        "--output_file", default="results.json", help="Output JSON file"
+    )
     args = parser.parse_args()
 
     device = args.device
@@ -431,10 +440,13 @@ if __name__ == "__main__":
     mmlu_accs = []
     for subj in tqdm(subjects, desc="MMLU subjects"):
         try:
-            ds = load_dataset("cais/mmlu", subj, split=f"test[:{N}]")  # Use test for accuracy
+            ds = load_dataset(
+                "cais/mmlu", subj, split=f"test[:{N}]"
+            )  # Use test for accuracy
             # 5-shot: prepend first 5 dev examples
             dev = load_dataset("cais/mmlu", subj, split="dev")
             shot = dev.select(range(min(5, len(dev))))
+
             def make_prompt(ex):
                 ctx = ""
                 for s in shot:
@@ -442,9 +454,7 @@ if __name__ == "__main__":
                 return {"prompt": ctx + f"Question: {ex['question']}\nAnswer:"}
 
             test = ds.map(make_prompt)
-            test = test.map(
-                lambda ex: {"choices": ex["choices"], "gold": ex["answer"]}
-            )
+            test = test.map(lambda ex: {"choices": ex["choices"], "gold": ex["answer"]})
             acc = mc_accuracy(
                 model,
                 tokenizer,
@@ -462,9 +472,7 @@ if __name__ == "__main__":
 
     if mmlu_accs:
         mean_mmlu = sum(mmlu_accs) / len(mmlu_accs)
-        print(
-            f"  → MMLU (mean over {len(mmlu_accs)} subjects) = {mean_mmlu*100:.2f}%"
-        )
+        print(f"  → MMLU (mean over {len(mmlu_accs)} subjects) = {mean_mmlu*100:.2f}%")
         results["mmlu_mean"] = mean_mmlu
     else:
         print("  → No MMLU subjects loaded; skipping.")
@@ -568,7 +576,9 @@ if __name__ == "__main__":
 
     print("\n8) Summarization (TLDR9+, 1-shot)")
     try:
-        tldr = load_dataset("pszemraj/long-t5-tglobal-large-16384-pubmed-3k_steps", split=f"test[:{N}]")  # Approx for TLDR9+
+        tldr = load_dataset(
+            "pszemraj/long-t5-tglobal-large-16384-pubmed-3k_steps", split=f"test[:{N}]"
+        )  # Approx for TLDR9+
         rouge = evaluate.load("rouge")
         for ex in tqdm(tldr, desc="TLDR9+"):
             prompt = "Summarize: " + ex["input_text"][:512]  # 1-shot approx
@@ -582,7 +592,9 @@ if __name__ == "__main__":
 
     print("\n9) Re-writing (Open-rewrite eval, 0-shot)")
     try:
-        rewrite = load_dataset("tasksource/openai-rewrite", split=f"test[:{N}]")  # Approx
+        rewrite = load_dataset(
+            "tasksource/openai-rewrite", split=f"test[:{N}]"
+        )  # Approx
         rouge = evaluate.load("rouge")
         for ex in tqdm(rewrite, desc="Open-rewrite"):
             prompt = "Rewrite: " + ex["original"]
@@ -643,7 +655,9 @@ if __name__ == "__main__":
 
     print("\n12) Tool Use (BFCL V2, 0-shot)")
     try:
-        bfcl = load_dataset("livecodebench/bfcl", split=f"test[:{N}]")  # Approx for BFCL
+        bfcl = load_dataset(
+            "livecodebench/bfcl", split=f"test[:{N}]"
+        )  # Approx for BFCL
         acc_bfcl = mc_accuracy(
             model,
             tokenizer,
