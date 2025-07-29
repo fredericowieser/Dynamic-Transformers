@@ -1,6 +1,6 @@
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, random_split
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer, PreTrainedTokenizerBase, DataCollatorForLanguageModeling
 import logging
 import json
