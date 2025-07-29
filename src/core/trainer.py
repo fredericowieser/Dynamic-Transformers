@@ -25,6 +25,7 @@ class DynamicLlamaTrainer(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
         super().__init__()
         self.save_hyperparameters()
+        self.automatic_optimization = False
         self.model_cfg = model_cfg
         self.training_cfg = training_cfg
 
@@ -294,10 +295,28 @@ class DynamicLlamaTrainer(pl.LightningModule):
             self.log(f"{prefix}_dynamic_layer/cu_proportion/layer_{i}", prop, on_step=on_step, on_epoch=on_epoch)
 
     def training_step(self, batch, batch_idx):
+        # Manual optimization requires you to get the optimizers
+        opt_base, opt_prior = self.optimizers()
+
+        # Zero gradients for both optimizers
+        opt_base.zero_grad()
+        opt_prior.zero_grad()
+
+        # Calculate loss
         outputs = self._calculate_loss(batch)
+        total_loss = outputs[0]
+
+        # Manually perform the backward pass
+        self.manual_backward(total_loss)
+
+        # Step both optimizers
+        opt_base.step()
+        opt_prior.step()
+
+        # Log metrics
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
-        
-        # Console logging for rolling averages
+
+        # The rest of your logging logic remains unchanged
         per_layer_gate_stats = outputs[5]
         if self.trainer.global_step > 0:
             log_interval = self.trainer.log_every_n_steps
@@ -313,8 +332,6 @@ class DynamicLlamaTrainer(pl.LightningModule):
                         rolling_std = torch.tensor(list(history["std"])).std().item() if len(history["std"]) > 1 else 0.0
                         log_lines.append(f"  Layer {i}: Mean = {rolling_mean:.3f}, Std = {rolling_std:.3f}")
                 log.info("\n".join(log_lines))
-
-        return outputs[0] # Return total loss
 
     def validation_step(self, batch, batch_idx):
         outputs = self._calculate_loss(batch)
