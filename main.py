@@ -15,7 +15,7 @@ def main(cfg: DictConfig) -> None:
 
     # Instantiate DataModule
     log.info(f"Instantiating DataModule <{cfg.data._target_}>")
-    datamodule = hydra.utils.instantiate(cfg.data)
+    datamodule = hydra.utils.instantiate(cfg.data, _convert_="partial")
 
     # Instantiate Model
     log.info(f"Instantiating Model <{cfg.model._target_}>")
