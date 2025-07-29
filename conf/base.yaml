@@ -65,12 +65,16 @@ model:
 training:
   max_iters: 2000
   eval_interval: 100
+  
   optimizer:
-    base_lr: 5.0e-5
-    prior_ffn_lr: 5.0e-4 # Higher learning rate for the newly initialized parts
+    base_lr: 1.0e-4       # Max LR for base model
+    prior_ffn_lr: 1.0e-2  # Max LR for prior FFN
     weight_decay: 0.01
+
   scheduler:
-    warmup_steps: 100
+    factor: 0.1           # Factor to reduce LR by (e.g., 0.1 = 10x reduction)
+    patience: 10          # Epochs to wait for val_loss improvement before reducing LR
+
   gate_warmup_iters: 10 # Steps to warm up the dynamic gating mechanism
 
 logging:

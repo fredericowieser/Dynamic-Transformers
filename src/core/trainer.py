@@ -7,7 +7,6 @@ from omegaconf import DictConfig
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    get_linear_schedule_with_warmup,
     AutoConfig,
 )
 from src.models.dynamic_llama import (
@@ -326,23 +325,45 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self._log_step_metrics("test", outputs, on_step=False, on_epoch=True)
 
     def configure_optimizers(self):
-        param_groups = [
-            {"params": self.original_params, "lr": self.training_cfg.optimizer.base_lr},
-            {"params": self.new_prior_params, "lr": self.training_cfg.optimizer.prior_ffn_lr},
-        ]
-        optimizer = torch.optim.AdamW(
-            param_groups, weight_decay=self.training_cfg.optimizer.weight_decay
+        """
+        Configure two AdamW optimizers with separate ReduceLROnPlateau schedulers.
+        - One for the base model parameters.
+        - One for the new prior FFN parameters.
+        """
+        # Optimizer for the base model (e.g., initial LR 1e-4)
+        optimizer_base = torch.optim.AdamW(
+            self.original_params,
+            lr=self.training_cfg.optimizer.base_lr,
+            weight_decay=self.training_cfg.optimizer.weight_decay,
         )
-        total_training_steps = self.trainer.estimated_stepping_batches
-        if total_training_steps is None:
-            total_training_steps = self.training_cfg.max_iters
 
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=self.training_cfg.scheduler.warmup_steps,
-            num_training_steps=total_training_steps,
+        # Optimizer for the new prior FFN components (e.g., initial LR 1e-2)
+        optimizer_prior = torch.optim.AdamW(
+            self.new_prior_params,
+            lr=self.training_cfg.optimizer.prior_ffn_lr,
+            weight_decay=self.training_cfg.optimizer.weight_decay,
         )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
+
+        # Schedulers that reduce LR when validation loss plateaus
+        scheduler_base = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer_base,
+            mode="min",
+            factor=self.training_cfg.scheduler.factor,
+            patience=self.training_cfg.scheduler.patience,
+            min_lr=1e-5, # Shared minimum LR
+        )
+        scheduler_prior = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer_prior,
+            mode="min",
+            factor=self.training_cfg.scheduler.factor,
+            patience=self.training_cfg.scheduler.patience,
+            min_lr=1e-5, # Shared minimum LR
+        )
+
+        return (
+            [optimizer_base, optimizer_prior],
+            [
+                {"scheduler": scheduler_base, "monitor": "val/loss", "interval": "epoch"},
+                {"scheduler": scheduler_prior, "monitor": "val/loss", "interval": "epoch"},
+            ],
+        )
