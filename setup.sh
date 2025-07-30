@@ -8,9 +8,10 @@ echo "--- Starting Project Setup ---"
 # --- 1. Set Environment Variables for Better Debugging ---
 # HYDRA_FULL_ERROR=1: Prevents Hydra from truncating stack traces.
 # CUDA_LAUNCH_BLOCKING=1: Makes CUDA operations synchronous for clearer error messages.
-echo "Setting environment variables for debugging (HYDRA_FULL_ERROR=1, CUDA_LAUNCH_BLOCKING=1)..."
+echo "Setting environment variables..."
 export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
+export TOKENIZERS_PARALLELISM=false
 echo "Done."
 echo ""
 
