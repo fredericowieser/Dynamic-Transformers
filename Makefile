@@ -1,48 +1,61 @@
 # Makefile
 
 # --- Variables ---
-# (No variables needed here anymore—handled in scripts)
+# Define the Python version to use for the virtual environment
+PYTHON_VERSION := 3.10
+VENV_DIR := .venv
 
 # --- Targets ---
 
-.PHONY: setup help run train eval infer flush-gpu clean
+.PHONY: setup help run clean
 
-setup:
-    @./scripts/setup.sh
+setup: pyproject.toml # Ensure pyproject.toml exists before creating venv
+	@export PATH="$(HOME)/.local/bin:$$PATH"; \
+	echo "Checking for uv..."; \
+	if ! command -v uv >/dev/null 2>&1; then \
+		echo "uv not found, installing..."; \
+		curl -LsSf https://astral.sh/uv/install.sh | sh; \
+		echo "uv installed successfully."; \
+	fi; \
+	echo "Creating virtual environment with Python $(PYTHON_VERSION)..."; \
+	uv venv --python $(PYTHON_VERSION); \
+	echo "Virtual environment created at $(VENV_DIR)/"
+	@echo ""
+	@echo "Next steps:"
+	@echo "1. Activate the environment: source $(VENV_DIR)/bin/activate"
+	@echo "2. Install dependencies: uv pip sync pyproject.toml"
+	@echo "3. Login to wandb: wandb login"
+	@echo ""
+	@echo "Tip: If 'uv' isn't found in your terminal after setup, run..."
+	@echo "source $$HOME/.local/bin/env"
 
 help:
-    @echo "Available targets:"
-    @echo "  setup       Sets up the virtual environment, installs dependencies, and handles logins."
-    @echo "  train       Runs the training script with full stack traces (pass args like 'data=sft_mix')."
-    @echo "  eval        Runs the evaluation script with full stack traces (pass args like '--model_path=outputs/my_model')."
-    @echo "  infer       Runs the inference/chat script with full stack traces (pass args like '--prompt=\"Hello\"')."
-    @echo "  flush-gpu   Flushes GPU memory by killing processes using NVIDIA devices (requires sudo)."
-    @echo "  run         Legacy: Runs main training script with full stack traces (use 'train' instead)."
-    @echo "  clean       Removes virtual environment and __pycache__ folders."
-    @echo "  help        Displays this help message."
-    @echo ""
-    @echo "Environment notes: All Python runs enable HYDRA_FULL_ERROR=1 and CUDA_LAUNCH_BLOCKING=1 for full stack traces."
-    @echo "Tip: Pass arguments to targets like 'make train data=sft_mix'."
+	@echo "Available targets:"
+	@echo "  setup       Sets up the virtual environment and creates pyproject.toml if it doesn't exist."
+	@echo "  help        Displays this help message."
+	@echo ""
+	@echo "After running 'make setup', remember to activate the environment manually:"
+	@echo "  source .venv/bin/activate"
+	@echo "Then install dependencies: uv pip sync pyproject.toml"
+	@echo "And login to wandb: wandb login"
 
-# Capture all arguments passed to targets (excluding the target name itself)
-ARGS := $(filter-out $@,$(MAKECMDGOALS))
-# Prevent Make from trying to interpret ARGS as targets
-$(eval $(ARGS):;@:)
+# Capture all arguments passed to `make run`
+RUN_ARGS := $(filter-out run,$(MAKECMDGOALS))
+# Prevent Make from trying to interpret RUN_ARGS as targets
+$(eval $(RUN_ARGS):;@:)
 
 run:
-    @./scripts/run.sh $(ARGS)
-
-train:
-    @./scripts/train.sh $(ARGS)
-
-eval:
-    @./scripts/eval.sh $(ARGS)
-
-infer:
-    @./scripts/infer.sh $(ARGS)
-
-flush-gpu:
-    @./scripts/flush-gpu.sh
+	@echo "Running main training script..."
+	@if [ ! -d "$(VENV_DIR)" ]; then \
+		echo "Error: Virtual environment not found. Please run 'make setup' first."; \
+		exit 1; \
+	fi
+	@. $(VENV_DIR)/bin/activate && \
+	python main.py $(RUN_ARGS)
 
 clean:
-    @./scripts/clean.sh
+	@echo "Removing virtual environment: $(VENV_DIR)/"
+	@rm -rf $(VENV_DIR)
+	@echo "Removing all __pycache__ folders..."
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@echo "Cleanup complete."
