@@ -4,7 +4,7 @@ import sys
 import torch
 from transformers import AutoConfig, AutoTokenizer
 
-from src.models.dynamic_llama_causal import DynamicLlamaForCausalLM
+from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 
 
 def _patch_pad_token_id(config):

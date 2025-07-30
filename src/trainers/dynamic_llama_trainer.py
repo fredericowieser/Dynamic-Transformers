@@ -8,9 +8,8 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from src.models.dynamic_llama import (
-    DynamicLlamaBlockWiseDecoderLayer,
-    DynamicLlamaTokenWiseDecoderLayer,
+from models.d_llama_layers import (
+    DynamicLlamaDecoderLayer
 )
 
 log = logging.getLogger(__name__)
@@ -124,27 +123,26 @@ class DynamicLlamaTrainer(pl.LightningModule):
             )
 
     def _modify_model_architecture(self):
-        if self.model_cfg.token_wise:
-            log.info(
-                "Replacing LlamaDecoderLayer with DynamicLlamaTokenWiseDecoderLayer..."
-            )
-            new_layers = nn.ModuleList()
-            for i, layer in enumerate(self.model.model.layers):
-                custom_layer = DynamicLlamaTokenWiseDecoderLayer(self.model.config, i)
-                custom_layer.load_state_dict(layer.state_dict(), strict=False)
-                new_layers.append(custom_layer)
-            self.model.model.layers = new_layers
-        else:
-            log.info(
-                "Replacing LlamaDecoderLayer with DynamicLlamaBlockWiseDecoderLayer..."
-            )
-            new_layers = nn.ModuleList()
-            for i, layer in enumerate(self.model.model.layers):
-                custom_layer = DynamicLlamaBlockWiseDecoderLayer(self.model.config, i)
-                custom_layer.load_state_dict(layer.state_dict(), strict=False)
-                new_layers.append(custom_layer)
-            self.model.model.layers = new_layers
-        log.info("All Llama decoder layers have been replaced.")
+        """Replace standard Llama layers with Dynamic layers."""
+        log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
+        
+        # Add token_wise config to model config if not present
+        if not hasattr(self.model.config, 'token_wise'):
+            self.model.config.token_wise = self.model_cfg.token_wise
+        
+        # Add other dynamic configs
+        self.model.config.dynamic_k = getattr(self.model_cfg, 'dynamic_k', 0.5)
+        self.model.config.ce_bias = getattr(self.model_cfg, 'ce_bias', 0.0)
+        
+        new_layers = nn.ModuleList()
+        for i, layer in enumerate(self.model.model.layers):
+            # Single unified layer creation - config determines behavior
+            custom_layer = DynamicLlamaDecoderLayer(self.model.config, i)
+            custom_layer.load_state_dict(layer.state_dict(), strict=False)
+            new_layers.append(custom_layer)
+        
+        self.model.model.layers = new_layers
+        log.info(f"All {len(new_layers)} Llama decoder layers replaced with Dynamic layers (token_wise={self.model.config.token_wise})")
 
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")

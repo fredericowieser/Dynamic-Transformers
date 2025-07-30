@@ -2,22 +2,19 @@
 import torch.nn as nn
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
 
-from .dynamic_llama import (
-    DynamicLlamaBlockWiseDecoderLayer,
-    DynamicLlamaTokenWiseDecoderLayer,
-)
+from .d_llama_layers import DynamicLlamaDecoderLayer
 
 
 class DynamicLlamaForCausalLM(LlamaForCausalLM):
     """
     Llama-3 causal-LM whose decoder layers are replaced by the
-    Dynamic* layers that contain the extra prior-FFN + gate.
+    Dynamic layers that contain the extra prior-FFN + gate.
 
     Extra features:
-      • .dynamic_k (float) – gate hyper-parameter
+      • .dynamic_k (float) - gate hyper-parameter
       • .set_dynamic_k(k)
-      • .enable_gate_logging(bool)  – store gate means per layer
-      • .get_last_gate_means()      – list[float] for most recent fwd
+      • .enable_gate_logging(bool)  - store gate means per layer
+      • .get_last_gate_means()      - list[float] for most recent fwd
     """
 
     def __init__(self, config):
@@ -32,14 +29,9 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         self._last_gate_means = None
 
         # swap decoder layers
-        custom_cls = (
-            DynamicLlamaTokenWiseDecoderLayer
-            if self.token_wise
-            else DynamicLlamaBlockWiseDecoderLayer
-        )
         new_layers = nn.ModuleList()
         for i, old in enumerate(self.model.layers):
-            new = custom_cls(config, i)
+            new = DynamicLlamaDecoderLayer(config, i)
             new.load_state_dict(old.state_dict(), strict=False)
             new_layers.append(new)
         self.model.layers = new_layers
@@ -76,7 +68,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     def get_last_gate_means(self):
         """
         Returns a list of per-layer mean gate values from the *most
-        recent* forward / generate call – or None if logging disabled.
+        recent* forward / generate call - or None if logging disabled.
         """
         return self._last_gate_means
 
