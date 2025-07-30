@@ -48,24 +48,25 @@ def main():
 
     # Load & patch config
     config = AutoConfig.from_pretrained(args.model_path)
-    config = fix_pad_token_id(config)  # Replaces _patch_pad_token_id
-    config = fix_rope_scaling(config)  # Replaces _patch_rope_scaling
+    config = fix_pad_token_id(config)
+    config = fix_rope_scaling(config)
 
-    # Tokenizer + model (tokenizer handling simplified using fixed config)
+    # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = config.pad_token_id or tokenizer.eos_token_id
 
+    # Model
     model = DynamicLlamaForCausalLM.from_pretrained(
         args.model_path,
         config=config,
         torch_dtype=torch.bfloat16,
+        device_map="auto" if device == "cuda" else None,  # Add this line to handle multi-GPU/CPU loading
     )
+    model.eval()
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
         model.config.pad_token_id = tokenizer.eos_token_id
-
-        model.to(device).eval()
 
     # Inference‐time gating params
     if args.dynamic_k is not None:
