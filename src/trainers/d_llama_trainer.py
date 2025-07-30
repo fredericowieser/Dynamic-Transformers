@@ -8,10 +8,10 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from models.d_llama_layers import (
+from src.models.d_llama_layers import (
     DynamicLlamaDecoderLayer
 )
-from utils.llamam_config_utils import (
+from src.utils.llamam_config_utils import (
     fix_rope_scaling,
     fix_pad_token_id,
 )

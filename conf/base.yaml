@@ -9,7 +9,7 @@ defaults:
   - data: sft_mix # This sets sft_mix as the default configuration.
 
 run:
-  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}"
+  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto" # "cpu", "cuda", "mps", etc.
@@ -20,7 +20,7 @@ data:
   name: ${hydra:runtime.choices.data}
 
 model:
-  _target_: src.trainers.dynamic_llama_trainer.DynamicLlamaTrainer  # Updated: New path to trainer
+  _target_: src.trainers.d_llama_trainer.DynamicLlamaTrainer  # Updated: New path to trainer
   model_cfg:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
