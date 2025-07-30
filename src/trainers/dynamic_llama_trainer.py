@@ -11,6 +11,10 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from models.d_llama_layers import (
     DynamicLlamaDecoderLayer
 )
+from utils.llamam_config_utils import (
+    fix_rope_scaling,
+    fix_pad_token_id,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,69 +36,10 @@ class DynamicLlamaTrainer(pl.LightningModule):
         config = AutoConfig.from_pretrained(self.model_cfg.model_name)
         log.info(f"Original config.json for {self.model_cfg.model_name}:")
         log.info(config.to_dict())
+        config = fix_rope_scaling(config)
+        config = fix_pad_token_id(config)
 
-        # FIX: Handle potential missing 'type' in 'rope_scaling' with extra robustness
-        # The LlamaRotaryEmbedding constructor uses:
-        # self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling["type"])
-        # This will KeyError if config.rope_scaling["type"] is missing AND config.rope_scaling.get("rope_type") is None.
-
-        # Ensure 'rope_scaling' is a dictionary. If it's not present or is not a dict, create a default.
-        if (
-            not hasattr(config, "rope_scaling")
-            or config.rope_scaling is None
-            or not isinstance(config.rope_scaling, dict)
-        ):
-            original_rope_scaling_value = getattr(config, "rope_scaling", "N/A")
-            log.warning(
-                f"Config for {self.model_cfg.model_name} `rope_scaling` is missing or not a dict (was: {original_rope_scaling_value}). "
-                "Initializing `rope_scaling` with default 'linear' type and factor 1.0."
-            )
-            config.rope_scaling = {"type": "linear", "factor": 1.0}
-
-        # If rope_scaling exists and is a dict, ensure it has both 'rope_type' and 'type' to be safe.
-        # This is a defensive move against subtle behaviors of .get() or unexpected internal logic.
-        if (
-            "rope_type" in config.rope_scaling
-            and config.rope_scaling["rope_type"] is not None
-        ):
-            # If rope_type is present and not None, ensure 'type' is also set to a consistent value
-            # so the fallback in LlamaRotaryEmbedding never causes KeyError.
-            if "type" not in config.rope_scaling:
-                log.warning(
-                    f"Config for {self.model_cfg.model_name} `rope_scaling` has 'rope_type' but no 'type'. "
-                    f"Setting `rope_scaling.type` to be consistent with 'rope_type': {config.rope_scaling['rope_type']}."
-                )
-                config.rope_scaling["type"] = config.rope_scaling["rope_type"]
-        else:  # 'rope_type' is missing or None
-            # If 'rope_type' is missing or None, then 'type' is the primary one. Ensure it exists.
-            if "type" not in config.rope_scaling:
-                log.warning(
-                    f"Config for {self.model_cfg.model_name} `rope_scaling` lacks 'rope_type' (or it's None) and 'type'. "
-                    "Setting `rope_scaling.type` to 'linear' and `factor` to 1.0."
-                )
-                config.rope_scaling["type"] = "linear"
-                config.rope_scaling["factor"] = config.rope_scaling.get("factor", 1.0)
-
-            # Ensure rope_type is also set if type is set but rope_type is missing/None
-            if (
-                "rope_type" not in config.rope_scaling
-                or config.rope_scaling["rope_type"] is None
-            ):
-                config.rope_scaling["rope_type"] = config.rope_scaling[
-                    "type"
-                ]  # Make them consistent
-
-        # Finally, ensure factor is present if it's a scaling config
-        if "factor" not in config.rope_scaling:
-            log.warning(
-                f"Config for {self.model_cfg.model_name} `rope_scaling` lacks 'factor'. Setting to 1.0."
-            )
-            config.rope_scaling["factor"] = 1.0
-
-        log.info(
-            f"Modified config.rope_scaling before model loading: {config.rope_scaling}"
-        )
-
+        
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_cfg.model_name,
             torch_dtype=torch.bfloat16,
@@ -106,10 +51,15 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         # Set the tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.model.config.pad_token_id = self.model.config.eos_token_id
-
+        if self.tokenizer.pad_token_id is None:
+            # Use the fixed config's pad_token_id if available, else fallback to eos_token
+            if config.pad_token_id is not None:
+                self.tokenizer.pad_token_id = config.pad_token_id
+            else:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            # Sync back to model config for consistency
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
         self._modify_model_architecture()
         self._setup_parameter_groups()
 

@@ -4,51 +4,13 @@ import sys
 import torch
 from transformers import AutoConfig, AutoTokenizer
 
-from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
-
-
-def _patch_pad_token_id(config):
-    """Fixes pad_token_id if it's a list, which causes errors."""
-    pad_val = getattr(config, "pad_token_id", None)
-    if isinstance(pad_val, (list, tuple)):
-        patched = pad_val[0] if len(pad_val) > 0 else None
-        print(
-            f"INFO: Patching config.pad_token_id from {pad_val} -> {patched}",
-            file=sys.stderr,
-        )
-        config.pad_token_id = patched
-
-
-def _patch_rope_scaling(config):
-    """Ensures rope_scaling is a valid dict to prevent loading errors."""
-    rs = getattr(config, "rope_scaling", None)
-    if rs is None or not isinstance(rs, dict):
-        print(
-            f"INFO: Patching missing/invalid rope_scaling (was {rs!r}) -> {{'type':'linear', ...}}",
-            file=sys.stderr,
-        )
-        config.rope_scaling = {"type": "linear", "rope_type": "linear", "factor": 1.0}
-        return
-    if "type" not in rs or rs["type"] is None:
-        new_type = rs.get("rope_type") or "linear"
-        print(
-            f"INFO: Patching rope_scaling['type'] from {rs.get('type')!r} -> {new_type!r}",
-            file=sys.stderr,
-        )
-        rs["type"] = new_type
-    if "rope_type" not in rs or rs["rope_type"] is None:
-        print(
-            f"INFO: Patching rope_scaling['rope_type'] from {rs.get('rope_type')!r} -> {rs['type']!r}",
-            file=sys.stderr,
-        )
-        rs["rope_type"] = rs["type"]
-    if "factor" not in rs or rs["factor"] is None:
-        print(
-            f"INFO: Patching rope_scaling['factor'] from {rs.get('factor')!r} -> 1.0",
-            file=sys.stderr,
-        )
-        rs["factor"] = 1.0
-    config.rope_scaling = rs
+from src.models.d_llama_causal_lm import (
+    DynamicLlamaForCausalLM,
+)
+from src.utils.llamam_config_utils import (
+    fix_rope_scaling,
+    fix_pad_token_id,
+)
 
 
 def main():
@@ -86,11 +48,14 @@ def main():
 
     # Load & patch config
     config = AutoConfig.from_pretrained(args.model_path)
-    _patch_pad_token_id(config)
-    _patch_rope_scaling(config)
+    config = fix_pad_token_id(config)  # Replaces _patch_pad_token_id
+    config = fix_rope_scaling(config)  # Replaces _patch_rope_scaling
 
-    # Tokenizer + model
+    # Tokenizer + model (tokenizer handling simplified using fixed config)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = config.pad_token_id or tokenizer.eos_token_id
+
     model = DynamicLlamaForCausalLM.from_pretrained(
         args.model_path,
         config=config,
@@ -100,9 +65,9 @@ def main():
         tokenizer.pad_token_id = tokenizer.eos_token_id
         model.config.pad_token_id = tokenizer.eos_token_id
 
-    model.to(device).eval()
+        model.to(device).eval()
 
-    # ─────── Inference‐time gating params ───────
+    # Inference‐time gating params
     if args.dynamic_k is not None:
         model.config.dynamic_k = args.dynamic_k
         print(f"Set dynamic_k to: {args.dynamic_k}", file=sys.stderr)
@@ -111,7 +76,6 @@ def main():
     # CE bias override
     model.config.ce_bias = args.ce_bias
     print(f"Set ce_bias to: {args.ce_bias}", file=sys.stderr)
-    # ─────────────────────────────────────────────
 
     # Sanity check
     if not isinstance(model, DynamicLlamaForCausalLM):
