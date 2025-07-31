@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Terminal chat for any HF causal LM with streaming,
-letting the model decide when to stop (via its EOS token).
-"""
 import argparse
 import threading
 import sys
@@ -15,9 +10,47 @@ from transformers import (
 )
 
 
+def build_prompt(system_prompt, history, tokenizer):
+    """
+    Build a single prompt string using LLaMA’s chat template.
+
+    <s>[INST] <<SYS>>
+    {system_prompt}
+    <</SYS>>
+
+    {user1} [/INST]
+    {assistant1}
+    [INST] {user2} [/INST]
+    {assistant2}
+    …
+    [INST] {last_user} [/INST]
+    """
+    bos = tokenizer.bos_token or "<s>"
+    inst = "[INST]"
+    inst_end = "[/INST]"
+    sys_open = "<<SYS>>"
+    sys_close = "<</SYS>>"
+
+    # start with BOS + system block
+    prompt = f"{bos}{inst} {sys_open}\n{system_prompt}\n{sys_close}"
+
+    # interleave user / assistant turns
+    for msg in history:
+        role, content = msg["role"], msg["content"].strip()
+        if role == "user":
+            # open a new user instruction
+            prompt += f"\n\n{content} {inst_end}"
+        else:  # assistant
+            # assistant reply follows immediately
+            prompt += f"\n\n{content}"
+
+    # model will generate the assistant reply to the last user
+    return prompt
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Chat with an HF causal LM (streaming)"
+        description="Chat with an HF causal LM (streaming) using LLaMA chat template"
     )
     parser.add_argument(
         "model_name",
@@ -62,10 +95,10 @@ def main():
     model.to(device).eval()
     print("✅ Model loaded", file=sys.stderr)
 
-    # history + system prompt
-    system = "System: You are a helpful assistant.\n"
-    history = system
-    sep = "\n"
+    # system prompt and history (list of dicts)
+    system_prompt = "You are a helpful assistant."
+    history = []
+
     print("=== Chat ready (type 'exit' or Ctrl-C to quit) ===", file=sys.stderr)
 
     while True:
@@ -79,9 +112,11 @@ def main():
             print("Goodbye!", file=sys.stderr)
             break
 
-        # append to history
-        history += f"User: {user_in}{sep}Assistant: "
-        prompt = history
+        # add user message
+        history.append({"role": "user", "content": user_in})
+
+        # build LLaMA chat prompt
+        prompt = build_prompt(system_prompt, history, tokenizer)
 
         # tokenize
         inputs = tokenizer(prompt, return_tensors="pt")
@@ -128,8 +163,10 @@ def main():
         thread.join()
         print()  # newline
 
-        # update history
-        history += assistant_out + sep
+        # add assistant message
+        history.append({"role": "assistant", "content": assistant_out})
+
+    # end while
 
 
 if __name__ == "__main__":
