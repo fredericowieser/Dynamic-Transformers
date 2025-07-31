@@ -1,54 +1,83 @@
 import argparse
+import os
 import sys
 
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 
+try:
+    from safetensors.torch import load_file as safe_load
+except ImportError:
+    safe_load = None
+
+
+def load_weights(model, model_dir, device):
+    """
+    Try to load weights from safetensors first, then .bin.
+    """
+    # 1) safetensors
+    if safe_load:
+        path = os.path.join(model_dir, "pytorch_model.safetensors")
+        if os.path.isfile(path):
+            sd = safe_load(path, device=device)
+            model.load_state_dict(sd, strict=False)
+            return
+    # 2) fallback to .bin
+    path = os.path.join(model_dir, "pytorch_model.bin")
+    if os.path.isfile(path):
+        sd = torch.load(path, map_location=device)
+        model.load_state_dict(sd, strict=False)
+        return
+
+    raise FileNotFoundError(
+        "No `pytorch_model.safetensors` or `pytorch_model.bin` in " + model_dir
+    )
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inference for DynamicLlamaForCausalLM"
+        description="Infer with DynamicLlamaForCausalLM (manual load)"
     )
     parser.add_argument(
-        "model_path", type=str, help="Path to the saved model directory"
+        "model_dir", help="Path to saved `final_model` folder"
     )
     parser.add_argument(
         "--prompt",
         type=str,
         default="Once upon a time,",
-        help="Text prompt for generation",
+        help="Text prompt",
     )
     parser.add_argument(
         "--dynamic_k",
         type=float,
         default=None,
-        help="Override model.config.dynamic_k",
+        help="Override config.dynamic_k",
     )
     parser.add_argument(
         "--ce_bias",
         type=float,
         default=None,
-        help="Override model.config.ce_bias",
+        help="Override config.ce_bias",
     )
     parser.add_argument(
         "--gate_warmup_iters",
         type=int,
         default=0,
-        help="Number of warmup iters (set to 0 to disable at inference)",
+        help="Override config.gate_warmup_iters",
     )
     parser.add_argument(
         "--print_gates",
         action="store_true",
-        help="Enable and print per-layer gate activation stats",
+        help="Log per-layer gate activations",
     )
     parser.add_argument(
         "--max_new_tokens",
         type=int,
         default=128,
-        help="Maximum number of tokens to generate",
+        help="Number of new tokens to generate",
     )
     parser.add_argument(
         "--temperature",
@@ -60,70 +89,68 @@ def main():
         "--top_p",
         type=float,
         default=0.9,
-        help="Nucleus sampling top-p",
+        help="Top-p nucleus sampling",
     )
     parser.add_argument(
         "--do_sample",
         action="store_true",
-        help="Enable sampling (otherwise greedy)",
+        help="Enable sampling; otherwise greedy",
     )
     args = parser.parse_args()
 
-    # device & dtype
+    # 1) Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    # register custom config/model so Auto* picks them up
-    AutoConfig.register("dynamic_llama", DynamicLlamaConfig)
-    AutoModelForCausalLM.register(DynamicLlamaConfig, DynamicLlamaForCausalLM)
-
-    # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    # 2) Load config + tokenizer
+    config = DynamicLlamaConfig.from_pretrained(args.model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token_id = config.pad_token_id or tokenizer.eos_token_id
+    config.pad_token_id = tokenizer.pad_token_id
 
-    # model (do NOT pass config= here)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
+    # 3) Build model & load weights manually
+    model = DynamicLlamaForCausalLM(config)
     model.to(device)
-    model.config.pad_token_id = tokenizer.pad_token_id
+    model.eval()
 
-    # override dynamic params
+    load_weights(model, args.model_dir, device)
+    print("✅ Model weights loaded", file=sys.stderr)
+
+    # 4) Override dynamic params
     if args.dynamic_k is not None:
         model.set_dynamic_k(args.dynamic_k)
+        print(f"-> dynamic_k = {args.dynamic_k}", file=sys.stderr)
     model.set_gate_warmup_iters(args.gate_warmup_iters)
     if args.ce_bias is not None:
         model.set_ce_bias(args.ce_bias)
+        print(f"-> ce_bias = {args.ce_bias}", file=sys.stderr)
 
-    # optional gate logging: accumulate per-layer means each forward call
-    accum = []
+    # 5) Optional gate logging
+    accum_means = []
     if args.print_gates and hasattr(model, "enable_gate_logging"):
         model.enable_gate_logging(True)
-        orig_fwd = model.forward
+        original_forward = model.forward
 
         def wrapped_forward(*f_args, **f_kwargs):
-            out = orig_fwd(*f_args, **f_kwargs)
+            out = original_forward(*f_args, **f_kwargs)
             if model._log_gates:
-                means = model.get_last_gate_means()
-                if means:
-                    accum.append(means.copy())
+                last = model.get_last_gate_means()
+                if last:
+                    accum_means.append(last.copy())
             return out
 
         model.forward = wrapped_forward
-        print("Gate logging enabled.", file=sys.stderr)
+        print("✅ Gate logging enabled", file=sys.stderr)
 
-    # tokenize prompt
+    # 6) Tokenize prompt
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
-    # generation (disable use_cache so gating runs each step)
-    model.eval()
+    # 7) Generate
     with torch.no_grad(), torch.autocast(
         device_type=device.split(":")[0], dtype=torch.bfloat16
     ):
-        output_ids = model.generate(
+        outputs = model.generate(
             **inputs,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
@@ -131,23 +158,23 @@ def main():
             do_sample=args.do_sample,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            use_cache=False,
+            use_cache=False,  # ensure full forward each step
         )
 
-    # decode only the newly generated tokens
-    gen_tokens = output_ids[0, inputs.input_ids.shape[1] :].tolist()
-    completion = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+    # 8) Decode only new tokens
+    gen = outputs[0, inputs.input_ids.shape[1] :].tolist()
+    completion = tokenizer.decode(gen, skip_special_tokens=True)
     print("\n--- Completion ---")
     print(completion.strip())
 
-    # print gate stats if requested
-    if args.print_gates and accum:
-        arr = torch.tensor(accum)  # shape: (num_steps, num_layers)
-        means = arr.mean(dim=0)
-        stds = arr.std(dim=0, unbiased=False)
-        print(f"\n--- Gate Activations (over {len(accum)} steps) ---")
-        for i, (m, s) in enumerate(zip(means.tolist(), stds.tolist())):
-            print(f"Layer {i:2d}: {m:.4f} ± {s:.4f}")
+    # 9) Print gate stats if requested
+    if args.print_gates and accum_means:
+        arr = torch.tensor(accum_means)  # (steps, layers)
+        m = arr.mean(dim=0)
+        s = arr.std(dim=0, unbiased=False)
+        print(f"\n--- Gate activations over {len(arr)} steps ---")
+        for i, (mi, si) in enumerate(zip(m.tolist(), s.tolist())):
+            print(f"Layer {i:2d}: {mi:.4f} ± {si:.4f}")
 
 
 if __name__ == "__main__":
