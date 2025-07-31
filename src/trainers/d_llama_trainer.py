@@ -172,24 +172,14 @@ class DynamicLlamaTrainer(pl.LightningModule):
             cu_proportions_per_layer,
         ) = outputs
 
-        self.log(
-            f"{prefix}/loss",
-            total_loss,
-            on_step=on_step,
-            on_epoch=on_epoch,
-            prog_bar=True,
-        )
-        self.log(
-            f"{prefix}/lm_loss",
-            lm_loss,
-            on_step=on_step,
-            on_epoch=on_epoch,
-            prog_bar=True,
-        )
-        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
-        self.log(f"{prefix}/perplexity", perplexity, on_step=on_step, on_epoch=on_epoch)
-
-        # Log overall gate, CE, and CU metrics
+        self.log(f"{prefix}/loss", total_loss,
+                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/lm_loss", lm_loss,
+                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(f"{prefix}/prior_loss", prior_loss,
+                 on_step=on_step, on_epoch=on_epoch)
+        self.log(f"{prefix}/perplexity", perplexity,
+                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
         self.log(
             f"{prefix}_dynamic_model/overall_gate_activation_mean",
             overall_gate_activation_mean,
@@ -305,53 +295,29 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self._log_step_metrics("test", outputs, on_step=False, on_epoch=True)
 
     def configure_optimizers(self):
-        """
-        Configure two AdamW optimizers with separate ReduceLROnPlateau schedulers.
-        - One for the base model parameters.
-        - One for the new prior FFN parameters.
-        """
-        # Optimizer for the base model (e.g., initial LR 1e-4)
-        optimizer_base = torch.optim.AdamW(
-            self.original_params,
-            lr=self.training_cfg.optimizer.base_lr,
-            weight_decay=self.training_cfg.optimizer.weight_decay,
-        )
-
-        # Optimizer for the new prior FFN components (e.g., initial LR 1e-2)
-        optimizer_prior = torch.optim.AdamW(
-            self.new_prior_params,
-            lr=self.training_cfg.optimizer.prior_ffn_lr,
-            weight_decay=self.training_cfg.optimizer.weight_decay,
-        )
-
-        # Schedulers that reduce LR when validation loss plateaus
-        scheduler_base = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer_base,
-            mode="min",
-            factor=self.training_cfg.scheduler.factor,
-            patience=self.training_cfg.scheduler.patience,
-            min_lr=1e-5,  # Shared minimum LR
-        )
-        scheduler_prior = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer_prior,
-            mode="min",
-            factor=self.training_cfg.scheduler.factor,
-            patience=self.training_cfg.scheduler.patience,
-            min_lr=1e-5,  # Shared minimum LR
-        )
-
-        return (
-            [optimizer_base, optimizer_prior],
-            [
-                {
-                    "scheduler": scheduler_base,
-                    "monitor": "val/loss",
-                    "interval": "epoch",
-                },
-                {
-                    "scheduler": scheduler_prior,
-                    "monitor": "val/loss",
-                    "interval": "epoch",
-                },
-            ],
-        )
+        optimizers = [
+            torch.optim.AdamW(
+                self.original_params,
+                lr=self.training_cfg.optimizer.base_lr,
+                weight_decay=self.training_cfg.optimizer.weight_decay,
+            ),
+            torch.optim.AdamW(
+                self.new_prior_params,
+                lr=self.training_cfg.optimizer.prior_ffn_lr,
+                weight_decay=self.training_cfg.optimizer.weight_decay,
+            ),
+        ]
+        schedulers = []
+        for opt in optimizers:
+            schedulers.append({
+                "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    opt,
+                    mode="min",
+                    factor=self.training_cfg.scheduler.factor,
+                    patience=self.training_cfg.scheduler.patience,
+                    min_lr=1e-5,  # Shared minimum LR
+                ),
+                "monitor":  "val/loss",
+                "interval": "epoch",
+            })
+        return optimizers, schedulers
