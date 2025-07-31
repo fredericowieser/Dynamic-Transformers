@@ -209,14 +209,21 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        # Load the config first, but don't pass it explicitly to super
         config = DynamicLlamaConfig.from_pretrained(pretrained_model_name_or_path)
-        model = super().from_pretrained(
-            pretrained_model_name_or_path, config=config, *model_args, **kwargs
-        )
-        if not isinstance(model, cls):
-            model = cls(config)
-            model.load_state_dict(
-                torch.load(pretrained_model_name_or_path + "/pytorch_model.bin"),
-                strict=False,
-            )
+        
+        # Call super without config; let it load from the path
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        
+        # Now, ensure the model uses your custom config if needed
+        if not isinstance(model.config, DynamicLlamaConfig):
+            model.config = config  # Override with your custom config
+        
+        # Apply any additional customizations (e.g., for dynamic_k or ce_bias)
+        if hasattr(model.config, 'dynamic_k'):
+            model.config.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
+        if hasattr(model.config, 'ce_bias'):
+            model.config.ce_bias = kwargs.get('ce_bias', model.config.ce_bias)
+        
+        # Rest of your original code, e.g., loading state dict if needed
         return model
