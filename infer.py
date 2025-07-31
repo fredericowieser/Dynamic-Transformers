@@ -5,7 +5,6 @@ import torch
 from transformers import AutoConfig, AutoTokenizer
 
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
-from src.utils.llamam_config_utils import fix_pad_token_id, fix_rope_scaling
 
 
 def main():
@@ -16,7 +15,10 @@ def main():
         "model_path", type=str, help="Path to the saved model directory."
     )
     parser.add_argument(
-        "--prompt", type=str, required=True, help="The input prompt for the model."
+        "--prompt",
+        type=str,
+        default="Once upon a time,",
+        help="The input prompt for the model."
     )
     parser.add_argument(
         "--dynamic_k",
@@ -27,8 +29,8 @@ def main():
     parser.add_argument(
         "--ce_bias",
         type=float,
-        default=0.0,
-        help="Override the model's default CE‐bias.",
+        default=None,
+        help="Override the model's default CE-bias.",
     )
     parser.add_argument(
         "--print_gates",
@@ -41,10 +43,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    # Load & patch config
+    # Load config (fixes are now handled in model init)
     config = AutoConfig.from_pretrained(args.model_path)
-    config = fix_pad_token_id(config)
-    config = fix_rope_scaling(config)
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
@@ -65,15 +65,16 @@ def main():
         tokenizer.pad_token_id = tokenizer.eos_token_id
         model.config.pad_token_id = tokenizer.eos_token_id
 
-    # Inference‐time gating params
+    # Inference-time gating params (overrides; model will validate)
     if args.dynamic_k is not None:
-        model.config.dynamic_k = args.dynamic_k
+        model.set_dynamic_k(args.dynamic_k)
         print(f"Set dynamic_k to: {args.dynamic_k}", file=sys.stderr)
     # Always disable warmup at inference
-    model.config.gate_warmup_iters = 0
+    model.set_gate_warmup_iters(0)
     # CE bias override
-    model.config.ce_bias = args.ce_bias
-    print(f"Set ce_bias to: {args.ce_bias}", file=sys.stderr)
+    if args.ce_bias is not None:
+        model.set_ce_bias(args.ce_bias)
+        print(f"Set ce_bias to: {args.ce_bias}", file=sys.stderr)
 
     # Sanity check
     if not isinstance(model, DynamicLlamaForCausalLM):
@@ -133,7 +134,7 @@ def main():
     print("\n--- Completion ---")
     print(completion.strip())
 
-    # Print overall gate‐stats
+    # Print overall gate-stats
     if args.print_gates:
         n_tokens = len(accum_gate_means[0]) if accum_gate_means else 0
         print(f"\n--- Per-Layer Gate Stats (mean ± std over {n_tokens} tokens) ---")
