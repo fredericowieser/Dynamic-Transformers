@@ -32,7 +32,7 @@ model:
 
 training:
   accumulate_grad_batches: 4
-  max_iters: 10000
+  max_iters: 200
   eval_interval: 100
   
   optimizer:
