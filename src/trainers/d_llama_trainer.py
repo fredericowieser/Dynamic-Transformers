@@ -72,7 +72,7 @@ class DynamicLlamaTrainer(pl.LightningModule):
         ]
         self.original_params = [
             p for n, p in named
-            if p not in self.new_prior_params
+            if "prior_ffn" not in n and "prior_layernorm" not in n
         ]
         for p in self.original_params:
             p.requires_grad = True
