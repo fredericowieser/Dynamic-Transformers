@@ -10,27 +10,8 @@ from transformers import (
     TextIteratorStreamer,
 )
 
-# import your fixes
 from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
-def build_prompt(system_prompt, history, tokenizer):
-    bos = tokenizer.bos_token or "<s>"
-    inst, inst_end = "[INST]", "[/INST]"
-    sys_open, sys_close = "<<SYS>>", "<</SYS>>"
-    prompt = f"{bos}{inst} {sys_open}\n{system_prompt}\n{sys_close}\n\n"
-
-    # history is a list of dicts {role:"user"/"assistant", content:str}
-    for msg in history:
-        if msg["role"] == "user":
-            # open a fresh INST block for every user
-            prompt += f"{inst} {msg['content']} {inst_end}\n"
-        else:
-            # assistant text follows, then two newlines
-            prompt += f"{msg['content']}\n\n"
-
-    # At this point, history should end in a user message
-    # so the model will generate the assistant response
-    return prompt
 
 def main():
     parser = argparse.ArgumentParser(
@@ -103,9 +84,9 @@ def main():
 
         history.append({"role": "user", "content": user_in})
         messages = [{"role": "system", "content": system_prompt}] + history
-        prompt = build_prompt(
+        prompt = tokenizer.apply_chat_template(
             messages, 
-            tokenizer=False,
+            tokenize=False,
             add_generation_prompt=True,
         )
 
