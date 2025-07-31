@@ -2,10 +2,14 @@ import argparse
 import sys
 
 import torch
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM
 
+from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 
+# Register custom model type with HF Auto classes
+AutoConfig.register("dynamic_llama", DynamicLlamaConfig)
+AutoModelForCausalLM.register(DynamicLlamaConfig, DynamicLlamaForCausalLM)
 
 def main():
     parser = argparse.ArgumentParser(
