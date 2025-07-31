@@ -87,7 +87,7 @@ def main():
         args.model_name,
         config=config,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto",
+        device_map="cuda" if device == "cuda" else "cpu",
     )
     model.eval()
 
