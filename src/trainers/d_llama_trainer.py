@@ -63,30 +63,6 @@ class DynamicLlamaTrainer(pl.LightningModule):
                 }
             )
 
-    def _modify_model_architecture(self):
-        """Replace standard Llama layers with Dynamic layers."""
-        log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
-
-        # Add token_wise config to model config if not present
-        if not hasattr(self.model.config, "token_wise"):
-            self.model.config.token_wise = self.model_cfg.token_wise
-
-        # Add other dynamic configs
-        self.model.config.dynamic_k = getattr(self.model_cfg, "dynamic_k", 0.5)
-        self.model.config.ce_bias = getattr(self.model_cfg, "ce_bias", 0.0)
-
-        new_layers = nn.ModuleList()
-        for i, layer in enumerate(self.model.model.layers):
-            # Single unified layer creation - config determines behavior
-            custom_layer = DynamicLlamaDecoderLayer(self.model.config, i)
-            custom_layer.load_state_dict(layer.state_dict(), strict=False)
-            new_layers.append(custom_layer)
-
-        self.model.model.layers = new_layers
-        log.info(
-            f"All {len(new_layers)} Llama decoder layers replaced with Dynamic layers (token_wise={self.model.config.token_wise})"
-        )
-
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")
         self.original_params = []
@@ -103,102 +79,13 @@ class DynamicLlamaTrainer(pl.LightningModule):
         )
 
     def forward(self, **inputs) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        current_iter = self.global_step
-        gate_warmup_iters = self.training_cfg.gate_warmup_iters
-        dynamic_k = self.model_cfg.dynamic_k
-        ce_bias = self.model_cfg.ce_bias
-
-        input_ids = inputs["input_ids"]
-        hidden_states = self.model.model.embed_tokens(inputs["input_ids"])
-        # attention_mask = inputs.get("attention_mask")
-
-        batch_size, seq_len = input_ids.shape
-        device = input_ids.device
-        dtype = hidden_states.dtype
-
-        # FIX: Generate position_ids if not provided by the batch
-        position_ids = inputs.get("position_ids")
-        if position_ids is None:
-            # Generate default position_ids: a tensor of increasing integers (0, 1, 2, ...)
-            # for each sequence in the batch.
-            seq_len = input_ids.shape[1]
-            position_ids = (
-                torch.arange(
-                    seq_len,
-                    dtype=torch.long,
-                    device=input_ids.device,
-                )
-                .unsqueeze(0)  # Add batch dimension
-                .expand(input_ids.shape[0], -1)  # Expand to match batch size
-            )
-
-        # FIX: Prepare the 4D attention mask
-        # Get the original 2D attention_mask (padding mask) from inputs
-        padding_attention_mask_2d = inputs.get("attention_mask")
-
-        # Create a base causal mask (lower triangular)
-        # It's (seq_len, seq_len) with -inf for future tokens
-        causal_mask_base = torch.full(
-            (seq_len, seq_len), torch.finfo(dtype).min, device=device
-        )
-        causal_mask_base = torch.triu(causal_mask_base, diagonal=1)
-
-        # Expand padding_attention_mask_2d to (batch_size, 1, 1, seq_len)
-        # This will contain 0 for actual tokens and -inf for padded tokens
-        # We need to broadcast it with the causal mask.
-        if padding_attention_mask_2d is not None:
-            expanded_padding_mask = (
-                (1 - padding_attention_mask_2d)
-                .bool()
-                .to(dtype)
-                .masked_fill_(
-                    (1 - padding_attention_mask_2d).bool(), torch.finfo(dtype).min
-                )
-                .unsqueeze(1)  # Add head dim
-                .unsqueeze(1)  # Add query sequence dim
-            )  # Shape: (batch_size, 1, 1, seq_len)
-
-            # Combine causal mask with padding mask using broadcasting
-            # The result will be (batch_size, 1, seq_len, seq_len)
-            attention_mask_4d = causal_mask_base + expanded_padding_mask
-        else:
-            # If no padding mask is provided, use only the causal mask
-            attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(
-                0
-            )  # -> (1, 1, seq_len, seq_len)
-            attention_mask_4d = attention_mask_4d.expand(
-                batch_size, -1, -1, -1
-            )  # -> (batch_size, 1, seq_len, seq_len)
-
-        # NOTE: LlamaAttention might expect a specific dimension for num_heads or just 1.
-        # It typically expands the mask to num_heads internally if it's 1.
-        # So, (batch_size, 1, seq_len, seq_len) should work.
-
-        prior_losses, gate_vecs, ce_proportions, cu_proportions = [], [], [], []
-
-        for layer in self.model.model.layers:
-            layer_outputs = layer(
-                hidden_states,
-                attention_mask=attention_mask_4d,
-                position_ids=position_ids,
-                current_iter=current_iter,
-                gate_warmup_iters=gate_warmup_iters,
-                dynamic_k=dynamic_k,
-                ce_bias=ce_bias,
-            )
-            hidden_states = layer_outputs[0]
-            # Unpack new metrics: (..., avg_ce, avg_cu, prior_loss, gate_vec)
-            ce_proportions.append(layer_outputs[-4])
-            cu_proportions.append(layer_outputs[-3])
-            prior_losses.append(layer_outputs[-2])
-            gate_vecs.append(layer_outputs[-1])
-
-        hidden_states = self.model.model.norm(hidden_states)
-        logits = self.model.lm_head(hidden_states)
-
-        avg_prior_loss = torch.stack(prior_losses).mean()
-
-        return logits, avg_prior_loss, gate_vecs, ce_proportions, cu_proportions
+        if "input_ids" not in inputs:
+            raise ValueError("input_ids must be provided.")
+        
+        # Inject training-specific params (e.g., current_iter from global_step)
+        inputs["current_iter"] = self.global_step
+        
+        return self.model(**inputs)
 
     def _calculate_loss(self, batch) -> tuple[
         torch.Tensor,

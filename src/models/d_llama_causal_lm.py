@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from transformers.models.llama.modeling_llama import LlamaForCausalLM
+from transformers import LlamaForCausalLM
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from src.utils.llamam_config_utils import fix_pad_token_id, fix_rope_scaling
 
@@ -44,6 +45,53 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     def set_ce_bias(self, bias: float):
         self.ce_bias = bias
 
+    def _prepare_inputs(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        **kwargs
+    ) -> dict:
+        """
+        Prepares inputs: Generates position_ids if missing, creates 4D causal + padding mask.
+        Robustness: Validates shapes, handles edge cases (e.g., no mask, empty seq).
+        """
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
+        dtype = input_ids.dtype  # Use input dtype for masks
+
+        # Generate position_ids if not provided
+        if position_ids is None:
+            log.debug("Generating default position_ids")
+            position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0).expand(batch_size, -1)
+
+        # Validate shapes
+        if position_ids.shape != (batch_size, seq_len):
+            raise ValueError(f"position_ids shape {position_ids.shape} does not match input_ids {input_ids.shape}")
+
+        # Prepare 4D attention mask
+        causal_mask_base = torch.full((seq_len, seq_len), torch.finfo(dtype).min, device=device)
+        causal_mask_base = torch.triu(causal_mask_base, diagonal=1)
+
+        if attention_mask is not None:
+            if attention_mask.dim() != 2 or attention_mask.shape != (batch_size, seq_len):
+                raise ValueError(f"attention_mask must be (batch_size, seq_len), got {attention_mask.shape}")
+            expanded_padding_mask = (1 - attention_mask).bool().to(dtype).masked_fill_(
+                (1 - attention_mask).bool(), torch.finfo(dtype).min
+            ).unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
+            attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(0) + expanded_padding_mask
+            attention_mask_4d = attention_mask_4d.expand(batch_size, 1, seq_len, seq_len)
+        else:
+            log.debug("No attention_mask provided; using pure causal mask")
+            attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seq_len, seq_len)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask_4d,
+            "position_ids": position_ids,
+            **kwargs  # Pass through other kwargs
+        }
+
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, **kwargs
     ):
@@ -72,24 +120,29 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         return self._last_gate_means
 
     def forward(self, *args, **kwargs):
-        # Pop overrides; fall back to config (raise if unset in config and not provided)
+        # Pop dynamic params (fall back to config; raise if unset)
         dynamic_k = kwargs.pop("dynamic_k", self.config.dynamic_k)
         if dynamic_k is None:
             raise ValueError("dynamic_k must be provided via config or kwargs.")
-
-        gate_warmup_iters = kwargs.pop(
-            "gate_warmup_iters", self.config.gate_warmup_iters
-        )
+        
+        gate_warmup_iters = kwargs.pop("gate_warmup_iters", self.config.gate_warmup_iters)
         if gate_warmup_iters is None:
             raise ValueError("gate_warmup_iters must be provided via config or kwargs.")
-
+        
         ce_bias = kwargs.pop("ce_bias", self.config.ce_bias)
         if ce_bias is None:
             raise ValueError("ce_bias must be provided via config or kwargs.")
+        
+        current_iter = kwargs.pop("current_iter", 0)
+        return_metrics = kwargs.pop("return_metrics", self.training)  # Default to training mode
 
-        current_iter = kwargs.pop("current_iter", 0)  # Optional for inference
+        # Prepare inputs (handles position_ids, mask)
+        prepared = self._prepare_inputs(input_ids, **kwargs)
+        hidden_states = self.model.embed_tokens(prepared["input_ids"])
+        attention_mask = prepared["attention_mask"]
+        position_ids = prepared["position_ids"]
 
-        # Temporarily set in config for layers
+        # Temporarily inject params into config
         original_dynamic_k = self.config.dynamic_k
         original_gate_warmup_iters = self.config.gate_warmup_iters
         original_ce_bias = self.config.ce_bias
@@ -99,35 +152,51 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
 
         if self._log_gates:
             self._gate_means_tmp = []
-
             def _collect(_, __, outputs):
                 gate_vec = outputs[-1]
                 self._gate_means_tmp.append(gate_vec.mean().item())
                 return outputs
-
             hooks = [l.register_forward_hook(_collect) for l in self.model.layers]
         else:
             hooks = []
 
         try:
-            outputs = super().forward(*args, **kwargs)
-            if self.training:
-                prior_losses, gate_vecs, ce_proportions, cu_proportions = [], [], [], []
-                avg_prior_loss = torch.stack(prior_losses).mean()
-                outputs = (
-                    outputs.logits,
-                    avg_prior_loss,
-                    gate_vecs,
-                    ce_proportions,
-                    cu_proportions,
+            prior_losses, gate_vecs, ce_proportions, cu_proportions = [], [], [], []
+
+            for layer in self.model.layers:
+                layer_outputs = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    current_iter=current_iter,
+                    gate_warmup_iters=gate_warmup_iters,
+                    dynamic_k=dynamic_k,
+                    ce_bias=ce_bias,
                 )
-            return outputs
+                hidden_states = layer_outputs[0]
+                if return_metrics:
+                    ce_proportions.append(layer_outputs[-4])
+                    cu_proportions.append(layer_outputs[-3])
+                    prior_losses.append(layer_outputs[-2])
+                    gate_vecs.append(layer_outputs[-1])
+
+            hidden_states = self.model.norm(hidden_states)
+            logits = self.lm_head(hidden_states)
+
+            if return_metrics:
+                avg_prior_loss = torch.stack(prior_losses).mean() if prior_losses else torch.tensor(0.0, device=logits.device)
+                return (logits, avg_prior_loss, gate_vecs, ce_proportions, cu_proportions)
+            else:
+                # Standard HF output for inference
+                return CausalLMOutputWithPast(logits=logits)
+        except Exception as e:
+            log.error(f"Forward pass failed: {str(e)}")
+            raise
         finally:
             for h in hooks:
                 h.remove()
             if self._log_gates:
                 self._last_gate_means = self._gate_means_tmp
-            # Restore
             self.config.dynamic_k = original_dynamic_k
             self.config.gate_warmup_iters = original_gate_warmup_iters
             self.config.ce_bias = original_ce_bias
