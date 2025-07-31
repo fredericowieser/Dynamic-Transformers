@@ -82,8 +82,9 @@ class DynamicLlamaTrainer(pl.LightningModule):
         if "input_ids" not in inputs:
             raise ValueError("input_ids must be provided.")
         
-        # Inject training-specific params (e.g., current_iter from global_step)
+        # Inject training-specific params
         inputs["current_iter"] = self.global_step
+        inputs["return_metrics"] = True
         
         return self.model(**inputs)
 
