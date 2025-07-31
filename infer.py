@@ -115,7 +115,7 @@ def main():
     parser.add_argument(
         "--do_sample",
         type=bool,
-        default=False,
+        default=True,
         choices=[True, False],
         help="Enable sampling; otherwise greedy",
     )
