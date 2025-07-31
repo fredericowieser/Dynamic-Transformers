@@ -5,7 +5,7 @@ import torch.nn as nn
 from transformers import LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from src.utils.llamam_config_utils import fix_pad_token_id, fix_rope_scaling
+from src.utils.llama_config_utils import fix_pad_token_id, fix_rope_scaling
 
 from .d_llama_config import DynamicLlamaConfig
 from .d_llama_layers import DynamicLlamaDecoderLayer
