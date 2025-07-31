@@ -137,7 +137,7 @@ def main():
                 max_new = 256  # Fallback cap
         
         stop_ids = [tokenizer.encode("<|eot_id|>", add_special_tokens=False)]
-        stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_ids)])
+        stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_ids, device)])
         
         streamer = TextIteratorStreamer(
             tokenizer, skip_prompt=True, skip_special_tokens=True
