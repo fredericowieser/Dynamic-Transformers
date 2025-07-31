@@ -2,7 +2,11 @@ import argparse
 import sys
 
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+)
 
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
