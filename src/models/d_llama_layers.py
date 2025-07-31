@@ -37,7 +37,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
     - token_wise=False: Gates are computed per block/sequence and applied uniformly (B,)
     """
 
-    def __init__(self, config, layer_idx: int):
+    def __init__(self, config, layer_idx: int, load_from_pretrained: bool = False):
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
@@ -50,23 +50,26 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         self.prior_ffn = FeedForward(config)
         self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # Determine gating strategy from config
+        # Initialize dynamic components only if not loading from pretrained
+        if not load_from_pretrained:
+            self.prior_ffn = FeedForward(config)
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self._initialize_prior_components()
+        else:
+            # Assume prior_ffn and prior_layernorm are already set from the state dict
+            log.info(f"Skipping prior FFN initialization for layer {layer_idx} (loading from pretrained)")
+
         self.token_wise_gating = getattr(config, "token_wise", True)
 
-        # Initialize the new components' weights
-        log.info(
-            f"Initializing new prior_ffn for layer {layer_idx} (token_wise={self.token_wise_gating})"
-        )
-        self._initialize_prior_components()
-
     def _initialize_prior_components(self):
-        """Initialize weights for the prior FFN and layer norm components."""
-        for module in [self.prior_ffn, self.prior_layernorm]:
-            for name, param in module.named_parameters():
-                if "weight" in name:
-                    nn.init.normal_(param, mean=0.0, std=0.02)
-                elif "bias" in name:
-                    nn.init.zeros_(param)
+        if hasattr(self, 'prior_ffn'):  # Only initialize if it exists
+            log.info(f"Initializing new prior_ffn for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
+            for module in [self.prior_ffn, self.prior_layernorm]:
+                for name, param in module.named_parameters():
+                    if "weight" in name:
+                        nn.init.normal_(param, mean=0.0, std=0.02)
+                    elif "bias" in name:
+                        nn.init.zeros_(param)
 
     def _prepare_attention_inputs(
         self,
