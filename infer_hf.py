@@ -1,17 +1,35 @@
+#!/usr/bin/env python3
+"""
+Terminal chat for any HF causal LM with streaming,
+using a proper chat template for true multi-turn conversation.
+"""
+
 import argparse
 import threading
 import sys
 import torch
+import re
 
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
+    StoppingCriteria,
+    StoppingCriteriaList,
 )
 
 from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
+class StopOnTokens(StoppingCriteria):
+    def __init__(self, stop_ids):
+        self.stop_ids = stop_ids  # List of token ID sequences to stop on
+    
+    def __call__(self, input_ids, scores, **kwargs):
+        for stop_id in self.stop_ids:
+            if len(input_ids[0]) >= len(stop_id) and torch.equal(input_ids[0][-len(stop_id):], stop_id):
+                return True
+        return False
 
 def main():
     parser = argparse.ArgumentParser(
@@ -46,10 +64,24 @@ def main():
     config = fix_rope_scaling(config)
     config = fix_pad_token_id(config)
 
-    # Load the tokenizer
+    # Load the tokenizer and set a proper chat template
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Set the chat template for LLaMA-3.2 style
+    tokenizer.chat_template = (
+        "{%- for message in messages %}"
+        "{%- if message['role'] == 'system' %}"
+        "<|start_header_id|>system<|end_header_id|>\n{{ message['content'].strip() }}<|eot_id|>"
+        "{%- elif message['role'] == 'user' %}"
+        "<|start_header_id|>user<|end_header_id|>\n{{ message['content'].strip() }}<|eot_id|>"
+        "{%- elif message['role'] == 'assistant' %}"
+        "<|start_header_id|>assistant<|end_header_id|>\n{{ message['content'].strip() }}<|eot_id|>"
+        "{% endif %}"
+        "{% endfor %}"
+        "<|start_header_id|>assistant<|end_header_id|>\n"
+    )
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
@@ -59,17 +91,16 @@ def main():
     )
     model.to(device).eval()
 
-    # Patch out the tiny default max_length (20) in generation_config.json
+    # Patch out the tiny default max_length in generation_config.json
     if hasattr(model, "generation_config"):
-        # prefer tokenizer.model_max_length, fall back to config.max_position_embeddings
         max_len = getattr(tokenizer, "model_max_length", None)
         if max_len is None:
-            max_len = model.config.max_position_embeddings
+            max_len = min(model.config.max_position_embeddings, 4096)  # Cap based on Llama practices
         model.generation_config.max_length = max_len
 
     print("✅ Model loaded", file=sys.stderr)
     system_prompt = "You are a helpful assistant."
-    history = []
+    history = []  # List of dicts for messages
 
     print("=== Chat ready (type 'exit' or Ctrl-C to quit) ===", file=sys.stderr)
     while True:
@@ -77,27 +108,41 @@ def main():
             user_in = input("User: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!", file=sys.stderr)
-            break
+            sys.exit(0)
+        
         if not user_in or user_in.lower() in ("exit", "quit"):
             print("Goodbye!", file=sys.stderr)
-            break
+            sys.exit(0)
 
         history.append({"role": "user", "content": user_in})
         messages = [{"role": "system", "content": system_prompt}] + history
+        
+        # Generate prompt using the chat template
         prompt = tokenizer.apply_chat_template(
-            messages, 
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
-
+        
         inputs = tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        # compute max_new_tokens, create streamer, etc… (as before)
-
-        # generate & stream
+        
+        prompt_len = inputs["input_ids"].shape[1]
+        if args.max_new_tokens is not None:
+            max_new = args.max_new_tokens
+        else:
+            max_total = getattr(tokenizer, "model_max_length", 2048)
+            max_new = max_total - prompt_len
+            if max_new <= 0:
+                max_new = 256  # Fallback cap
+        
+        stop_ids = [tokenizer.encode("<|eot_id|>", add_special_tokens=False)]
+        stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_ids)])
+        
         streamer = TextIteratorStreamer(
             tokenizer, skip_prompt=True, skip_special_tokens=True
         )
+        
         gen_kwargs = dict(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask", None),
@@ -108,27 +153,29 @@ def main():
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             use_cache=False,
-            max_new_tokens=args.max_new_tokens,
+            max_new_tokens=max_new,
+            stopping_criteria=stopping_criteria,
         )
+        
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()
-
-        # stream + prune out the first appearance of "[/INST]"
+        
         assistant_out = ""
         for chunk in streamer:
-            # if the model ever emits the literal "[/INST]", stop here
-            if "[/INST]" in chunk:
-                idx = chunk.index("[/INST]")
-                assistant_out += chunk[:idx]
-                print(chunk[:idx], end="", flush=True)
+            if "<|eot_id|>" in chunk:
+                # Stop and clean up
+                cleaned_chunk = chunk.split("<|eot_id|>")[0].strip()
+                assistant_out += cleaned_chunk
+                print(cleaned_chunk, end="", flush=True)
                 break
             assistant_out += chunk
             print(chunk, end="", flush=True)
         thread.join()
-        print()  # newline after the assistant reply
-
-        # strip _all_ template markers before appending to history
-        history.append({"role": "assistant", "content": assistant_out.strip()})
+        print()  # Newline after response
+        
+        # Clean and append to history, removing any template artifacts
+        cleaned_response = re.sub(r"<\|[^>]+>", "", assistant_out).strip()  # Remove any <|tokens|>
+        history.append({"role": "assistant", "content": cleaned_response})
 
 if __name__ == "__main__":
     main()
