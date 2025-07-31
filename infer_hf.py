@@ -161,20 +161,26 @@ def main():
         thread.start()
         
         assistant_out = ""
-        for chunk in streamer:
-            if "<|eot_id|>" in chunk:
-                # Stop and clean up
-                cleaned_chunk = chunk.split("<|eot_id|>")[0].strip()
-                assistant_out += cleaned_chunk
-                print(cleaned_chunk, end="", flush=True)
-                break
-            assistant_out += chunk
-            print(chunk, end="", flush=True)
-        thread.join()
+        try:
+            for chunk in streamer:
+                if "<|eot_id|>" in chunk:
+                    cleaned_chunk = chunk.split("<|eot_id|>")[0].strip()
+                    assistant_out += cleaned_chunk
+                    print(cleaned_chunk, end="", flush=True)
+                    break
+                assistant_out += chunk
+                print(chunk, end="", flush=True)
+        except Exception as e:
+            print(f"Streaming error: {e}")
+
+        thread.join(timeout=60)  # Add a 60-second timeout to prevent hanging
+        if thread.is_alive():
+            print("Generation timed out.")
+
         print()  # Newline after response
-        
+
         # Clean and append to history, removing any template artifacts
-        cleaned_response = re.sub(r"<\|[^>]+>", "", assistant_out).strip()  # Remove any <|tokens|>
+        cleaned_response = re.sub(r"<\|[^>]+>", "", assistant_out).strip()
         history.append({"role": "assistant", "content": cleaned_response})
 
 if __name__ == "__main__":
