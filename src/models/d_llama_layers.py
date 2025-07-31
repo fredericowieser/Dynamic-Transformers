@@ -33,27 +33,23 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
-        self.token_wise_gating = getattr(config, "token_wise", True)  # Set early
+        self.token_wise_gating = getattr(config, "token_wise", True)
+        self.prior_ffn = FeedForward(config)
+        self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         if not load_from_pretrained:
-            self.prior_ffn = FeedForward(config)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
             self._initialize_prior_components()
         else:
-            # Skip initialization entirely
-            log.info(f"Skipping prior FFN initialization for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
+            log.info(f"Skipping prior FFN weight initialization for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
 
     def _initialize_prior_components(self):
-        if hasattr(self, 'prior_ffn') and hasattr(self, 'prior_layernorm'):
-            log.info(f"Initializing new prior_ffn for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
-            for module in [self.prior_ffn, self.prior_layernorm]:
-                for name, param in module.named_parameters():
-                    if "weight" in name:
-                        nn.init.normal_(param, mean=0.0, std=0.02)
-                    elif "bias" in name:
-                        nn.init.zeros_(param)
-        else:
-            log.warning(f"Prior components not found for layer {self.layer_idx}; skipping initialization")
+        log.info(f"Initializing weights for prior_ffn in layer {self.layer_idx} (token_wise={self.token_wise_gating})")
+        for module in [self.prior_ffn, self.prior_layernorm]:
+            for name, param in module.named_parameters():
+                if "weight" in name:
+                    nn.init.normal_(param, mean=0.0, std=0.02)
+                elif "bias" in name:
+                    nn.init.zeros_(param)
 
     def _prepare_attention_inputs(
         self,
