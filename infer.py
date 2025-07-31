@@ -1,4 +1,10 @@
+#!/usr/bin/env python3
+"""
+Inference script for DynamicLlamaForCausalLM w/ manual weight loading
+that handles sharded safetensors.
+"""
 import argparse
+import glob
 import os
 import sys
 
@@ -16,33 +22,48 @@ except ImportError:
 
 def load_weights(model, model_dir, device):
     """
-    Try to load weights from safetensors first, then .bin.
+    Load model weights from:
+      - one or more .safetensors shards
+      - or a single pytorch_model.safetensors
+      - or a single pytorch_model.bin
     """
-    # 1) safetensors
+    state_dict = {}
+    # 1) sharded safetensors: model-*.safetensors
     if safe_load:
-        path = os.path.join(model_dir, "pytorch_model.safetensors")
-        if os.path.isfile(path):
-            sd = safe_load(path, device=device)
+        shard_paths = sorted(glob.glob(os.path.join(model_dir, "model-*.safetensors")))
+        if shard_paths:
+            for shard in shard_paths:
+                sd_part = safe_load(shard, device=device)
+                state_dict.update(sd_part)
+            model.load_state_dict(state_dict, strict=False)
+            return
+
+        # 2) single-file pytorch_model.safetensors
+        single = os.path.join(model_dir, "pytorch_model.safetensors")
+        if os.path.isfile(single):
+            sd = safe_load(single, device=device)
             model.load_state_dict(sd, strict=False)
             return
-    # 2) fallback to .bin
-    path = os.path.join(model_dir, "pytorch_model.bin")
-    if os.path.isfile(path):
-        sd = torch.load(path, map_location=device)
+
+    # 3) single-file pytorch_model.bin
+    bin_path = os.path.join(model_dir, "pytorch_model.bin")
+    if os.path.isfile(bin_path):
+        sd = torch.load(bin_path, map_location=device)
         model.load_state_dict(sd, strict=False)
         return
 
     raise FileNotFoundError(
-        "No `pytorch_model.safetensors` or `pytorch_model.bin` in " + model_dir
+        f"No weights found in {model_dir}. "
+        "Expected sharded '*.safetensors' or 'pytorch_model.safetensors' or 'pytorch_model.bin'."
     )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Infer with DynamicLlamaForCausalLM (manual load)"
+        description="Infer with DynamicLlamaForCausalLM (manual load w/ shards)"
     )
     parser.add_argument(
-        "model_dir", help="Path to saved `final_model` folder"
+        "model_dir", help="Path to the saved `final_model` folder"
     )
     parser.add_argument(
         "--prompt",
@@ -114,8 +135,9 @@ def main():
     model.to(device)
     model.eval()
 
+    print("🔄 Loading weights...", file=sys.stderr)
     load_weights(model, args.model_dir, device)
-    print("✅ Model weights loaded", file=sys.stderr)
+    print("✅ Weights loaded.", file=sys.stderr)
 
     # 4) Override dynamic params
     if args.dynamic_k is not None:
@@ -134,7 +156,7 @@ def main():
 
         def wrapped_forward(*f_args, **f_kwargs):
             out = original_forward(*f_args, **f_kwargs)
-            if model._log_gates:
+            if getattr(model, "_log_gates", False):
                 last = model.get_last_gate_means()
                 if last:
                     accum_means.append(last.copy())
@@ -158,7 +180,7 @@ def main():
             do_sample=args.do_sample,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            use_cache=False,  # ensure full forward each step
+            use_cache=False,
         )
 
     # 8) Decode only new tokens
