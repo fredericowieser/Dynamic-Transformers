@@ -88,14 +88,22 @@ def main():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Finally load the model with the patched config
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         config=config,
-        torch_dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
-        device_map="auto" if device.startswith("cuda") else None,
+        torch_dtype=...,
+        device_map=...,
     )
     model.to(device).eval()
+
+    # Patch out the tiny default max_length (20) in generation_config.json
+    if hasattr(model, "generation_config"):
+        # prefer tokenizer.model_max_length, fall back to config.max_position_embeddings
+        max_len = getattr(tokenizer, "model_max_length", None)
+        if max_len is None:
+            max_len = model.config.max_position_embeddings
+        model.generation_config.max_length = max_len
+
     print("✅ Model loaded", file=sys.stderr)
     system_prompt = "You are a helpful assistant."
     history = []
