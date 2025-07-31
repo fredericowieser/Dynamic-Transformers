@@ -91,7 +91,9 @@ def main():
     )
     parser.add_argument(
         "--print_gates",
-        action="store_true",
+        type=bool,
+        default=True,
+        choices=[True, False],
         help="Log per-layer gate activations",
     )
     parser.add_argument(
