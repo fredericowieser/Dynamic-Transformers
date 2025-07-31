@@ -54,25 +54,29 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         self._setup_parameter_groups()
 
-        self.per_layer_gate_activation_rolling_history = []
-        for _ in range(self.model.config.num_hidden_layers):
-            self.per_layer_gate_activation_rolling_history.append(
-                {
-                    "mean": deque(maxlen=ROLLING_WINDOW_SIZE),
-                    "std": deque(maxlen=ROLLING_WINDOW_SIZE),
-                }
-            )
+        self._setup_parameter_groups()
+        self.per_layer_gate_activation_rolling_history = [
+            {
+                "mean": deque(maxlen=ROLLING_WINDOW_SIZE),
+                "std":  deque(maxlen=ROLLING_WINDOW_SIZE),
+            }
+            for _ in range(self.model.config.num_hidden_layers)
+        ]
 
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")
-        self.original_params = []
-        self.new_prior_params = []
-        for name, param in self.model.named_parameters():
-            if "prior_ffn" in name or "prior_layernorm" in name:
-                self.new_prior_params.append(param)
-            else:
-                param.requires_grad = True
-                self.original_params.append(param)
+        named = list(self.model.named_parameters())
+        self.new_prior_params = [
+            p for n, p in named
+            if "prior_ffn" in n or "prior_layernorm" in n
+        ]
+        self.original_params = [
+            p for n, p in named
+            if p not in self.new_prior_params
+        ]
+        for p in self.original_params:
+            p.requires_grad = True
+
         log.info(
             f"Found {len(self.original_params)} original parameters and "
             f"{len(self.new_prior_params)} new prior parameters."
@@ -95,7 +99,6 @@ class DynamicLlamaTrainer(pl.LightningModule):
         torch.Tensor,
         list[dict[str, torch.Tensor]],
     ]:
-        # --- NEW: Unpack per-layer lists ---
         (
             logits,
             prior_loss,
@@ -106,17 +109,14 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
-
         lm_loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
             ignore_index=-100,
         )
-
         total_loss = lm_loss + self.model_cfg.prior_loss_weight * prior_loss
         perplexity = torch.exp(lm_loss)
 
-        # --- NEW: Calculate overall averages from the per-layer lists ---
         overall_avg_ce = (
             torch.stack(ce_proportions_per_layer).mean()
             if ce_proportions_per_layer
@@ -133,17 +133,16 @@ class DynamicLlamaTrainer(pl.LightningModule):
             else torch.tensor(0.0, device=self.device)
         )
 
-        per_layer_gate_stats = []
-        for gate_vec in gate_vecs_per_layer:
-            layer_mean = gate_vec.mean()
-            layer_std = (
-                gate_vec.std()
-                if gate_vec.numel() > 1
-                else torch.tensor(0.0, device=self.device)
-            )
-            per_layer_gate_stats.append({"mean": layer_mean, "std": layer_std})
+        per_layer_gate_stats = [
+            {
+                "mean": gv.mean(),
+                "std":  gv.std()
+                        if gv.numel() > 1
+                        else torch.tensor(0.0, device=self.device),
+            }
+            for gv in gate_vecs_per_layer
+        ]
 
-        # --- NEW: Return all metrics for logging ---
         return (
             total_loss,
             lm_loss,
