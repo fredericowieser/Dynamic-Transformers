@@ -144,7 +144,7 @@ def main():
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             use_cache=False,
-            #max_new_tokens=args.max_new_tokens,
+            max_new_tokens=args.max_new_tokens,
             stopping_criteria=stopper,
         )
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
