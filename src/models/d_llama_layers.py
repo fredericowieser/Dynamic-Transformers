@@ -11,17 +11,24 @@ log = logging.getLogger(__name__)
 
 
 class FeedForward(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, skip_init=False):
         super().__init__()
         self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
         self.act_fn = nn.SiLU()
-        self.dropout = nn.Dropout(
-            config.hidden_dropout_prob
-            if hasattr(config, "hidden_dropout_prob")
-            else 0.0
-        )
+        self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, "hidden_dropout_prob") else 0.0)
+        
+        if not skip_init:
+            self._initialize_weights()
+            log.info("Initialized weights for FeedForward")
+
+    def _initialize_weights(self):
+        for name, param in self.named_parameters():
+            if "weight" in name:
+                nn.init.normal_(param, mean=0.0, std=0.02)
+            elif "bias" in name:
+                nn.init.zeros_(param)
 
     def forward(self, x):
         x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
@@ -36,14 +43,12 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         self.token_wise_gating = getattr(config, "token_wise", True)
         
         if not load_from_pretrained:
-            self.prior_ffn = FeedForward(config)
-            self._initialize_prior_components()
+            self.prior_ffn = FeedForward(config, skip_init=False)  # Normal initialization
             self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
-            # Create submodules as placeholders without initialization
-            self.prior_ffn = FeedForward(config)  # Create, but don't initialize weights
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)  # Create without init
-            log.info(f"Layer {self.layer_idx} created as placeholder for pre-trained weights (token_wise={self.token_wise_gating})")
+            self.prior_ffn = FeedForward(config, skip_init=True)  # Skip initialization
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)  # Create without extra init
+            log.info(f"Layer {self.layer_idx} created with skipped initialization for prior_ffn (token_wise={self.token_wise_gating})")
 
     def _initialize_prior_components(self):
         if hasattr(self, 'prior_ffn'):
