@@ -2,9 +2,10 @@ import argparse
 import glob
 import os
 import sys
+import threading
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TextIteratorStreamer
 
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
