@@ -210,23 +210,18 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         config = DynamicLlamaConfig.from_pretrained(pretrained_model_name_or_path)
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)  # This loads the base model
         
-        # Load the base model without explicitly passing config
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
-        
-        # Now, if needed, recreate layers with the flag
         if not isinstance(model.config, DynamicLlamaConfig):
-            model.config = config  # Override with custom config
+            model.config = config
         
-        # Apply customizations to layers
-        new_layers = torch.nn.ModuleList()
-        for i, layer in enumerate(model.model.layers):  # Assuming layers are in model.model.layers
-            new_layer = DynamicLlamaDecoderLayer(config, i, load_from_pretrained=True)
-            new_layer.load_state_dict(layer.state_dict(), strict=True)  # Load weights explicitly
-            new_layers.append(new_layer)
-        model.model.layers = new_layers  # Replace with updated layers
+        # Instead of recreating layers, directly load and update if needed
+        for i, layer in enumerate(model.model.layers):
+            if isinstance(layer, DynamicLlamaDecoderLayer):
+                layer.load_prior_components(layer.state_dict())  # Load into existing layer
+                log.info(f"Loaded pre-trained weights for layer {i}")
         
-        # Apply other custom params
+        # Apply custom params
         if hasattr(model.config, 'dynamic_k'):
             model.config.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
         if hasattr(model.config, 'ce_bias'):

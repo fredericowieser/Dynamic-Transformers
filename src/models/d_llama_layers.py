@@ -34,22 +34,33 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         self.config = config
         self.layer_idx = layer_idx
         self.token_wise_gating = getattr(config, "token_wise", True)
-        self.prior_ffn = FeedForward(config)
-        self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+        
         if not load_from_pretrained:
+            self.prior_ffn = FeedForward(config)
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
             self._initialize_prior_components()
         else:
-            log.info(f"Skipping prior FFN weight initialization for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
+            # Do not create new submodules; assume they will be loaded from state dict
+            self.prior_ffn = None  # Placeholder; will be overwritten by state dict
+            self.prior_layernorm = None
+            log.info(f"Layer {self.layer_idx} prepared for pre-trained weights only")
 
     def _initialize_prior_components(self):
-        log.info(f"Initializing weights for prior_ffn in layer {self.layer_idx} (token_wise={self.token_wise_gating})")
-        for module in [self.prior_ffn, self.prior_layernorm]:
-            for name, param in module.named_parameters():
-                if "weight" in name:
-                    nn.init.normal_(param, mean=0.0, std=0.02)
-                elif "bias" in name:
-                    nn.init.zeros_(param)
+        if hasattr(self, 'prior_ffn') and hasattr(self, 'prior_layernorm'):
+            log.info(f"Initializing weights for prior_ffn in layer {self.layer_idx}")
+            for module in [self.prior_ffn, self.prior_layernorm]:
+                for name, param in module.named_parameters():
+                    if "weight" in name:
+                        nn.init.normal_(param, mean=0.0, std=0.02)
+                    elif "bias" in name:
+                        nn.init.zeros_(param)
+
+    def load_prior_components(self, state_dict):
+        if self.prior_ffn is None:
+            self.prior_ffn = FeedForward(self.config)  # Create only if not exists
+        if self.prior_layernorm is None:
+            self.prior_layernorm = nn.LayerNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
+        self.load_state_dict(state_dict, strict=True)
 
     def _prepare_attention_inputs(
         self,
