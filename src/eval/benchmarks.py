@@ -1,19 +1,22 @@
-# benchmarks.py
 import evaluate as hf_evaluate
-from lm_eval import evaluator, tasks  # Eleuther AI LM eval
+from lm_eval import evaluator, tasks
 from datasets import load_dataset
 from transformers import pipeline
 import torch
 from tqdm import tqdm
 import logging
+import re  # For extract_boxed_answer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: int, is_instruct: bool):
-    """Run benchmarks using LM eval harness."""
     try:
-        task = tasks.get_task(benchmark_name)  # This might fail if task doesn't exist
+        task_dict = tasks.get_task_dict()  # Use get_task_dict for safety
+        if benchmark_name not in task_dict:
+            raise AttributeError(f"Task '{benchmark_name}' not found in lm_eval tasks.")
+        task = task_dict[benchmark_name]
+        
         results = evaluator.simple_evaluate(
             model=model,
             tokenizer=tokenizer,
@@ -22,17 +25,13 @@ def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: in
             batch_size=8,
             limit=num_samples,
         )
-        scores = results['results'].get(benchmark_name, {}).get('acc', [])  # Fallback to empty list
+        scores = results['results'].get(benchmark_name, {}).get('acc', [])
         return compute_average_metric(scores, benchmark_name)
-    except AttributeError as e:
-        logger.error(f"LM eval error for {benchmark_name}: {e}")
-        return {"error": f"module 'lm_eval.tasks' has no attribute 'get_task' for {benchmark_name}"}
     except Exception as e:
-        logger.error(f"Error in LM eval for {benchmark_name}: {e}")
+        logger.error(f"LM eval error for {benchmark_name}: {e}")
         return {"error": str(e)}
 
 def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: str, num_samples: int, is_instruct: bool):
-    """Run custom benchmarks with proper error handling."""
     try:
         ds = load_dataset(dataset_name, split=f"test[:{num_samples}]")
         gen_pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=256, temperature=0.0, do_sample=False)
@@ -44,7 +43,7 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
                 out = gen_pipe(prompt)[0]["generated_text"]
                 ref = ex.get("expected_output", "")
                 metric.add(prediction=out, reference=ref)
-            scores = [metric.compute()["accuracy"]]  # Single score
+            scores = [metric.compute()["accuracy"]]
         elif benchmark_name == "TLDR9+":
             rouge = hf_evaluate.load("rouge")
             for ex in tqdm(ds, desc=benchmark_name):
@@ -58,7 +57,7 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
             for ex in tqdm(ds, desc=benchmark_name):
                 prompt = ex["question"] + "\nLet's think step by step."
                 out = gen_pipe(prompt)[0]["generated_text"]
-                ans = extract_boxed_answer(out)  # Assume this function exists
+                ans = extract_boxed_answer(out)
                 metric.add(prediction=ans, reference=ex["answer"])
             scores = [metric.compute()["accuracy"]]
         elif benchmark_name == "MATH":
@@ -78,26 +77,24 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
 
 def run_all_benchmarks(model, tokenizer, num_samples: int, is_instruct: bool):
     benchmarks = {
-        "MMLU": "mmlu",  # lm_eval task
+        "MMLU": "mmlu",
         "ARC-C": "arc_challenge",
-        "GPQA": "stanford-gpqa/gpqa",  # Full dataset name
+        "GPQA": "hendrycks/gpqa",  # Corrected
         "HellaSwag": "hellaswag",
-        "GSM8K": "gsm8k/main",
-        "MATH": "hendrycks/competition_math",
-        "IFEval": "lukaemon/ifeval",  # Verified name; adjust if needed
-        "TLDR9+": "tldr/tldr",  # Example; confirm exact name
+        "GSM8K": "gsm8k",  # Corrected
+        "MATH": "hendrycks/competition_math",  # Corrected
+        "IFEval": "lukaemon/ifeval",
+        "TLDR9+": "pszemraj/long-t5-tglobal-large-16384-pubmed-3k_steps",
     }
 
     results = {}
     for name, ds_name in benchmarks.items():
-        if name in ["MMLU", "ARC-C", "HellaSwag"]:  # Use LM eval
+        if name in ["MMLU", "ARC-C", "HellaSwag", "GPQA"]:  # GPQA might work in lm_eval if available
             results[name] = run_benchmark_lm_eval(model, tokenizer, ds_name, num_samples, is_instruct)
-        else:  # Custom
+        else:
             results[name] = run_custom_benchmark(model, tokenizer, name, ds_name, num_samples, is_instruct)
     return results
 
-# Assume extract_boxed_answer is defined here or imported
 def extract_boxed_answer(text):
-    import re
     match = re.search(r"\\boxed{([^}]*)}", text)
     return match.group(1) if match else text.strip().split("\n")[-1].strip()
