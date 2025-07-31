@@ -22,8 +22,8 @@ from transformers import (
 from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
 class StopOnTokens(StoppingCriteria):
-    def __init__(self, stop_ids):
-        self.stop_ids = stop_ids  # List of token ID sequences to stop on
+    def __init__(self, stop_ids, device):
+        self.stop_ids = [torch.tensor(seq, device=device) for seq in stop_ids]  # Convert to Tensors on the correct device
     
     def __call__(self, input_ids, scores, **kwargs):
         for stop_id in self.stop_ids:
