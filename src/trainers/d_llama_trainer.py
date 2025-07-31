@@ -1,15 +1,14 @@
 import logging
-from collections import deque
 
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
-from torch import nn
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoTokenizer
 
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 from src.models.d_llama_config import DynamicLlamaConfig
+from src.trainers.gate_logging import GateLogger
 
 log = logging.getLogger(__name__)
 
@@ -26,14 +25,13 @@ class DynamicLlamaTrainer(pl.LightningModule):
         self.training_cfg = training_cfg
 
         log.info(f"Loading pre-trained model: {self.model_cfg.model_name}")
-
         config = DynamicLlamaConfig.from_pretrained(self.model_cfg.model_name)
         required_params = {
-            "dynamic_k": self.model_cfg.dynamic_k,
-            "ce_bias": self.model_cfg.ce_bias,
-            "token_wise": self.model_cfg.token_wise,
-            "gate_warmup_iters": self.training_cfg.gate_warmup_iters,
-            "prior_loss_weight": self.model_cfg.prior_loss_weight,
+            "dynamic_k":          self.model_cfg.dynamic_k,
+            "ce_bias":            self.model_cfg.ce_bias,
+            "token_wise":         self.model_cfg.token_wise,
+            "gate_warmup_iters":  self.training_cfg.gate_warmup_iters,
+            "prior_loss_weight":  self.model_cfg.prior_loss_weight,
         }
         for param, value in required_params.items():
             if value is None:
@@ -54,14 +52,11 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         self._setup_parameter_groups()
 
-        self._setup_parameter_groups()
-        self.per_layer_gate_activation_rolling_history = [
-            {
-                "mean": deque(maxlen=ROLLING_WINDOW_SIZE),
-                "std":  deque(maxlen=ROLLING_WINDOW_SIZE),
-            }
-            for _ in range(self.model.config.num_hidden_layers)
-        ]
+        # Gate logging utility
+        self.gate_logger = GateLogger(self.model.config.num_hidden_layers)
+        self.per_layer_gate_activation_rolling_history = (
+            self.gate_logger.per_layer_gate_activation_rolling_history
+        )
 
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")
@@ -82,23 +77,16 @@ class DynamicLlamaTrainer(pl.LightningModule):
             f"{len(self.new_prior_params)} new prior parameters."
         )
 
-    def forward(self, **inputs) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, **inputs):
         if "input_ids" not in inputs:
             raise ValueError("input_ids must be provided.")
-        
-        # Inject training-specific params
-        inputs["current_iter"] = self.global_step
-        inputs["return_metrics"] = True
-        
+        inputs.update({
+            "current_iter":   self.global_step,
+            "return_metrics": True,
+        })
         return self.model(**inputs)
 
-    def _calculate_loss(self, batch) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        list[dict[str, torch.Tensor]],
-    ]:
+    def _calculate_loss(self, batch):
         (
             logits,
             prior_loss,
@@ -136,13 +124,14 @@ class DynamicLlamaTrainer(pl.LightningModule):
         per_layer_gate_stats = [
             {
                 "mean": gv.mean(),
-                "std":  gv.std()
-                        if gv.numel() > 1
-                        else torch.tensor(0.0, device=self.device),
+                "std": (
+                    gv.std()
+                    if gv.numel() > 1
+                    else torch.tensor(0.0, device=self.device)
+                ),
             }
             for gv in gate_vecs_per_layer
         ]
-
         return (
             total_loss,
             lm_loss,
@@ -157,8 +146,12 @@ class DynamicLlamaTrainer(pl.LightningModule):
         )
 
     def _log_step_metrics(
-        self, prefix: str, outputs: tuple, on_step: bool, on_epoch: bool
-    ):
+            self,
+            prefix: str,
+            outputs: tuple,
+            on_step: bool,
+            on_epoch: bool,
+        ):
         (
             total_loss,
             lm_loss,
@@ -180,13 +173,8 @@ class DynamicLlamaTrainer(pl.LightningModule):
                  on_step=on_step, on_epoch=on_epoch)
         self.log(f"{prefix}/perplexity", perplexity,
                  on_step=on_step, on_epoch=on_epoch, prog_bar=True)
-        self.log(
-            f"{prefix}_dynamic_model/overall_gate_activation_mean",
-            overall_gate_activation_mean,
-            on_step=on_step,
-            on_epoch=on_epoch,
-            prog_bar=True,
-        )
+
+        # Log overall CE and CU metrics
         self.log(
             f"{prefix}_dynamic_model/overall_avg_ce_proportion",
             overall_avg_ce,
@@ -202,89 +190,37 @@ class DynamicLlamaTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        # Log per-layer metrics
-        for i, stats in enumerate(per_layer_gate_stats):
-            self.log(
-                f"{prefix}_dynamic_layer/gate_mean/layer_{i}",
-                stats["mean"],
-                on_step=on_step,
-                on_epoch=on_epoch,
-            )
-            self.log(
-                f"{prefix}_dynamic_layer/gate_std/layer_{i}",
-                stats["std"],
-                on_step=on_step,
-                on_epoch=on_epoch,
-            )
-
-        for i, prop in enumerate(ce_proportions_per_layer):
-            self.log(
-                f"{prefix}_dynamic_layer/ce_proportion/layer_{i}",
-                prop,
-                on_step=on_step,
-                on_epoch=on_epoch,
-            )
-
-        for i, prop in enumerate(cu_proportions_per_layer):
-            self.log(
-                f"{prefix}_dynamic_layer/cu_proportion/layer_{i}",
-                prop,
-                on_step=on_step,
-                on_epoch=on_epoch,
-            )
+        # Gate-related logging delegated out
+        GateLogger.log_gate_metrics(
+            self,
+            prefix,
+            overall_gate_activation_mean,
+            per_layer_gate_stats,
+            on_step,
+            on_epoch,
+        )
 
     def training_step(self, batch, batch_idx):
-        # Manual optimization requires you to get the optimizers
         opt_base, opt_prior = self.optimizers()
-
-        # Zero gradients for both optimizers
         opt_base.zero_grad()
         opt_prior.zero_grad()
 
-        # Calculate loss
         outputs = self._calculate_loss(batch)
         total_loss = outputs[0]
-
-        # Manually perform the backward pass
         self.manual_backward(total_loss)
-
-        # Step both optimizers
         opt_base.step()
         opt_prior.step()
 
-        # Log metrics
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
 
-        # The rest of your logging logic remains unchanged
+        # Gate rolling stats update & logging
         per_layer_gate_stats = outputs[5]
         if self.trainer.global_step > 0:
-            log_interval = self.trainer.log_every_n_steps
-            for i, stats in enumerate(per_layer_gate_stats):
-                self.per_layer_gate_activation_rolling_history[i]["mean"].append(
-                    stats["mean"].item()
-                )
-                self.per_layer_gate_activation_rolling_history[i]["std"].append(
-                    stats["std"].item()
-                )
-
-            if self.trainer.global_step % log_interval == 0:
-                log_lines = [
-                    f"--- Per-Layer Gate Activations (Training, Rolling Avg over last {ROLLING_WINDOW_SIZE} steps) ---"
-                ]
-                for i, history in enumerate(
-                    self.per_layer_gate_activation_rolling_history
-                ):
-                    if history["mean"]:
-                        rolling_mean = sum(history["mean"]) / len(history["mean"])
-                        rolling_std = (
-                            torch.tensor(list(history["std"])).std().item()
-                            if len(history["std"]) > 1
-                            else 0.0
-                        )
-                        log_lines.append(
-                            f"  Layer {i}: Mean = {rolling_mean:.3f}, Std = {rolling_std:.3f}"
-                        )
-                log.info("\n".join(log_lines))
+            self.gate_logger.update_rolling_history(per_layer_gate_stats)
+            self.gate_logger.log_rolling_history(
+                self.trainer.global_step,
+                self.trainer.log_every_n_steps,
+            )
 
     def validation_step(self, batch, batch_idx):
         outputs = self._calculate_loss(batch)
