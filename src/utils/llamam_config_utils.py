@@ -7,13 +7,13 @@ log = logging.getLogger(__name__)
 def fix_rope_scaling(config):
     """
     Applies defensive fixes to the rope_scaling configuration in a Transformers config object.
-    
+
     This function ensures rope_scaling is a valid dictionary with required keys ('type', 'rope_type', 'factor').
     It handles common edge cases like missing/invalid configurations, inconsistent keys, or non-dict values.
-    
+
     Args:
         config: The Transformers config object (e.g., from AutoConfig.from_pretrained).
-    
+
     Returns:
         The modified config object with fixed rope_scaling.
     """
@@ -52,9 +52,7 @@ def fix_rope_scaling(config):
 
     # Ensure 'factor' is set
     if "factor" not in rs or rs["factor"] is None:
-        log.warning(
-            f"rope_scaling['factor'] is missing or None. Setting to 1.0."
-        )
+        log.warning(f"rope_scaling['factor'] is missing or None. Setting to 1.0.")
         rs["factor"] = 1.0
 
     # Additional safety: If 'type' and 'rope_type' differ, log and prioritize 'type'
@@ -73,18 +71,18 @@ def fix_rope_scaling(config):
 def fix_pad_token_id(config):
     """
     Applies defensive fixes to the pad_token_id in a Transformers config object.
-    
+
     This function handles cases where pad_token_id is a list/tuple (converting to the first int value),
     empty (setting to None), or invalid. It ensures pad_token_id is a single int or None.
-    
+
     Args:
         config: The Transformers config object (e.g., from AutoConfig.from_pretrained).
-    
+
     Returns:
         The modified config object with fixed pad_token_id.
     """
     pad_val = getattr(config, "pad_token_id", None)
-    
+
     if isinstance(pad_val, (list, tuple)):
         if len(pad_val) > 0:
             patched = int(pad_val[0])
@@ -93,15 +91,13 @@ def fix_pad_token_id(config):
             )
         else:
             patched = None
-            log.warning(
-                f"pad_token_id was an empty list/tuple. Setting to None."
-            )
+            log.warning(f"pad_token_id was an empty list/tuple. Setting to None.")
         config.pad_token_id = patched
     elif pad_val is not None and not isinstance(pad_val, int):
         log.warning(
             f"pad_token_id was invalid type ({type(pad_val).__name__}). Setting to None."
         )
         config.pad_token_id = None
-    
+
     log.info(f"Fixed pad_token_id: {config.pad_token_id}")
     return config

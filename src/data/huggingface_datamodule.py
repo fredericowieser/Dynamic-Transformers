@@ -7,11 +7,8 @@ import pytorch_lightning as pl
 import torch
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader, random_split
-from transformers import (
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    PreTrainedTokenizerBase,
-)
+from transformers import (AutoTokenizer, DataCollatorForLanguageModeling,
+                          PreTrainedTokenizerBase)
 
 log = logging.getLogger(__name__)
 

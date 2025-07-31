@@ -5,11 +5,8 @@ import hydra
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from torch.utils.data import ConcatDataset, DataLoader
-from transformers import (
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    PreTrainedTokenizerBase,
-)
+from transformers import (AutoTokenizer, DataCollatorForLanguageModeling,
+                          PreTrainedTokenizerBase)
 
 log = logging.getLogger(__name__)
 

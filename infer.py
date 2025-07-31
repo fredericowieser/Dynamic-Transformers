@@ -4,13 +4,8 @@ import sys
 import torch
 from transformers import AutoConfig, AutoTokenizer
 
-from src.models.d_llama_causal_lm import (
-    DynamicLlamaForCausalLM,
-)
-from src.utils.llamam_config_utils import (
-    fix_rope_scaling,
-    fix_pad_token_id,
-)
+from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
+from src.utils.llamam_config_utils import fix_pad_token_id, fix_rope_scaling
 
 
 def main():
@@ -61,7 +56,9 @@ def main():
         args.model_path,
         config=config,
         torch_dtype=torch.bfloat16,
-        device_map="auto" if device == "cuda" else None,  # Add this line to handle multi-GPU/CPU loading
+        device_map=(
+            "auto" if device == "cuda" else None
+        ),  # Add this line to handle multi-GPU/CPU loading
     )
     model.eval()
     if tokenizer.pad_token_id is None:

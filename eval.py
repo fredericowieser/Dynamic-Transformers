@@ -19,12 +19,8 @@ from datasets import load_dataset
 from human_eval.data import read_problems
 from human_eval.evaluation import evaluate_functional_correctness
 from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    pipeline,
-)
+from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
+                          pipeline)
 
 # -----------------------------------------------------------------------------
 # UTILS

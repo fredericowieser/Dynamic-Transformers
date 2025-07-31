@@ -6,15 +6,10 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch import nn
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
-from src.models.d_llama_layers import (
-    DynamicLlamaDecoderLayer
-)
-from src.utils.llamam_config_utils import (
-    fix_rope_scaling,
-    fix_pad_token_id,
-)
+from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
+from src.models.d_llama_config import DynamicLlamaConfig
 
 log = logging.getLogger(__name__)
 
@@ -32,35 +27,31 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         log.info(f"Loading pre-trained model: {self.model_cfg.model_name}")
 
-        # Load the configuration first
-        config = AutoConfig.from_pretrained(self.model_cfg.model_name)
-        log.info(f"Original config.json for {self.model_cfg.model_name}:")
-        log.info(config.to_dict())
-        config = fix_rope_scaling(config)
-        config = fix_pad_token_id(config)
+        config = DynamicLlamaConfig.from_pretrained(self.model_cfg.model_name)
+        required_params = {
+            "dynamic_k": self.model_cfg.dynamic_k,
+            "ce_bias": self.model_cfg.ce_bias,
+            "token_wise": self.model_cfg.token_wise,
+            "gate_warmup_iters": self.training_cfg.gate_warmup_iters,
+            "prior_loss_weight": self.model_cfg.prior_loss_weight,
+        }
+        for param, value in required_params.items():
+            if value is None:
+                raise ValueError(f"{param} must be provided in the Hydra config.")
+            setattr(config, param, value)
 
-        
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_cfg.model_name,
-            torch_dtype=torch.bfloat16,
-            config=config,  # Pass the potentially modified config
-        )
-        # Enable gradient checkpointing for memory efficiency
+        self.model = DynamicLlamaForCausalLM(config)
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
 
-        # Set the tokenizer
+        # Tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token_id is None:
-            # Use the fixed config's pad_token_id if available, else fallback to eos_token
-            if config.pad_token_id is not None:
-                self.tokenizer.pad_token_id = config.pad_token_id
-            else:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-            # Sync back to model config for consistency
-            self.model.config.pad_token_id = self.tokenizer.pad_token_id
-        self._modify_model_architecture()
+            self.tokenizer.pad_token_id = (
+                config.pad_token_id or self.tokenizer.eos_token_id
+            )
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
         self._setup_parameter_groups()
 
         self.per_layer_gate_activation_rolling_history = []
@@ -75,24 +66,26 @@ class DynamicLlamaTrainer(pl.LightningModule):
     def _modify_model_architecture(self):
         """Replace standard Llama layers with Dynamic layers."""
         log.info("Replacing LlamaDecoderLayer with DynamicLlamaDecoderLayer...")
-        
+
         # Add token_wise config to model config if not present
-        if not hasattr(self.model.config, 'token_wise'):
+        if not hasattr(self.model.config, "token_wise"):
             self.model.config.token_wise = self.model_cfg.token_wise
-        
+
         # Add other dynamic configs
-        self.model.config.dynamic_k = getattr(self.model_cfg, 'dynamic_k', 0.5)
-        self.model.config.ce_bias = getattr(self.model_cfg, 'ce_bias', 0.0)
-        
+        self.model.config.dynamic_k = getattr(self.model_cfg, "dynamic_k", 0.5)
+        self.model.config.ce_bias = getattr(self.model_cfg, "ce_bias", 0.0)
+
         new_layers = nn.ModuleList()
         for i, layer in enumerate(self.model.model.layers):
             # Single unified layer creation - config determines behavior
             custom_layer = DynamicLlamaDecoderLayer(self.model.config, i)
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
-        
+
         self.model.model.layers = new_layers
-        log.info(f"All {len(new_layers)} Llama decoder layers replaced with Dynamic layers (token_wise={self.model.config.token_wise})")
+        log.info(
+            f"All {len(new_layers)} Llama decoder layers replaced with Dynamic layers (token_wise={self.model.config.token_wise})"
+        )
 
     def _setup_parameter_groups(self):
         log.info("Setting up parameter groups for differential learning rates.")
