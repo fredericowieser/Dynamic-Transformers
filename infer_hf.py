@@ -1,59 +1,77 @@
 import argparse
-import threading
 import sys
+import threading
 
 import torch
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
 )
 
+from src.utils.llamam_config_utils import fix_rope_scaling, fix_pad_token_id
+
 
 def main():
-    p = argparse.ArgumentParser(description="Chat with an HF causal LM (streaming)")
-    p.add_argument(
-        "model_name",
-        help="Model name or path (e.g. gpt2, EleutherAI/gpt-j-6B, /path/to/ckpt)",
+    parser = argparse.ArgumentParser(
+        description="Chat with an HF causal LM (streaming, multi-turn)"
     )
-    p.add_argument("--max_new_tokens", type=int, default=128)
-    p.add_argument("--temperature", type=float, default=0.7)
-    p.add_argument("--top_p", type=float, default=0.9)
-    p.add_argument(
+    parser.add_argument(
+        "model_name",
+        help="HF model name or local path (e.g. meta-llama/Llama-3.2-1B)",
+    )
+    parser.add_argument(
+        "--max_new_tokens", type=int, default=128, help="Max tokens to generate"
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0.7, help="Sampling temperature"
+    )
+    parser.add_argument(
+        "--top_p", type=float, default=0.9, help="Nucleus sampling top-p"
+    )
+    parser.add_argument(
         "--no_sample",
         action="store_true",
         help="Use greedy decoding instead of sampling",
     )
-    args = p.parse_args()
+    args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    # Load HF model + tokenizer
-    print(f"Loading model `{args.model_name}`…", file=sys.stderr)
+    # 1) Load config, fix rope-scaling & pad-token
+    config = AutoConfig.from_pretrained(args.model_name)
+    if hasattr(config, "rope_scaling"):
+        config = fix_rope_scaling(config)
+    config = fix_pad_token_id(config)
+
+    # 2) Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token_id is None:
-        # some models lack pad_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token_id = config.pad_token_id
+
+    # 3) Load model
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
+        config=config,
         torch_dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
         device_map="auto" if device.startswith("cuda") else None,
     )
     model.to(device).eval()
-    print("✅ Model loaded.", file=sys.stderr)
+    print("✅ Model loaded", file=sys.stderr)
 
-    # Chat history with a tiny system prompt
-    system = "System: You are a helpful assistant.\n"
-    history = system
+    # 4) Chat loop
+    system_prompt = "System: You are a helpful assistant.\n"
+    history = system_prompt
     sep = "\n"
-    print("=== Chat ready (CTRL-C or 'exit' to quit) ===", file=sys.stderr)
+    print("=== Chat ready (type 'exit' or Ctrl-C to quit) ===", file=sys.stderr)
 
     while True:
         try:
             user_in = input("User: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.", file=sys.stderr)
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye!", file=sys.stderr)
             break
 
         if not user_in:
@@ -62,19 +80,16 @@ def main():
             print("Goodbye!", file=sys.stderr)
             break
 
-        # Append user turn & prepare prompt
+        # append user turn
         history += f"User: {user_in}{sep}Assistant: "
         prompt = history
 
-        # Tokenize
+        # tokenize + prepare streamer
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
-
-        # Set up streamer
         streamer = TextIteratorStreamer(
             tokenizer, skip_prompt=True, skip_special_tokens=True
         )
 
-        # Generation kwargs
         gen_kwargs = dict(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
@@ -85,23 +100,23 @@ def main():
             top_p=args.top_p,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            use_cache=False,
+            use_cache=False,  # force full forward each step
         )
 
-        # Fire off generation on a background thread
+        # launch generation in background thread
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()
 
-        # Stream out tokens as they arrive
-        assistant_text = ""
+        # stream out tokens as they arrive
+        assistant_out = ""
         for chunk in streamer:
             print(chunk, end="", flush=True)
-            assistant_text += chunk
+            assistant_out += chunk
         thread.join()
-        print()  # newline
+        print()  # newline after turn
 
-        # Append assistant reply to history
-        history += assistant_text + sep
+        # add assistant reply to history
+        history += assistant_out + sep
 
 
 if __name__ == "__main__":
