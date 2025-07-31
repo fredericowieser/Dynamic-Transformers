@@ -24,7 +24,7 @@ def load_weights(model, model_dir, device):
       - or a single pytorch_model.bin
     """
     state_dict = {}
-    # 1) sharded safetensors: model-*.safetensors
+    # sharded safetensors: model-*.safetensors
     if safe_load:
         shard_paths = sorted(glob.glob(os.path.join(model_dir, "model-*.safetensors")))
         if shard_paths:
@@ -34,14 +34,14 @@ def load_weights(model, model_dir, device):
             model.load_state_dict(state_dict, strict=False)
             return
 
-        # 2) single-file pytorch_model.safetensors
+        # single-file pytorch_model.safetensors
         single = os.path.join(model_dir, "pytorch_model.safetensors")
         if os.path.isfile(single):
             sd = safe_load(single, device=device)
             model.load_state_dict(sd, strict=False)
             return
 
-    # 3) single-file pytorch_model.bin
+    # single-file pytorch_model.bin
     bin_path = os.path.join(model_dir, "pytorch_model.bin")
     if os.path.isfile(bin_path):
         sd = torch.load(bin_path, map_location=device)
@@ -119,18 +119,15 @@ def main():
     )
     args = parser.parse_args()
 
-    # 1) Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}", file=sys.stderr)
 
-    # 2) Load config + tokenizer
+    # Load config, model, + tokenizer
     config = DynamicLlamaConfig.from_pretrained(args.model_dir)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = config.pad_token_id or tokenizer.eos_token_id
     config.pad_token_id = tokenizer.pad_token_id
-
-    # 3) Build model & load weights manually
     model = DynamicLlamaForCausalLM(config)
     model.to(device)
     model.eval()
@@ -139,7 +136,7 @@ def main():
     load_weights(model, args.model_dir, device)
     print("✅ Weights loaded.", file=sys.stderr)
 
-    # 4) Override dynamic params (always define these attributes)
+    # Override dynamic params (always define these attributes)
     dyn_k = args.dynamic_k if args.dynamic_k is not None else config.dynamic_k
     if dyn_k is None:
         raise ValueError("dynamic_k must be set in config.json or via --dynamic_k")
@@ -154,7 +151,7 @@ def main():
     model.set_ce_bias(cb)
     print(f"-> ce_bias = {model.ce_bias}", file=sys.stderr)
 
-    # 5) Optional gate logging
+    # Optional gate logging
     accum_means = []
     if args.print_gates and hasattr(model, "enable_gate_logging"):
         model.enable_gate_logging(True)
@@ -171,10 +168,10 @@ def main():
         model.forward = wrapped_forward
         print("✅ Gate logging enabled", file=sys.stderr)
 
-    # 6) Tokenize prompt
+    # Tokenize prompt
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
-    # 7) Generate
+    # Generate
     with torch.no_grad(), torch.autocast(
         device_type=device.split(":")[0], dtype=torch.bfloat16
     ):
@@ -189,13 +186,13 @@ def main():
             use_cache=False,
         )
 
-    # 8) Decode only new tokens
+    # Decode only new tokens
     gen = outputs[0, inputs.input_ids.shape[1] :].tolist()
     completion = tokenizer.decode(gen, skip_special_tokens=True)
     print("\n--- Completion ---")
     print(completion.strip())
 
-    # 9) Print gate stats if requested
+    # Print gate stats if requested
     if args.print_gates and accum_means:
         arr = torch.tensor(accum_means)  # (steps, layers)
         m = arr.mean(dim=0)
