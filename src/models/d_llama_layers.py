@@ -29,40 +29,22 @@ class FeedForward(nn.Module):
 
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
-    """
-    Unified Dynamic Llama Decoder Layer that supports both token-wise and block-wise gating.
-
-    The gating behavior is controlled by the `token_wise` configuration parameter:
-    - token_wise=True: Gates are computed and applied per token (B, T)
-    - token_wise=False: Gates are computed per block/sequence and applied uniformly (B,)
-    """
-
-    def __init__(self, config, layer_idx: int, load_from_pretrained: bool = False):
+    def __init__(self, config, layer_idx: int, load_from_pretrained=False):
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
+        self.token_wise_gating = getattr(config, "token_wise", True)  # Set early
 
-        # Initialize standard components
-        self.self_attn = LlamaAttention(config, layer_idx)
-        self.mlp = LlamaMLP(config)
-
-        # Initialize dynamic components
-        self.prior_ffn = FeedForward(config)
-        self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-        # Initialize dynamic components only if not loading from pretrained
         if not load_from_pretrained:
             self.prior_ffn = FeedForward(config)
             self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
             self._initialize_prior_components()
         else:
-            # Assume prior_ffn and prior_layernorm are already set from the state dict
-            log.info(f"Skipping prior FFN initialization for layer {layer_idx} (loading from pretrained)")
-
-        self.token_wise_gating = getattr(config, "token_wise", True)
+            # Skip initialization entirely
+            log.info(f"Skipping prior FFN initialization for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
 
     def _initialize_prior_components(self):
-        if hasattr(self, 'prior_ffn'):  # Only initialize if it exists
+        if hasattr(self, 'prior_ffn') and hasattr(self, 'prior_layernorm'):
             log.info(f"Initializing new prior_ffn for layer {self.layer_idx} (token_wise={self.token_wise_gating})")
             for module in [self.prior_ffn, self.prior_layernorm]:
                 for name, param in module.named_parameters():
@@ -70,6 +52,8 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
                         nn.init.normal_(param, mean=0.0, std=0.02)
                     elif "bias" in name:
                         nn.init.zeros_(param)
+        else:
+            log.warning(f"Prior components not found for layer {self.layer_idx}; skipping initialization")
 
     def _prepare_attention_inputs(
         self,
