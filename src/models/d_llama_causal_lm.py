@@ -57,16 +57,16 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         **kwargs
     ) -> dict:
         """
-        Prepares inputs: Generates position_ids if missing, creates 4D causal + padding mask.
+        Generates position_ids if missing, creates 4D causal + padding mask.
         Robustness: Validates shapes, handles edge cases (e.g., no mask, empty seq).
         """
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
-        dtype = input_ids.dtype  # Use input dtype for masks
+        mask_dtype = torch.float32  # Use float for masks to support -inf
 
         # Generate position_ids if not provided
         if position_ids is None:
-            log.debug("Generating default position_ids")
+            log.debug(f"Generating default position_ids for seq_len={seq_len}")
             position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0).expand(batch_size, -1)
 
         # Validate shapes
@@ -74,21 +74,20 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
             raise ValueError(f"position_ids shape {position_ids.shape} does not match input_ids {input_ids.shape}")
 
         # Prepare 4D attention mask
-        causal_mask_base = torch.full((seq_len, seq_len), torch.finfo(dtype).min, device=device)
+        causal_mask_base = torch.full((seq_len, seq_len), torch.finfo(mask_dtype).min, dtype=mask_dtype, device=device)
         causal_mask_base = torch.triu(causal_mask_base, diagonal=1)
 
         if attention_mask is not None:
             if attention_mask.dim() != 2 or attention_mask.shape != (batch_size, seq_len):
                 raise ValueError(f"attention_mask must be (batch_size, seq_len), got {attention_mask.shape}")
-            expanded_padding_mask = (1 - attention_mask).bool().to(dtype).masked_fill_(
-                (1 - attention_mask).bool(), torch.finfo(dtype).min
+            expanded_padding_mask = (1 - attention_mask).bool().to(mask_dtype).masked_fill_(
+                (1 - attention_mask).bool(), torch.finfo(mask_dtype).min
             ).unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
             attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(0) + expanded_padding_mask
             attention_mask_4d = attention_mask_4d.expand(batch_size, 1, seq_len, seq_len)
         else:
             log.debug("No attention_mask provided; using pure causal mask")
             attention_mask_4d = causal_mask_base.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seq_len, seq_len)
-
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask_4d,
