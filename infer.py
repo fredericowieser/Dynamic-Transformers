@@ -139,15 +139,21 @@ def main():
     load_weights(model, args.model_dir, device)
     print("✅ Weights loaded.", file=sys.stderr)
 
-    # 4) Override dynamic params
-    if args.dynamic_k is not None:
-        model.set_dynamic_k(args.dynamic_k)
-        print(f"-> dynamic_k = {args.dynamic_k}", file=sys.stderr)
-    model.set_gate_warmup_iters(args.gate_warmup_iters)
-    if args.ce_bias is not None:
-        model.set_ce_bias(args.ce_bias)
-        print(f"-> ce_bias = {args.ce_bias}", file=sys.stderr)
+    # 4) Override dynamic params (always define these attributes)
+    dyn_k = args.dynamic_k if args.dynamic_k is not None else config.dynamic_k
+    if dyn_k is None:
+        raise ValueError("dynamic_k must be set in config.json or via --dynamic_k")
+    model.set_dynamic_k(dyn_k)
+    print(f"-> dynamic_k = {model.dynamic_k}", file=sys.stderr)
 
+    gw = args.gate_warmup_iters
+    model.set_gate_warmup_iters(gw)
+    print(f"-> gate_warmup_iters = {model.gate_warmup_iters}", file=sys.stderr)
+
+    cb = args.ce_bias if args.ce_bias is not None else getattr(config, "ce_bias", 0.0)
+    model.set_ce_bias(cb)
+    print(f"-> ce_bias = {model.ce_bias}", file=sys.stderr)
+    
     # 5) Optional gate logging
     accum_means = []
     if args.print_gates and hasattr(model, "enable_gate_logging"):
