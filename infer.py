@@ -114,7 +114,9 @@ def main():
     )
     parser.add_argument(
         "--do_sample",
-        action="store_true",
+        type=bool,
+        default=False,
+        choices=[True, False],
         help="Enable sampling; otherwise greedy",
     )
     args = parser.parse_args()
@@ -153,7 +155,7 @@ def main():
     cb = args.ce_bias if args.ce_bias is not None else getattr(config, "ce_bias", 0.0)
     model.set_ce_bias(cb)
     print(f"-> ce_bias = {model.ce_bias}", file=sys.stderr)
-    
+
     # 5) Optional gate logging
     accum_means = []
     if args.print_gates and hasattr(model, "enable_gate_logging"):
