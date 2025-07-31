@@ -105,7 +105,7 @@ def main():
         messages = [{"role": "system", "content": system_prompt}] + history
         prompt = build_prompt(
             messages, 
-            tokenize=False,
+            tokenizer=False,
             add_generation_prompt=True,
         )
 
