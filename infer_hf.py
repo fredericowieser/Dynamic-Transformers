@@ -89,7 +89,7 @@ def main():
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         device_map="auto",
     )
-    model.to(device).eval()
+    model.eval()
 
     # Patch out the tiny default max_length in generation_config.json
     if hasattr(model, "generation_config"):
