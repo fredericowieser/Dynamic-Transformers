@@ -1,6 +1,7 @@
 import argparse
 import threading
 import sys
+from typing import List
 import torch
 
 from transformers import (
@@ -8,46 +9,44 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
+    StoppingCriteria,
+    StoppingCriteriaList,
 )
 
 # import your fixes
 from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
+class StopOnSequence(StoppingCriteria):
+    def __init__(self, stop_ids: List[List[int]]):
+        super().__init__()
+        # stop_ids is a list of token‐id sequences (each a List[int])
+        self.stop_ids = stop_ids
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        for seq in self.stop_ids:
+            if len(input_ids[0]) >= len(seq) and \
+               input_ids[0, -len(seq) :].tolist() == seq:
+                return True
+        return False
+
+# your existing build_prompt, but ensure you open [INST] on every user turn:
 def build_prompt(system_prompt, history, tokenizer):
-    """
-    Build a single prompt string using LLaMA’s chat template.
-
-    <s>[INST] <<SYS>>
-    {system_prompt}
-    <</SYS>>
-
-    {user1} [/INST]
-    {assistant1}
-    [INST] {user2} [/INST]
-    {assistant2}
-    …
-    [INST] {last_user} [/INST]
-    """
     bos = tokenizer.bos_token or "<s>"
-    inst = "[INST]"
-    inst_end = "[/INST]"
-    sys_open = "<<SYS>>"
-    sys_close = "<</SYS>>"
+    inst, inst_end = "[INST]", "[/INST]"
+    sys_open, sys_close = "<<SYS>>", "<</SYS>>"
+    prompt = f"{bos}{inst} {sys_open}\n{system_prompt}\n{sys_close}\n\n"
 
-    # start with BOS + system block
-    prompt = f"{bos}{inst} {sys_open}\n{system_prompt}\n{sys_close}"
-
-    # interleave user / assistant turns
+    # history is a list of dicts {role:"user"/"assistant", content:str}
     for msg in history:
-        role, content = msg["role"], msg["content"].strip()
-        if role == "user":
-            # open a new user instruction
-            prompt += f"\n\n{content} {inst_end}"
-        else:  # assistant
-            # assistant reply follows immediately
-            prompt += f"\n\n{content}"
+        if msg["role"] == "user":
+            # open a fresh INST block for every user
+            prompt += f"{inst} {msg['content']} {inst_end}\n"
+        else:
+            # assistant text follows, then two newlines
+            prompt += f"{msg['content']}\n\n"
 
-    # model will generate the assistant reply to the last user
+    # At this point, history should end in a user message
+    # so the model will generate the assistant response
     return prompt
 
 def main():
@@ -108,6 +107,11 @@ def main():
     system_prompt = "You are a helpful assistant."
     history = []
 
+    stop_ids = [
+        tokenizer.encode("[/INST]", add_special_tokens=False)
+    ]
+    stopper = StoppingCriteriaList([StopOnSequence(stop_ids)])
+
     print("=== Chat ready (type 'exit' or Ctrl-C to quit) ===", file=sys.stderr)
     while True:
         try:
@@ -122,7 +126,8 @@ def main():
         history.append({"role": "user", "content": user_in})
         prompt = build_prompt(system_prompt, history, tokenizer)
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        inputs = tokenizer(prompt, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         # compute max_new_tokens, create streamer, etc… (as before)
 
         # generate & stream
@@ -139,18 +144,29 @@ def main():
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             use_cache=False,
+            #max_new_tokens=args.max_new_tokens,
+            stopping_criteria=stopper,
         )
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()
 
+        # stream + prune out the first appearance of "[/INST]"
         assistant_out = ""
         for chunk in streamer:
-            print(chunk, end="", flush=True)
+            # if the model ever emits the literal "[/INST]", stop here
+            if "[/INST]" in chunk:
+                idx = chunk.index("[/INST]")
+                assistant_out += chunk[:idx]
+                print(chunk[:idx], end="", flush=True)
+                break
             assistant_out += chunk
+            print(chunk, end="", flush=True)
         thread.join()
-        print()
-        history.append({"role": "assistant", "content": assistant_out})
+        print()  # newline after the assistant reply
 
+        # strip _all_ template markers before appending to history
+        clean = re.sub(r"\[\/?INST\]", "", assistant_out).strip()
+        history.append({"role": "assistant", "content": clean})
 
 if __name__ == "__main__":
     main()
