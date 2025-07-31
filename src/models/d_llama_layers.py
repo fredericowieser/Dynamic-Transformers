@@ -37,23 +37,26 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         
         if not load_from_pretrained:
             self.prior_ffn = FeedForward(config)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
             self._initialize_prior_components()
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
-            # Do not create new submodules; assume they will be loaded from state dict
-            self.prior_ffn = None  # Placeholder; will be overwritten by state dict
-            self.prior_layernorm = None
-            log.info(f"Layer {self.layer_idx} prepared for pre-trained weights only")
+            # Create submodules as placeholders without initialization
+            self.prior_ffn = FeedForward(config)  # Create, but don't initialize weights
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)  # Create without init
+            log.info(f"Layer {self.layer_idx} created as placeholder for pre-trained weights (token_wise={self.token_wise_gating})")
 
     def _initialize_prior_components(self):
-        if hasattr(self, 'prior_ffn') and hasattr(self, 'prior_layernorm'):
+        if hasattr(self, 'prior_ffn'):
             log.info(f"Initializing weights for prior_ffn in layer {self.layer_idx}")
-            for module in [self.prior_ffn, self.prior_layernorm]:
-                for name, param in module.named_parameters():
-                    if "weight" in name:
-                        nn.init.normal_(param, mean=0.0, std=0.02)
-                    elif "bias" in name:
-                        nn.init.zeros_(param)
+            for name, param in self.prior_ffn.named_parameters():
+                if "weight" in name:
+                    nn.init.normal_(param, mean=0.0, std=0.02)
+                elif "bias" in name:
+                    nn.init.zeros_(param)
+        if hasattr(self, 'prior_layernorm'):
+            for name, param in self.prior_layernorm.named_parameters():
+                if "bias" in name:
+                    nn.init.zeros_(param)
 
     def load_prior_components(self, state_dict):
         if self.prior_ffn is None:

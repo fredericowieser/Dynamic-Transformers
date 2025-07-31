@@ -210,18 +210,17 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         config = DynamicLlamaConfig.from_pretrained(pretrained_model_name_or_path)
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)  # This loads the base model
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
         
         if not isinstance(model.config, DynamicLlamaConfig):
             model.config = config
         
-        # Instead of recreating layers, directly load and update if needed
         for i, layer in enumerate(model.model.layers):
             if isinstance(layer, DynamicLlamaDecoderLayer):
-                layer.load_prior_components(layer.state_dict())  # Load into existing layer
-                log.info(f"Loaded pre-trained weights for layer {i}")
+                # Load the state dict directly into the layer
+                layer.load_state_dict(layer.state_dict(), strict=True)  # This should now work as attributes exist
+                log.info(f"Successfully loaded pre-trained weights for layer {i}")
         
-        # Apply custom params
         if hasattr(model.config, 'dynamic_k'):
             model.config.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
         if hasattr(model.config, 'ce_bias'):
