@@ -217,9 +217,11 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         
         for i, layer in enumerate(model.model.layers):
             if isinstance(layer, DynamicLlamaDecoderLayer):
-                # Load the state dict directly into the layer
-                layer.load_state_dict(layer.state_dict(), strict=True)  # This should now work as attributes exist
-                log.info(f"Successfully loaded pre-trained weights for layer {i}")
+                # Extract and load the state dict for this layer
+                layer_state_dict = {k: v for k, v in model.state_dict().items() if k.startswith(f'model.layers.{i}.')}
+                layer = DynamicLlamaDecoderLayer(config, i, load_from_pretrained=True, state_dict=layer_state_dict)
+                model.model.layers[i] = layer  # Replace with the updated layer
+                log.info(f"Successfully loaded and replaced pre-trained weights for layer {i}")
         
         if hasattr(model.config, 'dynamic_k'):
             model.config.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
