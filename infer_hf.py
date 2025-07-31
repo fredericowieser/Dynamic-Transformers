@@ -91,8 +91,8 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         config=config,
-        torch_dtype=...,
-        device_map=...,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        device_map="auto",
     )
     model.to(device).eval()
 
