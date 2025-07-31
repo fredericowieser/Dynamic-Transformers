@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn as nn
 from transformers import LlamaForCausalLM
@@ -7,6 +9,8 @@ from src.utils.llamam_config_utils import fix_pad_token_id, fix_rope_scaling
 
 from .d_llama_config import DynamicLlamaConfig
 from .d_llama_layers import DynamicLlamaDecoderLayer
+
+log = logging.getLogger(__name__)
 
 
 class DynamicLlamaForCausalLM(LlamaForCausalLM):
@@ -113,13 +117,16 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         self._last_gate_means = None
 
     def get_last_gate_means(self):
-        """
-        Returns a list of per-layer mean gate values from the *most
-        recent* forward / generate call - or None if logging disabled.
-        """
         return self._last_gate_means
 
     def forward(self, *args, **kwargs):
+        input_ids = kwargs.get("input_ids")
+        if input_ids is None:
+            raise ValueError("input_ids must be provided.")
+        
+        attention_mask = kwargs.get("attention_mask")
+        position_ids = kwargs.get("position_ids")
+
         # Pop dynamic params (fall back to config; raise if unset)
         dynamic_k = kwargs.pop("dynamic_k", self.config.dynamic_k)
         if dynamic_k is None:
@@ -137,7 +144,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
         return_metrics = kwargs.pop("return_metrics", self.training)  # Default to training mode
 
         # Prepare inputs (handles position_ids, mask)
-        prepared = self._prepare_inputs(input_ids, **kwargs)
+        prepared = self._prepare_inputs(input_ids, attention_mask, position_ids)
         hidden_states = self.model.embed_tokens(prepared["input_ids"])
         attention_mask = prepared["attention_mask"]
         position_ids = prepared["position_ids"]
