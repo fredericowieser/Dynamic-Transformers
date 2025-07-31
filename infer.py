@@ -115,6 +115,7 @@ def main():
 
         gen_kwargs = dict(
             input_ids=inputs.input_ids,
+            attention_mask=inputs.attention_mask,
             streamer=streamer,
             max_new_tokens=args.max_new_tokens,
             do_sample=not args.no_sample,
