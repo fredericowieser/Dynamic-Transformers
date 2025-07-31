@@ -1,7 +1,6 @@
 import argparse
 import threading
 import sys
-from typing import List
 import torch
 
 from transformers import (
@@ -9,27 +8,11 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
-    StoppingCriteria,
-    StoppingCriteriaList,
 )
 
 # import your fixes
 from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
-class StopOnSequence(StoppingCriteria):
-    def __init__(self, stop_ids: List[List[int]]):
-        super().__init__()
-        # stop_ids is a list of token‐id sequences (each a List[int])
-        self.stop_ids = stop_ids
-
-    def __call__(self, input_ids, scores, **kwargs) -> bool:
-        for seq in self.stop_ids:
-            if len(input_ids[0]) >= len(seq) and \
-               input_ids[0, -len(seq) :].tolist() == seq:
-                return True
-        return False
-
-# your existing build_prompt, but ensure you open [INST] on every user turn:
 def build_prompt(system_prompt, history, tokenizer):
     bos = tokenizer.bos_token or "<s>"
     inst, inst_end = "[INST]", "[/INST]"
@@ -107,11 +90,6 @@ def main():
     system_prompt = "You are a helpful assistant."
     history = []
 
-    stop_ids = [
-        tokenizer.encode("[/INST]", add_special_tokens=False)
-    ]
-    stopper = StoppingCriteriaList([StopOnSequence(stop_ids)])
-
     print("=== Chat ready (type 'exit' or Ctrl-C to quit) ===", file=sys.stderr)
     while True:
         try:
@@ -124,7 +102,12 @@ def main():
             break
 
         history.append({"role": "user", "content": user_in})
-        prompt = build_prompt(system_prompt, history, tokenizer)
+        messages = [{"role": "system", "content": system_prompt}] + history
+        prompt = build_prompt(
+            messages, 
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
         inputs = tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -145,7 +128,6 @@ def main():
             eos_token_id=tokenizer.eos_token_id,
             use_cache=False,
             max_new_tokens=args.max_new_tokens,
-            stopping_criteria=stopper,
         )
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()
@@ -165,8 +147,7 @@ def main():
         print()  # newline after the assistant reply
 
         # strip _all_ template markers before appending to history
-        clean = re.sub(r"\[\/?INST\]", "", assistant_out).strip()
-        history.append({"role": "assistant", "content": clean})
+        history.append({"role": "assistant", "content": assistant_out.strip()})
 
 if __name__ == "__main__":
     main()
