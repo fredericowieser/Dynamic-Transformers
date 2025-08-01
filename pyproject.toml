@@ -77,10 +77,6 @@ dev = [
     "zstandard>=0.23.0",
 ]
 
-cli = [
-    "huggingface-cli",
-]
-
 [tool.ruff]
 line-length = 80
 indent-width = 4
