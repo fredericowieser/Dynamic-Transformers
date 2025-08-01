@@ -9,7 +9,7 @@ defaults:
   - data: sft_mix # This sets sft_mix as the default configuration.
 
 run:
-  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}-lora_main=${model.lora.enable_lora_main_path}-lora_prior=${model.lora.enable_lora_prior_ffn}"
+  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}-lora_main=${model.model_cfg.lora.enable_lora_main_path}-lora_prior=${model.model_cfg.lora.enable_lora_prior_ffn}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto" # "cpu", "cuda", "mps", etc.
