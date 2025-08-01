@@ -2,7 +2,7 @@ import logging
 
 import torch
 import torch.nn as nn
-from transformers import LlamaForCausalLM
+from transformers import LlamaForCausalLM, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from src.utils.llama_config_utils import fix_pad_token_id, fix_rope_scaling
@@ -13,26 +13,24 @@ from .d_llama_layers import DynamicLlamaDecoderLayer
 log = logging.getLogger(__name__)
 
 
-class DynamicLlamaForCausalLM(LlamaForCausalLM):
+class DynamicLlamaForCausalLM(GenerationMixin, LlamaForCausalLM):  # Inherit from GenerationMixin
     config_class = DynamicLlamaConfig
 
     def __init__(self, config: DynamicLlamaConfig, device=None):
+        super().__init__(config)
+        self.device = device if device else torch.device("cpu")
+        self.to(self.device)
+        
         self.dynamic_k = config.dynamic_k
         self.ce_bias = config.ce_bias
         self.gate_warmup_iters = config.gate_warmup_iters
-        self.token_wise = config.token_wise
-        config = fix_rope_scaling(config)
-        config = fix_pad_token_id(config)
-
+        
         required_params = ["dynamic_k", "ce_bias", "gate_warmup_iters", "token_wise"]
         for param in required_params:
             if getattr(config, param) is None:
                 raise ValueError(f"{param} must be set in the config.")
 
-        super().__init__(config)
-
         self._modify_model_architecture()
-
         self._log_gates = False
         self._last_gate_means = None
 
