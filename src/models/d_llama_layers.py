@@ -94,17 +94,20 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             log.info(f"LoRA applied to main path of Layer {self.layer_idx}.")
 
         # --- REVISED FIX FOR ROTARY_EMB INITIALIZATION ---
-        # Initialize LlamaRotaryEmbedding by passing the full config,
-        # which is often the expected way in recent transformers versions.
-        if not hasattr(self.self_attn, 'rotary_emb') or self.self_attn.rotary_emb is None:
+        # Get the actual base attention module, whether it's wrapped by PeftModel or not.
+        if isinstance(self.self_attn, PeftModel):
+            base_attn_module = self.self_attn.base_model
+        else:
+            base_attn_module = self.self_attn
+
+        if not hasattr(base_attn_module, 'rotary_emb') or base_attn_module.rotary_emb is None:
             log.warning(f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback.")
             
-            # Pass the entire config object. LlamaRotaryEmbedding's __init__ will extract
-            # dim, max_position_embeddings, and base (rope_theta) from it.
-            self.self_attn.rotary_emb = LlamaRotaryEmbedding(config=self.config) # <-- CHANGE THIS LINE
+            # Assign rotary_emb to the *base* attention module
+            base_attn_module.rotary_emb = LlamaRotaryEmbedding(config=self.config)
             
             if device:
-                self.self_attn.rotary_emb.to(device)
+                base_attn_module.rotary_emb.to(device) # Move the new module to device
         # --- END REVISED FIX ---
 
 
