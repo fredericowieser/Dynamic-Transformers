@@ -160,25 +160,29 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
         
-        # NEW: Conditionally get the base model if LoRA is active
-        if isinstance(self.self_attn, PeftModel):
-            actual_attn_module = self.self_attn.base_model
-        else:
-            actual_attn_module = self.self_attn
+        # NEW LOGIC: Access attention parameters directly from config
+        # The LlamaAttention module's attributes are set from config during its __init__
+        # This is more robust than relying on dynamic attributes post-wrapping or loading
+        num_heads = self.config.num_attention_heads
+        head_dim = self.config.hidden_size // num_heads # Recompute head_dim from config
 
-        # Handle position embeddings if position_ids are provided
         if position_ids is not None:
             batch_size, seq_len, hidden_size = hidden_states.shape
-            num_heads = actual_attn_module.num_heads
-            head_dim = actual_attn_module.head_dim
-
+            
             dummy_value_states = hidden_states.reshape(
                 batch_size, seq_len, num_heads, head_dim
             ).transpose(
                 1, 2
             )
-            # NEW: Access rotary_emb from the actual_attn_module
-            cos, sin = actual_attn_module.rotary_emb(dummy_value_states, position_ids)
+            # IMPORTANT: The rotary_emb instance is on self.self_attn (or its base_model)
+            # We need to ensure we call the rotary_emb method from the correct instance.
+            # The original LlamaAttention sets self.rotary_emb.
+            if isinstance(self.self_attn, PeftModel):
+                rotary_embedding_module = self.self_attn.base_model.rotary_emb
+            else:
+                rotary_embedding_module = self.self_attn.rotary_emb
+
+            cos, sin = rotary_embedding_module(dummy_value_states, position_ids)
             attn_args["position_embeddings"] = (cos, sin)
 
         return attn_args
