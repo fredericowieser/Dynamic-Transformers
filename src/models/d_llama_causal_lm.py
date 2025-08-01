@@ -29,6 +29,11 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
             if getattr(config, param) is None:
                 raise ValueError(f"{param} must be set in the config.")
 
+        # New: Store LoRA flags from config for internal use (e.g. in _setup_parameter_groups)
+        self.enable_lora_main_path = getattr(config, "enable_lora_main_path", False)
+        self.enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
+        self.init_prior_from_mlp = getattr(config, "init_prior_from_mlp", False)
+
         self._modify_model_architecture()
         self._log_gates = False
         self._last_gate_means = None
@@ -36,8 +41,22 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
     def _modify_model_architecture(self):
         device = next(self.parameters()).device if next(self.parameters(), None) is not None else torch.device("cpu")
         new_layers = torch.nn.ModuleList()
+        
+        init_prior_from_mlp_flag = getattr(self.config, "init_prior_from_mlp", False)
+
         for i, layer in enumerate(self.model.layers):
-            custom_layer = DynamicLlamaDecoderLayer(self.config, i)
+            original_mlp_state_dict = None
+            if init_prior_from_mlp_flag:
+                original_mlp_state_dict = layer.mlp.state_dict()
+                original_mlp_state_dict = {k: v.cpu() for k, v in original_mlp_state_dict.items()}
+
+
+            custom_layer = DynamicLlamaDecoderLayer(
+                self.config,
+                i,
+                init_prior_from_mlp=init_prior_from_mlp_flag,
+                original_mlp_state_dict_for_prior_init=original_mlp_state_dict
+            )
             try:
                 layer_device = next(custom_layer.parameters()).device
                 if str(layer_device) == 'meta':
@@ -46,9 +65,11 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
                     custom_layer = custom_layer.to(device)
             except StopIteration:
                 custom_layer = custom_layer.to_empty(device=device)
+
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
         self.model.layers = new_layers
+        log.info("Llama model layers modified to DynamicLlamaDecoderLayer.")
 
     @property
     def dynamic_k(self):
@@ -234,17 +255,36 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
         if not isinstance(model.config, DynamicLlamaConfig):
             model.config = config
         
+        model.config = fix_pad_token_id(model.config)
+        model.config = fix_rope_scaling(model.config)
+        
+        init_prior_from_mlp_flag = kwargs.get('init_prior_from_mlp', getattr(model.config, 'init_prior_from_mlp', False))
+
+        new_layers = torch.nn.ModuleList()
         for i, layer in enumerate(model.model.layers):
-            if isinstance(layer, DynamicLlamaDecoderLayer):
-                # Extract and load the state dict for this layer
-                layer_state_dict = {k: v for k, v in model.state_dict().items() if k.startswith(f'model.layers.{i}.')}
-                layer = DynamicLlamaDecoderLayer(config, i, load_from_pretrained=True, state_dict=layer_state_dict)
-                model.model.layers[i] = layer  # Replace with the updated layer
-                log.info(f"Successfully loaded and replaced pre-trained weights for layer {i}")
+            original_mlp_state_dict = None
+            if init_prior_from_mlp_flag:
+                original_mlp_state_dict = layer.mlp.state_dict()
+                original_mlp_state_dict = {k: v.cpu() for k, v in original_mlp_state_dict.items()}
+
+            custom_layer = DynamicLlamaDecoderLayer(
+                model.config,
+                i,
+                load_from_pretrained=True,
+                state_dict=layer.state_dict(),
+                init_prior_from_mlp=init_prior_from_mlp_flag,
+                original_mlp_state_dict_for_prior_init=original_mlp_state_dict,
+                device=next(model.parameters()).device
+            )
+            new_layers.append(custom_layer)
+            log.info(f"Successfully re-instantiated layer {i} as DynamicLlamaDecoderLayer for loading.")
+        model.model.layers = new_layers
+
+        model.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
+        model.ce_bias = kwargs.get('ce_bias', model.config.ce_bias)
+        model.gate_warmup_iters = kwargs.get('gate_warmup_iters', model.config.gate_warmup_iters)
         
-        if hasattr(model.config, 'dynamic_k'):
-            model.config.dynamic_k = kwargs.get('dynamic_k', model.config.dynamic_k)
-        if hasattr(model.config, 'ce_bias'):
-            model.config.ce_bias = kwargs.get('ce_bias', model.config.ce_bias)
-        
+        model.enable_lora_main_path = kwargs.get('enable_lora_main_path', getattr(model.config, 'enable_lora_main_path', False))
+        model.enable_lora_prior_ffn = kwargs.get('enable_lora_prior_ffn', getattr(model.config, 'enable_lora_prior_ffn', False))
+
         return model

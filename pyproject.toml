@@ -41,6 +41,7 @@ dependencies = [
     "wandb>=0.20.1",
     "ruff>=0.12.4",
     "click>=8.2.1",
+    "peft>=0.16.0",
 ]
 
 [project.urls]
