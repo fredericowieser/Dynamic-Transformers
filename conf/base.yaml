@@ -31,7 +31,7 @@ model:
     ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
 
 # New flag: Initialize prior_ffn with weights from the corresponding layer's LlamaMLP
-    init_prior_from_mlp: false 
+    init_prior_from_mlp: true 
 
     lora: # New section for LoRA configuration
       enable_lora_main_path: false # Flag to enable LoRA for the main decoder path (Attention & MLP)
