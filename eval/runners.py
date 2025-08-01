@@ -1,6 +1,7 @@
 # eval/runners.py
 import evaluate
 import logging
+import itertools
 from datasets import load_dataset
 from human_eval.evaluation import evaluate_functional_correctness
 from tqdm import tqdm

@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.trainers.gate_logging import GateLogger
+from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,10 @@ class DynamicLlamaTrainer(pl.LightningModule):
 
         log.info(f"Loading pre-trained model: {self.model_cfg.model_name}")
         config = DynamicLlamaConfig.from_pretrained(self.model_cfg.model_name)
+        log.info("Applying config fixes for rope_scaling and pad_token_id...")
+        config = fix_rope_scaling(config)
+        config = fix_pad_token_id(config)
+        log.info("Config fixes applied.")
         required_params = {
             "dynamic_k":          self.model_cfg.dynamic_k,
             "ce_bias":            self.model_cfg.ce_bias,
