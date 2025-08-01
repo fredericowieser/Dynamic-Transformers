@@ -17,6 +17,10 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
     config_class = DynamicLlamaConfig
 
     def __init__(self, config: DynamicLlamaConfig):
+        self.dynamic_k = config.dynamic_k
+        self.ce_bias = config.ce_bias
+        self.gate_warmup_iters = config.gate_warmup_iters
+        self.token_wise = config.token_wise
         config = fix_rope_scaling(config)
         config = fix_pad_token_id(config)
 
@@ -40,6 +44,15 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
             new_layers.append(custom_layer)
         self.model.layers = new_layers
 
+    @property
+    def dynamic_k(self):
+        return self._dynamic_k
+
+    @dynamic_k.setter
+    def dynamic_k(self, value):
+        self._dynamic_k = value  # Ensure it's settable
+        log.info(f"Dynamic K set to {value}")
+    
     def set_dynamic_k(self, k: float):
         self.dynamic_k = float(k)
 
