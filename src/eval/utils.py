@@ -1,13 +1,28 @@
 import torch
+import logging
 from transformers import AutoTokenizer
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
-import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = False, ce_bias: float = None, dynamic_k: float = None):
+def load_model_and_tokenizer(
+    model_path: str, device: str, is_instruct: bool = False, ce_bias: float = None, dynamic_k: float = None
+) -> tuple:
+    """
+    Load the model and tokenizer, applying custom parameters if provided.
+
+    Args:
+        model_path (str): Path to the model.
+        device (str): Device to use (e.g., 'cuda', 'cpu').
+        is_instruct (bool): Whether the model is instruct-tuned.
+        ce_bias (float, optional): Override for CE bias.
+        dynamic_k (float, optional): Override for dynamic K.
+
+    Returns:
+        tuple: Loaded model and tokenizer.
+    """
     config = DynamicLlamaConfig.from_pretrained(model_path)
     
     if ce_bias is not None:
@@ -18,9 +33,9 @@ def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = F
     model = DynamicLlamaForCausalLM.from_pretrained(
         model_path, config=config, device_map="auto" if device == "cuda" else None
     )
-    model.eval()
+    model.eval()  # Set to evaluation mode
     
-    # Explicitly set attributes if methods exist
+    # Set attributes if methods are available
     if hasattr(model, "set_dynamic_k") and dynamic_k is not None:
         model.set_dynamic_k(dynamic_k)
         logger.info(f"Set dynamic_k to {dynamic_k}")
@@ -37,9 +52,40 @@ def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = F
     
     return model, tokenizer
 
-def compute_average_metric(scores: list, metric_name: str):
+def compute_average_metric(scores: list[float], metric_name: str) -> dict:
+    """
+    Compute the average and standard deviation of scores.
+
+    Args:
+        scores (list[float]): List of scores.
+        metric_name (str): Name of the metric.
+
+    Returns:
+        dict: Dictionary with average, std_dev, and metric name.
+    """
     if not scores:
         return {"average": 0.0, "std_dev": 0.0, "metric": metric_name}
     average = sum(scores) / len(scores)
     std_dev = (sum((x - average) ** 2 for x in scores) / len(scores)) ** 0.5
     return {"average": average, "std_dev": std_dev, "metric": metric_name}
+
+def manual_generate(model, tokenizer, prompt: str, max_new_tokens: int = 256) -> str:
+    """
+    Manually generate text using the model, with robust error handling.
+
+    Args:
+        model: The model instance.
+        tokenizer: The tokenizer instance.
+        prompt (str): Input prompt.
+        max_new_tokens (int): Maximum tokens to generate.
+
+    Returns:
+        str: Generated text.
+    """
+    inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
+    try:
+        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except Exception as e:
+        logger.error(f"Generation error: {e}")
+        return ""
