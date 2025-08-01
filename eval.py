@@ -10,7 +10,7 @@ from transformers import pipeline
 
 # Add the parent directory of 'src' to the Python path
 # This assumes 'evaluate.py' is in the project root alongside 'src' and 'eval'.
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Now import from the new modular structure
 from eval.benchmarks import BENCHMARKS
@@ -20,6 +20,7 @@ from eval.runners import (
     run_humaneval_benchmark,
     run_multiple_choice_benchmark,
     run_perplexity_benchmark,
+    run_mmlu_benchmark, # NEW: Dedicated MMLU runner
 )
 
 # Configure logging
@@ -96,6 +97,11 @@ def main():
         sys.exit(1)
 
     # Initialize a text generation pipeline for generative tasks once
+    # Ensure device is handled correctly for the pipeline (e.g., device=model.device.index if CUDA)
+    pipe_device = -1 # Default to CPU
+    if str(model.device).startswith("cuda"):
+        pipe_device = model.device.index if model.device.index is not None else 0
+
     gen_pipe = pipeline(
         "text-generation",
         model=model,
@@ -103,16 +109,11 @@ def main():
         max_new_tokens=256,
         temperature=0.0,
         do_sample=False,
-        device=0 if device == "cuda" else -1,  # Use device_map in pipeline
+        device=pipe_device,
     )
 
     results = {}
     
-    # Enable gate logging in the model if it supports it
-    if hasattr(model, "enable_gate_logging"):
-        model.enable_gate_logging(True)
-        log.info("Enabled gate logging in DynamicLlamaForCausalLM.")
-        
     for benchmark_name, config in BENCHMARKS.items():
         log.info(f"\n--- Running {benchmark_name} ({config['type']} benchmark) ---")
         try:
@@ -126,9 +127,14 @@ def main():
                     model, tokenizer, config, num_samples, device, args.is_instruct
                 )
                 results[benchmark_name] = score
+            elif config["type"] == "mc_multi_subject": # New type for MMLU
+                score = run_mmlu_benchmark(
+                    model, tokenizer, config, num_samples, device, args.is_instruct
+                )
+                results[benchmark_name] = score
             elif config["type"] == "generative":
                 score = run_generative_benchmark(
-                    gen_pipe, config, num_samples
+                    gen_pipe, model, config, num_samples
                 )
                 results[benchmark_name] = score
             elif config["type"] == "humaneval":
@@ -138,15 +144,6 @@ def main():
                 results[benchmark_name] = score
             else:
                 log.warning(f"Unknown benchmark type: {config['type']} for {benchmark_name}. Skipping.")
-
-            # Log dynamic gate statistics if available and logging was enabled
-            if hasattr(model, "get_last_gate_means") and model._log_gates:
-                gate_means = model.get_last_gate_means()
-                if gate_means:
-                    avg_gate_activation = sum(gate_means) / len(gate_means)
-                    log.info(f"    Average gate activation for {benchmark_name}: {avg_gate_activation:.4f}")
-                    # Store per-benchmark gate stats if needed, or aggregate later
-                    results[f"{benchmark_name}_avg_gate_activation"] = avg_gate_activation
 
         except Exception as e:
             log.error(f"Error running {benchmark_name}: {type(e).__name__}: {e}")

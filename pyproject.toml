@@ -1,71 +1,87 @@
 # pyproject.toml
+
 [project]
 name = "dynamic-transformer"
 version = "0.1.0"
-description = "Dynamic Transformer"
+description = "Dynamic Transformer with Variational Predictive Routing and PEFT support."
 authors = [
   { name="Fred", email="fred@example.com" },
 ]
 readme = "README.md"
-license = { file="LICENSE" } # It's good practice to add a LICENSE file (e.g., MIT, Apache-2.0)
+license = { text = "MIT" } # Assuming MIT license. Best to have a LICENSE file in your repo.
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Machine Learning",
+    "Framework :: PyTorch",
 ]
 
-# --- Core Dependencies ---
-# These are the essential packages required to run the main training script.
+# Core dependencies for training the model
 dependencies = [
-    "torch>=2.2.0",
-    "pytorch-lightning>=2.2.0",
-    "hydra-core>=1.3.2",
-    # Omegaconf and its dependencies are pinned to versions known to be stable together.
-    "omegaconf>=2.3.0",
-    "antlr4-python3-runtime", # '~=4.10.1' means '>=4.10.1, <4.11.0'
-    "PyYAML>=6.0",
-    # Hugging Face ecosystem
-    "transformers==4.43.0",
-    "datasets>=2.18.0",
-    "accelerate>=0.27.0",
-    "safetensors>=0.4.2",
-    "sentencepiece>=0.2.0", # Often a required tokenizer dependency
-    "tensorboard>=2.19.0",
-    "huggingface-hub>=0.33.1",
-    "human-eval>=1.0.3",
-    "scikit-learn>=1.7.1",
-    "zstandard>=0.23.0",
-    "wandb>=0.20.1",
-    "ruff>=0.12.4",
-    "click>=8.2.1",
-    "peft>=0.16.0",
+    # Main ML Frameworks
+    "torch>=2.2.0",             # PyTorch framework
+    "pytorch-lightning>=2.2.0", # PyTorch Lightning for training orchestration
+    "accelerate>=0.27.0",       # Hugging Face Accelerate for distributed training/mixed precision
+
+    # Hugging Face Ecosystem
+    "transformers>=4.40.0",     # Hugging Face Transformers library (ensure compatibility with PEFT)
+    "peft>=0.16.0",             # Parameter-Efficient Fine-Tuning library
+    "huggingface-hub>=0.23.0",  # For interacting with Hugging Face Hub
+    "datasets>=2.18.0",         # Hugging Face Datasets library for data loading
+    "safetensors>=0.4.2",       # For efficient model saving/loading
+
+    # Configuration and Utilities
+    "hydra-core>=1.3.2",        # Hydra for configuration management
+    "omegaconf>=2.3.0",         # Dependency of Hydra
+    "PyYAML>=6.0",              # General YAML parsing, often used by Hydra/Omegaconf
+    "sentencepiece>=0.2.0",     # Tokenizer dependency (common for Llama models)
+    "tqdm>=4.66.0",             # Progress bars
+    "numpy>=1.26.0",            # Numerical operations
+    "regex>=2024.5.15",         # Regex operations, used by tokenizers
+    "packaging>=24.0",          # For version parsing
+    "filelock>=3.14.0",         # File locking utilities
+    "fsspec>=2024.3.0",         # File system abstraction, often for cloud storage
+    "psutil>=6.0.0",            # System utilities, sometimes used by HF libraries
+    "requests>=2.32.0",         # HTTP library, used by huggingface_hub
+    "charset-normalizer>=3.3.0", # Dependency of requests
+    "idna>=3.6",                 # Dependency of requests
+    "urllib3>=2.2.0",            # Dependency of requests
+    "typing-extensions>=4.8.0",  # Backports for typing features
+    "pillow>=10.0.0",            # Common image processing library (if data involves images)
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/user/repo" # Replace with your repo URL
-"Bug Tracker" = "https://github.com/user/repo/issues" # Replace with your repo URL
+"Homepage" = "https://github.com/user/your-repo-name" # Update with your repository URL
+"Bug Tracker" = "https://github.com/user/your-repo-name/issues" # Update with your repository URL
 
 [project.optional-dependencies]
-# --- Logging Dependencies ---
-# Install with: uv pip install -e ".[logging]"
+# Dependencies for logging tools
 logging = [
-    "wandb>=0.16.0",
-    "tensorboard>=2.16.0",
+    "wandb>=0.16.0",    # Weights & Biases for experiment tracking
+    "tensorboard>=2.16.0", # TensorBoard for visualization
 ]
 
-# --- Development Dependencies ---
-# Install with: uv pip install -e ".[dev]"
+# Development and testing dependencies
 dev = [
-    "pytest>=8.0",
-    "ipykernel", # For Jupyter notebook support
-    "ruff",      # For linting and formatting
+    "pytest>=8.0",      # Testing framework
+    "ipykernel",        # For Jupyter/IPython support
+    "ruff>=0.12.4",     # Linter and formatter
+    "human-eval>=1.0.3", # If you plan to use this for evaluation
+    "scikit-learn>=1.4.0", # General ML utilities, if needed
+    "zstandard>=0.23.0", # Compression library, if used for data
 ]
 
-# To install all optional dependencies, use:
-# uv pip install -e ".[logging,dev]" or uv pip sync --all-extras
+# Additional CLI tools, if needed (e.g., Hugging Face CLI)
+cli = [
+    "huggingface-cli", # Provides command-line interface for Hugging Face Hub interaction
+]
 
 [tool.ruff]
 # See https://docs.astral.sh/ruff/configuration/
