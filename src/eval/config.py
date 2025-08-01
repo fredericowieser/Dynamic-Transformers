@@ -11,6 +11,9 @@ def load_model_config(model_path: str) -> dict:
 
     Returns:
         dict: A dictionary containing extracted parameters.
+
+    Raises:
+        ValueError: If configuration loading fails.
     """
     try:
         config = AutoConfig.from_pretrained(model_path)

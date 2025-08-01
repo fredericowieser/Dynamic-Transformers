@@ -80,9 +80,9 @@ def manual_generate(model, tokenizer, prompt: str, max_new_tokens: int = 256) ->
         max_new_tokens (int): Maximum tokens to generate.
 
     Returns:
-        str: Generated text.
+        str: Generated text or an empty string on error.
     """
-    inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(next(model.parameters()).device)
     try:
         outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
