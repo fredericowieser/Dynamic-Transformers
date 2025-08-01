@@ -30,8 +30,6 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
                 raise ValueError(f"{param} must be set in the config.")
 
         super().__init__(config)
-        self.device = device if device else torch.device("cpu")
-        self.to(self.device)
 
         self._modify_model_architecture()
 
