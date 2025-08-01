@@ -8,7 +8,7 @@ authors = [
   { name="Fred", email="fred@example.com" },
 ]
 readme = "README.md"
-license = { text = "MIT" } # Assuming MIT license. Best to have a LICENSE file in your repo.
+license = { text = "MIT" }
 requires-python = ">=3.10,<3.12" # Pinning to explicitly allow 3.10 and 3.11, but exclude 3.12 to avoid antlr4 issues
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -25,36 +25,36 @@ classifiers = [
 # Core dependencies for training the model
 dependencies = [
     # Main ML Frameworks
-    "torch>=2.2.0",             # PyTorch framework
-    "pytorch-lightning>=2.2.0", # PyTorch Lightning for training orchestration
-    "accelerate>=0.27.0",       # Hugging Face Accelerate for distributed training/mixed precision
+    "torch>=2.2.0",
+    "pytorch-lightning>=2.2.0",
+    "accelerate>=0.27.0",
 
     # Hugging Face Ecosystem
-    "transformers>=4.54.1,<4.55.0", # Explicitly pin to the version that was installed and works with peft 0.16.0
-    "peft>=0.16.0,<0.17.0",       # Parameter-Efficient Fine-Tuning library
-    "huggingface-hub>=0.23.0",  # For interacting with Hugging Face Hub
-    "datasets>=2.18.0",         # Hugging Face Datasets library for data loading
-    "safetensors>=0.4.2",       # For efficient model saving/loading
+    "transformers>=4.54.1,<4.55.0",
+    "peft>=0.16.0,<0.17.0",
+    "huggingface-hub>=0.23.0",
+    "datasets>=2.18.0",
+    "safetensors>=0.4.2",
 
     # Configuration and Utilities
-    "hydra-core>=1.3.2,<1.4.0", # Hydra for configuration management
-    "omegaconf>=2.3.0,<2.4.0", # Dependency of Hydra
-    "antlr4-python3-runtime>=4.13.1,<4.14.0", # Explicitly include and constrain antlr4 runtime
-    "PyYAML>=6.0",              # General YAML parsing, often used by Hydra/Omegaconf
-    "sentencepiece>=0.2.0",     # Tokenizer dependency (common for Llama models)
-    "tqdm>=4.66.0",             # Progress bars
-    "numpy>=1.26.0",            # Numerical operations
-    "regex>=2024.5.15",         # Regex operations, used by tokenizers
-    "packaging>=24.0",          # For version parsing
-    "filelock>=3.14.0",         # File locking utilities
-    "fsspec>=2024.3.0",         # File system abstraction, often for cloud storage
-    "psutil>=6.0.0",            # System utilities, sometimes used by HF libraries
-    "requests>=2.32.0",         # HTTP library, used by huggingface_hub
-    "charset-normalizer>=3.3.0", # Dependency of requests
-    "idna>=3.6",                 # Dependency of requests
-    "urllib3>=2.2.0",            # Dependency of requests
-    "typing-extensions>=4.8.0",  # Backports for typing features
-    "pillow>=10.0.0",            # Common image processing library (if data involves images)
+    "hydra-core>=1.3.2,<1.4.0",
+    "omegaconf>=2.3.0,<2.4.0",
+    "antlr4-python3-runtime==4.9.3", # <-- CHANGE THIS LINE
+    "PyYAML>=6.0",
+    "sentencepiece>=0.2.0",
+    "tqdm>=4.66.0",
+    "numpy>=1.26.0",
+    "regex>=2024.5.15",
+    "packaging>=24.0",
+    "filelock>=3.14.0",
+    "fsspec>=2024.3.0",
+    "psutil>=6.0.0",
+    "requests>=2.32.0",
+    "charset-normalizer>=3.3.0",
+    "idna>=3.6",
+    "urllib3>=2.2.0",
+    "typing-extensions>=4.8.0",
+    "pillow>=10.0.0",
 ]
 
 [project.urls]
