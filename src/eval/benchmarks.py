@@ -1,28 +1,33 @@
 import evaluate as hf_evaluate
-from lm_eval import evaluator, tasks  # Ensure lm_eval is installed
+from lm_eval import evaluator, tasks
 from datasets import load_dataset
 import torch
 from tqdm import tqdm
 import logging
 import re
+from src.eval.utils import compute_average_metric  # Added missing import
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def manual_generate(model, tokenizer, prompt, max_new_tokens=256):
-    """Manual text generation for unsupported models."""
+    """Manual text generation for unsupported models, with fallback for missing attributes."""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     try:
-        # Check for dynamic_k if needed, but proceed without it
-        if hasattr(model.config, 'dynamic_k'):
-            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
-        else:
-            logger.warning("Model lacks 'dynamic_k'; using default generation.")
-            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
+        # Attempt generation without relying on dynamic_k
+        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except AttributeError as e:
+        if "'DynamicLlamaForCausalLM' object has no attribute 'dynamic_k'" in str(e):
+            logger.warning("Attribute 'dynamic_k' not found; attempting default generation.")
+            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)  # Retry without dynamic_k dependency
+            return tokenizer.decode(outputs[0], skip_special_tokens=True)
+        else:
+            logger.error(f"Generation error: {e}")
+            return ""  # Return empty string on other failures
     except Exception as e:
         logger.error(f"Generation error: {e}")
-        return ""  # Return empty string on failure
+        return ""
 
 def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: int, is_instruct: bool):
     try:
@@ -30,7 +35,7 @@ def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: in
             raise AttributeError(f"Task '{benchmark_name}' not found in lm_eval tasks.")
         
         results = evaluator.simple_evaluate(
-            model=model,  # Only pass supported args
+            model=model,
             tasks=[benchmark_name],
             num_fewshot=5 if "mmlu" in benchmark_name.lower() else 0,
             batch_size=8,
@@ -49,9 +54,9 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
         elif benchmark_name == "IFEval":
             ds = load_dataset("lukaemon/ifeval", split=f"test[:{num_samples}]")
         elif benchmark_name == "TLDR9+":
-            ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{num_samples}]")  # Explicit config
+            ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{num_samples}]")
         elif benchmark_name == "GPQA":
-            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")  # Fallback
+            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")
         else:
             ds = load_dataset(dataset_name, split=f"test[:{num_samples}]")
         
@@ -98,7 +103,7 @@ def run_all_benchmarks(model, tokenizer, num_samples: int, is_instruct: bool):
     benchmarks = {
         "MMLU": "mmlu",
         "ARC-C": "arc_challenge",
-        "GPQA": "lukaemon/gpqa",  # Updated to verified name
+        "GPQA": "lukaemon/gpqa",
         "HellaSwag": "hellaswag",
         "GSM8K": "gsm8k",
         "MATH": "hendrycks/competition_math",
