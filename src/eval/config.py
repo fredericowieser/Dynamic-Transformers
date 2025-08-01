@@ -1,44 +1,54 @@
-import json
-from transformers import AutoConfig
-from src.models.d_llama_config import DynamicLlamaConfig  # Adjust path as needed
+# src.eval/config.py
+"""Configuration management for evaluation."""
 
-def load_model_config(model_path: str) -> dict:
-    """
-    Load the model configuration and extract relevant parameters.
+import os
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
-    Args:
-        model_path (str): Path to the model directory or Hugging Face ID.
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
-    Returns:
-        dict: A dictionary containing extracted parameters.
+@dataclass
+class EvalConfig:
+    """Dataclass for evaluation configuration."""
+    # Benchmark settings from LLaMA paper
+    benchmarks: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "MMLU": {"shots": 5, "metric": "macro_avg/acc"},
+        "Open-rewrite eval": {"shots": 0, "metric": "micro_avg/rougeL"},
+        "TLDR9+": {"shots": 1, "metric": "rougeL"},
+        "IFEval": {"shots": 0, "metric": "Avg(Prompt/Instruction acc Loose/Strict)"},
+        "GSM8K": {"shots": 8, "metric": "em_maj1@1"},
+        "MATH": {"shots": 0, "metric": "final_em"},
+        "ARC-C": {"shots": 0, "metric": "acc"},
+        "GPQA": {"shots": 0, "metric": "acc"},
+        "HellaSwag": {"shots": 0, "metric": "acc"},
+        "BFCL V2": {"shots": 0, "metric": "acc"},
+        "Nexus": {"shots": 0, "metric": "macro_avg/acc"},
+        "InfiniteBench/En.QA": {"shots": 0, "metric": "longbook_qa/f1"},
+        "InfiniteBench/En.MC": {"shots": 0, "metric": "longbook_choice/acc"},
+        "NIH/Multi-needle": {"shots": 0, "metric": "recall"},
+        "MGSM": {"shots": 0, "metric": "em"},
+    })
 
-    Raises:
-        ValueError: If configuration loading fails.
-    """
-    try:
-        config = AutoConfig.from_pretrained(model_path)
-        return {
-            "ce_bias": getattr(config, "ce_bias", 0.0),
-            "dynamic_k": getattr(config, "dynamic_k", 0.5),
-            "config_object": config,
-        }
-    except ValueError as e:
-        if "dynamic_llama" in str(e).lower():
-            custom_config = DynamicLlamaConfig.from_pretrained(model_path)
-            return {
-                "ce_bias": getattr(custom_config, "ce_bias", 0.0),
-                "dynamic_k": getattr(custom_config, "dynamic_k", 0.5),
-                "config_object": custom_config,
-            }
-        raise e  # Re-raise for further handling
+    # Model parameters with defaults from training
+    ce_bias: float = 0.0  # Default; override from trained model
+    dynamic_k: float = 0.5  # Default; override from trained model
+    model_path: str = "path/to/trained/model"  # Path to trained model
+    output_dir: str = "./eval_results"  # Directory for outputs
+    device: str = "cuda"  # Or "cpu"
 
-def save_results(output_file: str, results: dict) -> None:
-    """
-    Save evaluation results to a JSON file.
+    def load_from_model(self, model_path: str):
+        """Load CE bias and dynamic K from trained model config."""
+        try:
+            # Assuming model config is saved via Hydra or similar
+            cfg = hydra.utils.load_config_from_file(os.path.join(model_path, "config.yaml"))
+            self.ce_bias = cfg.get("model", {}).get("model_cfg", {}).get("ce_bias", self.ce_bias)
+            self.dynamic_k = cfg.get("model", {}).get("model_cfg", {}).get("dynamic_k", self.dynamic_k)
+        except Exception as e:
+            print(f"Warning: Could not load from model config. Using defaults. Error: {e}")
 
-    Args:
-        output_file (str): Path to the output JSON file.
-        results (dict): Dictionary of results to save.
-    """
-    with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
+    def override_from_args(self, args: Dict[str, Any]):
+        """Override configs from command-line args or input dict."""
+        for key, value in args.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
