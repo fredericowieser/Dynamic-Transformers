@@ -53,7 +53,6 @@ class FeedForward(nn.Module):
                 target_modules=lora_params["lora_target_modules_prior_ffn"],
                 lora_dropout=lora_params["lora_dropout"],
                 bias=lora_params["lora_bias"],
-                task_type=TaskType.CAUSAL_LM,
             )
             self = get_peft_model(self, lora_config)
             log.info("LoRA applied to FeedForward for prior_ffn.")
@@ -89,7 +88,6 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
                 target_modules=config.lora_target_modules_main,
                 lora_dropout=config.lora_dropout,
                 bias=config.lora_bias,
-                task_type=TaskType.CAUSAL_LM,
             )
             self.self_attn = get_peft_model(self.self_attn, lora_config_main)
             self.mlp = get_peft_model(self.mlp, lora_config_main)
