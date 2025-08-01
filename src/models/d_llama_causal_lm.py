@@ -38,10 +38,14 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
         new_layers = torch.nn.ModuleList()
         for i, layer in enumerate(self.model.layers):
             custom_layer = DynamicLlamaDecoderLayer(self.config, i)
-            if custom_layer._is_meta:
+            try:
+                layer_device = next(custom_layer.parameters()).device
+                if str(layer_device) == 'meta':
+                    custom_layer = custom_layer.to_empty(device=device)
+                else:
+                    custom_layer = custom_layer.to(device)
+            except StopIteration:
                 custom_layer = custom_layer.to_empty(device=device)
-            else:
-                custom_layer = custom_layer.to(device)
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
         self.model.layers = new_layers
