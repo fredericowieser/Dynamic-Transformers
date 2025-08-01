@@ -3,6 +3,9 @@
 # setup.sh
 # This script sets up the development environment for the Dynamic-Transformer project.
 
+# Exit immediately if a command exits with a non-zero status.
+set -e
+
 echo "--- Starting Project Setup ---"
 
 # --- 1. Set Environment Variables for Better Debugging ---
@@ -22,7 +25,7 @@ if ! command -v uv &> /dev/null; then
     echo "'uv' not found. Installing it now via astral.sh..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh; then
         # Add uv to the PATH for the current shell session
-        export PATH="$HOME/.local/bin:$PATH"
+        export PATH="$HOME/.cargo/bin:$PATH"
         echo "'uv' installed successfully."
     else
         echo "Error: Failed to install 'uv'. Please try installing it manually."
@@ -37,9 +40,12 @@ echo ""
 
 # --- 3. Create Virtual Environment ---
 VENV_DIR=".venv"
-PYTHON_VERSION="3.10"
+PYTHON_VERSION="3.10" # Specify your desired Python version explicitly
 echo "Creating a virtual environment at './${VENV_DIR}' with Python >=${PYTHON_VERSION}..."
-if uv venv --python ${PYTHON_VERSION} ${VENV_DIR}; then
+# Remove existing venv to ensure a clean slate
+rm -rf "${VENV_DIR}"
+
+if uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"; then
     echo "Virtual environment created successfully."
 else
     echo "Error: Failed to create the virtual environment."
@@ -52,7 +58,8 @@ echo ""
 # --- 4. Install Project Dependencies ---
 echo "Installing dependencies from 'pyproject.toml' into the virtual environment..."
 # Use 'uv run' to execute the pip install command within the new venv
-if uv pip sync pyproject.toml; then
+# Use '--all-extras' to ensure optional dependencies (logging, dev, cli) are installed
+if uv pip sync pyproject.toml --all-extras; then
     echo "All project dependencies installed successfully."
 else
     echo "Error: Failed to install dependencies."
@@ -62,7 +69,50 @@ fi
 echo ""
 
 
-# --- 5. Final Instructions ---
+# --- 5. Dynamically set LD_LIBRARY_PATH for uv-cached CUDA libraries ---
+echo "Setting LD_LIBRARY_PATH for uv-cached CUDA libraries..."
+UV_CUDA_LIB_PATHS=""
+
+# Common NVIDIA library directory patterns within uv's cache
+# We look for 'lib' directories under package names like 'cuda', 'cudnn', 'cusparse', etc.
+# These patterns target where uv typically extracts the native libraries.
+LIB_TYPE_PATTERNS=(
+    "cuda/lib" "cudnn/lib" "cublas/lib" "cufft/lib" "curand/lib"
+    "cusolver/lib" "cusparse/lib" "cusparselt/lib" "cupti/lib" "nccl/lib"
+    "nvjitlink/lib" # Added based on common NVIDIA package names
+)
+
+# Search within uv's cache for relevant library directories
+for lib_pattern in "${LIB_TYPE_PATTERNS[@]}"; do
+    # find directories matching the pattern, ensuring they contain .so files
+    # The '/*' is important to glob into the specific package hash directory
+    for lib_dir in $(find "${HOME}/.cache/uv/archive-v0/" -maxdepth 2 -type d -path "*/${lib_pattern}" 2>/dev/null | sort -u); do
+        if ls "${lib_dir}"/*.so* &>/dev/null; then # Check if the directory actually contains .so files
+            # Add to list if not already present, prepending new paths
+            if [[ ! ":${UV_CUDA_LIB_PATHS}:" == *":${lib_dir}:"* ]]; then
+                if [ -z "${UV_CUDA_LIB_PATHS}" ]; then
+                    UV_CUDA_LIB_PATHS="${lib_dir}"
+                else
+                    UV_CUDA_LIB_PATHS="${lib_dir}:${UV_CUDA_LIB_PATHS}"
+                fi
+            fi
+        fi
+    done
+done
+
+# Check if UV_CUDA_LIB_PATHS is empty or not
+if [ -n "${UV_CUDA_LIB_PATHS}" ]; then
+    # Prepend the collected uv paths to LD_LIBRARY_PATH
+    # This ensures uv's versions are found before system versions
+    export LD_LIBRARY_PATH="${UV_CUDA_LIB_PATHS}:${LD_LIBRARY_PATH}"
+    echo "LD_LIBRARY_PATH set to: ${LD_LIBRARY_PATH}"
+else
+    echo "No specific uv-cached CUDA library paths found or needed."
+fi
+echo "Done setting LD_LIBRARY_PATH."
+
+echo ""
+# --- 6. Final Instructions ---
 echo "------------------------------------------------------------------"
 echo "Setup Complete!"
 echo "------------------------------------------------------------------"
