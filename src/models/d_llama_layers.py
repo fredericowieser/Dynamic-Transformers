@@ -105,13 +105,11 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             # Get necessary parameters from config (which holds the architectural details)
             num_heads = config.num_attention_heads
             head_dim = config.hidden_size // num_heads
-            max_position_embeddings = getattr(config, 'max_position_embeddings', 2048) # Default if not in config
             rope_theta = getattr(config, 'rope_theta', 10000.0) # Default if not in config
 
             # Create and assign the rotary embedding module
             self.self_attn.rotary_emb = LlamaRotaryEmbedding(
                 head_dim,
-                max_position_embeddings=max_position_embeddings,
                 base=rope_theta,
             )
             if device:
