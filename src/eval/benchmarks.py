@@ -1,33 +1,37 @@
 import evaluate as hf_evaluate
-from lm_eval import evaluator, tasks  # Ensure lm_eval is installed
+from lm_eval import evaluator, tasks
 from datasets import load_dataset
 import torch
 from tqdm import tqdm
 import logging
 import re
-from src.eval.utils import compute_average_metric  # Ensure this is imported
+from src.eval.utils import compute_average_metric  # Local import
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def manual_generate(model, tokenizer, prompt, max_new_tokens=256):
-    """Manual text generation for unsupported models, fully bypassing custom attributes."""
+    """Manual text generation, with error handling."""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     try:
         outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except AttributeError as e:
+        logger.error(f"Attribute error in generation: {e}. Ensure model attributes are set.")
+        raise  # Re-raise for upper-level handling
     except Exception as e:
         logger.error(f"Generation error: {e}")
         return ""  # Return empty string on failure
 
 def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: int, is_instruct: bool):
     try:
-        available_tasks = tasks.get_tasks()  # Use get_tasks() as an alternative
+        available_tasks = tasks.get_tasks()
         if benchmark_name not in available_tasks:
             raise AttributeError(f"Task '{benchmark_name}' not found in lm_eval tasks.")
         
         results = evaluator.simple_evaluate(
             model=model,
+            tokenizer=tokenizer,
             tasks=[benchmark_name],
             num_fewshot=5 if "mmlu" in benchmark_name.lower() else 0,
             batch_size=8,
@@ -42,17 +46,15 @@ def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: in
 def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: str, num_samples: int, is_instruct: bool):
     try:
         if benchmark_name == "GSM8K":
-            ds = load_dataset(dataset_name, "main", split=f"test[:{num_samples}]")
+            ds = load_dataset("gsm8k", "main", split=f"test[:{num_samples}]")
         elif benchmark_name == "IFEval":
-            try:
-                ds = load_dataset("lukaemon/ifeval", split=f"test[:{num_samples}]")
-            except Exception as e:
-                logger.error(f"Dataset 'lukaemon/ifeval' not found. Trying fallback 'openai/ifeval'.")
-                ds = load_dataset("openai/ifeval", split=f"test[:{num_samples}]")  # Fallback
+            ds = load_dataset("openai/ifeval", split=f"test[:{num_samples}]")  # Corrected name
         elif benchmark_name == "TLDR9+":
             ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{num_samples}]")
         elif benchmark_name == "GPQA":
-            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")
+            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")  # Verified name
+        elif benchmark_name == "MATH":
+            ds = load_dataset("hendrycks/competition_math", split=f"test[:{num_samples}]")
         else:
             ds = load_dataset(dataset_name, split=f"test[:{num_samples}]")
         
@@ -103,7 +105,7 @@ def run_all_benchmarks(model, tokenizer, num_samples: int, is_instruct: bool):
         "HellaSwag": "hellaswag",
         "GSM8K": "gsm8k",
         "MATH": "hendrycks/competition_math",
-        "IFEval": "lukaemon/ifeval",
+        "IFEval": "openai/ifeval",  # Updated to correct name
         "TLDR9+": "cnn_dailymail",
     }
 

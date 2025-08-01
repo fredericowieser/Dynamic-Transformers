@@ -2,6 +2,10 @@ import torch
 from transformers import AutoTokenizer
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = False, ce_bias: float = None, dynamic_k: float = None):
     config = DynamicLlamaConfig.from_pretrained(model_path)
@@ -15,6 +19,14 @@ def load_model_and_tokenizer(model_path: str, device: str, is_instruct: bool = F
         model_path, config=config, device_map="auto" if device == "cuda" else None
     )
     model.eval()
+    
+    # Explicitly set attributes if methods exist
+    if hasattr(model, "set_dynamic_k") and dynamic_k is not None:
+        model.set_dynamic_k(dynamic_k)
+        logger.info(f"Set dynamic_k to {dynamic_k}")
+    if hasattr(model, "set_ce_bias") and ce_bias is not None:
+        model.set_ce_bias(ce_bias)
+        logger.info(f"Set ce_bias to {ce_bias}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if isinstance(tokenizer.pad_token_id, (list, tuple)):
