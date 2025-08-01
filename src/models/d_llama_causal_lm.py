@@ -2,7 +2,7 @@ import logging
 
 import torch
 import torch.nn as nn
-from transformers import LlamaForCausalLM, GenerationMixin
+from transformers import LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from src.utils.llama_config_utils import fix_pad_token_id, fix_rope_scaling
@@ -13,7 +13,7 @@ from .d_llama_layers import DynamicLlamaDecoderLayer
 log = logging.getLogger(__name__)
 
 
-class DynamicLlamaForCausalLM(GenerationMixin, LlamaForCausalLM):  # Inherit from GenerationMixin
+class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
     config_class = DynamicLlamaConfig
 
     def __init__(self, config: DynamicLlamaConfig, device=None):
