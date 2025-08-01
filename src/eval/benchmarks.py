@@ -1,37 +1,29 @@
 import evaluate as hf_evaluate
-from lm_eval import evaluator, tasks
+from lm_eval import evaluator, tasks  # Ensure lm_eval is installed
 from datasets import load_dataset
 import torch
 from tqdm import tqdm
 import logging
 import re
-from src.eval.utils import compute_average_metric  # Added missing import
+from src.eval.utils import compute_average_metric  # Ensure this is imported
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def manual_generate(model, tokenizer, prompt, max_new_tokens=256):
-    """Manual text generation for unsupported models, with fallback for missing attributes."""
+    """Manual text generation for unsupported models, fully bypassing custom attributes."""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     try:
-        # Attempt generation without relying on dynamic_k
         outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
-    except AttributeError as e:
-        if "'DynamicLlamaForCausalLM' object has no attribute 'dynamic_k'" in str(e):
-            logger.warning("Attribute 'dynamic_k' not found; attempting default generation.")
-            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)  # Retry without dynamic_k dependency
-            return tokenizer.decode(outputs[0], skip_special_tokens=True)
-        else:
-            logger.error(f"Generation error: {e}")
-            return ""  # Return empty string on other failures
     except Exception as e:
         logger.error(f"Generation error: {e}")
-        return ""
+        return ""  # Return empty string on failure
 
 def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: int, is_instruct: bool):
     try:
-        if benchmark_name not in tasks.TASK_REGISTRY:
+        available_tasks = tasks.get_tasks()  # Use get_tasks() as an alternative
+        if benchmark_name not in available_tasks:
             raise AttributeError(f"Task '{benchmark_name}' not found in lm_eval tasks.")
         
         results = evaluator.simple_evaluate(
@@ -52,7 +44,11 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
         if benchmark_name == "GSM8K":
             ds = load_dataset(dataset_name, "main", split=f"test[:{num_samples}]")
         elif benchmark_name == "IFEval":
-            ds = load_dataset("lukaemon/ifeval", split=f"test[:{num_samples}]")
+            try:
+                ds = load_dataset("lukaemon/ifeval", split=f"test[:{num_samples}]")
+            except Exception as e:
+                logger.error(f"Dataset 'lukaemon/ifeval' not found. Trying fallback 'openai/ifeval'.")
+                ds = load_dataset("openai/ifeval", split=f"test[:{num_samples}]")  # Fallback
         elif benchmark_name == "TLDR9+":
             ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{num_samples}]")
         elif benchmark_name == "GPQA":
