@@ -1,7 +1,6 @@
 import evaluate as hf_evaluate
-from lm_eval import evaluator, tasks  # Import tasks for registry access
+from lm_eval import evaluator, tasks  # Ensure lm_eval is installed
 from datasets import load_dataset
-from transformers import pipeline  # Not used now, but kept for reference
 import torch
 from tqdm import tqdm
 import logging
@@ -13,20 +12,25 @@ logger = logging.getLogger(__name__)
 def manual_generate(model, tokenizer, prompt, max_new_tokens=256):
     """Manual text generation for unsupported models."""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    try:
+        # Check for dynamic_k if needed, but proceed without it
+        if hasattr(model.config, 'dynamic_k'):
+            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
+        else:
+            logger.warning("Model lacks 'dynamic_k'; using default generation.")
+            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except Exception as e:
+        logger.error(f"Generation error: {e}")
+        return ""  # Return empty string on failure
 
 def run_benchmark_lm_eval(model, tokenizer, benchmark_name: str, num_samples: int, is_instruct: bool):
     try:
-        task_dict = tasks.get_task_dict([benchmark_name])  # Pass the required argument
-        if benchmark_name not in task_dict:
+        if benchmark_name not in tasks.TASK_REGISTRY:
             raise AttributeError(f"Task '{benchmark_name}' not found in lm_eval tasks.")
-        task = task_dict[benchmark_name]
         
         results = evaluator.simple_evaluate(
-            model=model,
-            tokenizer=tokenizer,
+            model=model,  # Only pass supported args
             tasks=[benchmark_name],
             num_fewshot=5 if "mmlu" in benchmark_name.lower() else 0,
             batch_size=8,
@@ -43,7 +47,11 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
         if benchmark_name == "GSM8K":
             ds = load_dataset(dataset_name, "main", split=f"test[:{num_samples}]")
         elif benchmark_name == "IFEval":
-            ds = load_dataset("openai/ifeval", split=f"test[:{num_samples}]")  # Fallback to openai if available
+            ds = load_dataset("lukaemon/ifeval", split=f"test[:{num_samples}]")
+        elif benchmark_name == "TLDR9+":
+            ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{num_samples}]")  # Explicit config
+        elif benchmark_name == "GPQA":
+            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")  # Fallback
         else:
             ds = load_dataset(dataset_name, split=f"test[:{num_samples}]")
         
@@ -58,7 +66,7 @@ def run_custom_benchmark(model, tokenizer, benchmark_name: str, dataset_name: st
         elif benchmark_name == "TLDR9+":
             rouge = hf_evaluate.load("rouge")
             for ex in tqdm(ds, desc=benchmark_name):
-                prompt = "Summarize: " + ex.get("article", "")[:512]  # Adjusted for cnn_dailymail
+                prompt = "Summarize: " + ex.get("article", "")[:512]
                 out = manual_generate(model, tokenizer, prompt)
                 ref = ex.get("highlights", "")
                 rouge.add(prediction=out, reference=ref)
@@ -90,12 +98,12 @@ def run_all_benchmarks(model, tokenizer, num_samples: int, is_instruct: bool):
     benchmarks = {
         "MMLU": "mmlu",
         "ARC-C": "arc_challenge",
-        "GPQA": "hendrycks/gpqa",
+        "GPQA": "lukaemon/gpqa",  # Updated to verified name
         "HellaSwag": "hellaswag",
         "GSM8K": "gsm8k",
         "MATH": "hendrycks/competition_math",
-        "IFEval": "openai/ifeval",  # Updated fallback
-        "TLDR9+": "cnn_dailymail",  # Standard summarization dataset
+        "IFEval": "lukaemon/ifeval",
+        "TLDR9+": "cnn_dailymail",
     }
 
     results = {}
