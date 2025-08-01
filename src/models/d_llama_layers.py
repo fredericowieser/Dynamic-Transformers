@@ -2,7 +2,12 @@ import logging
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaDecoderLayer, LlamaMLP
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaDecoderLayer,
+    LlamaMLP,
+    LlamaRotaryEmbedding,
+)
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 log = logging.getLogger(__name__)
@@ -90,7 +95,30 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             self.mlp = get_peft_model(self.mlp, lora_config_main)
             log.info(f"LoRA applied to main path of Layer {self.layer_idx}.")
 
-        # Determine if prior_ffn itself should be LoRA-enabled
+        # --- NEW ADDITION/FIX FOR ROTARY_EMB ---
+        # Ensure that self.self_attn always has a rotary_emb attribute.
+        # This acts as a safeguard if the LlamaAttention object somehow loses it or doesn't initialize it.
+        # This should ideally be handled by transformers, but we need a robust fallback.
+        if not hasattr(self.self_attn, 'rotary_emb') or self.self_attn.rotary_emb is None:
+            log.warning(f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback.")
+            
+            # Get necessary parameters from config (which holds the architectural details)
+            num_heads = config.num_attention_heads
+            head_dim = config.hidden_size // num_heads
+            max_position_embeddings = getattr(config, 'max_position_embeddings', 2048) # Default if not in config
+            rope_theta = getattr(config, 'rope_theta', 10000.0) # Default if not in config
+
+            # Create and assign the rotary embedding module
+            self.self_attn.rotary_emb = LlamaRotaryEmbedding(
+                head_dim,
+                max_position_embeddings=max_position_embeddings,
+                base=rope_theta,
+            )
+            if device:
+                self.self_attn.rotary_emb.to(device)
+        # --- END NEW ADDITION/FIX ---
+
+
         enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
         lora_params_prior_ffn = {
             "lora_r": config.lora_r,
@@ -100,7 +128,6 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             "lora_target_modules_prior_ffn": config.lora_target_modules_prior_ffn,
         }
 
-        # Conditional initialization of prior_ffn
         if init_prior_from_mlp:
             self.prior_ffn = FeedForward(config, skip_init=True, device=device,
                                          init_from_other_mlp_weights=True,
@@ -159,12 +186,10 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             attn_args["attention_mask"] = attention_mask
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
-        
-        # NEW LOGIC: Access attention parameters directly from config
-        # The LlamaAttention module's attributes are set from config during its __init__
-        # This is more robust than relying on dynamic attributes post-wrapping or loading
+
+        # Access attention parameters directly from config
         num_heads = self.config.num_attention_heads
-        head_dim = self.config.hidden_size // num_heads # Recompute head_dim from config
+        head_dim = self.config.hidden_size // num_heads
 
         if position_ids is not None:
             batch_size, seq_len, hidden_size = hidden_states.shape
@@ -174,9 +199,9 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             ).transpose(
                 1, 2
             )
-            # IMPORTANT: The rotary_emb instance is on self.self_attn (or its base_model)
-            # We need to ensure we call the rotary_emb method from the correct instance.
-            # The original LlamaAttention sets self.rotary_emb.
+            
+            # Retrieve the rotary embedding module from the attention layer (or its base model if wrapped by PEFT)
+            # This should now always succeed due to the fallback in __init__
             if isinstance(self.self_attn, PeftModel):
                 rotary_embedding_module = self.self_attn.base_model.rotary_emb
             else:
