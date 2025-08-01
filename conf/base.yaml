@@ -34,8 +34,8 @@ model:
     init_prior_from_mlp: true 
 
     lora: # New section for LoRA configuration
-      enable_lora_main_path: false # Flag to enable LoRA for the main decoder path (Attention & MLP)
-      enable_lora_prior_ffn: false # Flag to enable LoRA for the prior_ffn
+      enable_lora_main_path: true # Flag to enable LoRA for the main decoder path (Attention & MLP)
+      enable_lora_prior_ffn: true # Flag to enable LoRA for the prior_ffn
       r: 8                    # LoRA attention dimension
       lora_alpha: 16          # LoRA scaling factor
       lora_dropout: 0.05      # Dropout probability for LoRA layers
@@ -47,7 +47,7 @@ model:
 
 training:
   accumulate_grad_batches: 4
-  max_iters: 10000
+  max_iters: 200
   eval_interval: 100
   
   optimizer:
