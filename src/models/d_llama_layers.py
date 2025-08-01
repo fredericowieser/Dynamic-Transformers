@@ -159,22 +159,26 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             attn_args["attention_mask"] = attention_mask
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
+        
+        # NEW: Conditionally get the base model if LoRA is active
+        if isinstance(self.self_attn, PeftModel):
+            actual_attn_module = self.self_attn.base_model
+        else:
+            actual_attn_module = self.self_attn
 
         # Handle position embeddings if position_ids are provided
         if position_ids is not None:
             batch_size, seq_len, hidden_size = hidden_states.shape
-            num_heads = self.self_attn.num_heads
-            head_dim = self.self_attn.head_dim
+            num_heads = actual_attn_module.num_heads
+            head_dim = actual_attn_module.head_dim
 
-            # Create dummy tensor for rotary embedding computation
             dummy_value_states = hidden_states.reshape(
                 batch_size, seq_len, num_heads, head_dim
             ).transpose(
                 1, 2
-            )  # -> (B, num_heads, T, head_dim)
-
-            # Compute cos and sin using the attention layer's rotary embedding
-            cos, sin = self.self_attn.rotary_emb(dummy_value_states, position_ids)
+            )
+            # NEW: Access rotary_emb from the actual_attn_module
+            cos, sin = actual_attn_module.rotary_emb(dummy_value_states, position_ids)
             attn_args["position_embeddings"] = (cos, sin)
 
         return attn_args
