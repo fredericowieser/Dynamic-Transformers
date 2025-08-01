@@ -87,5 +87,5 @@ def manual_generate(model, tokenizer, prompt: str, max_new_tokens: int = 256) ->
         outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0, do_sample=False)
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
     except Exception as e:
-        logger.error(f"Generation error: {e}")
-        return ""
+        logger.error(f"Generation error: {e} - Prompt: {prompt[:50]}...")
+        return ""  # Return empty string and log for debugging

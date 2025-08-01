@@ -13,7 +13,7 @@ def run_benchmark(
     model, tokenizer, benchmark_name: str, dataset_name: str, num_samples: int, is_instruct: bool
 ) -> dict:
     """
-    Run a single benchmark using Hugging Face tools, with robust field checking.
+    Run a single benchmark using Hugging Face tools, with robust field checking and error handling.
 
     Args:
         model: The model instance.
@@ -28,12 +28,12 @@ def run_benchmark(
     """
     try:
         if benchmark_name == "MMLU":
-            # MMLU requires a subset; default to one for simplicity
-            ds = load_dataset(dataset_name, "abstract_algebra", split=f"test[:{num_samples}]")  # Can be made configurable
+            # MMLU requires a subset; use a default or make configurable
+            ds = load_dataset(dataset_name, "abstract_algebra", split=f"test[:{num_samples}]")
         elif benchmark_name == "ARC-C":
             ds = load_dataset("ai2_arc", "ARC-Challenge", split=f"test[:{num_samples}]")
         elif benchmark_name == "GPQA":
-            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")  # Fallback; log if it fails
+            ds = load_dataset("lukaemon/gpqa", split=f"test[:{num_samples}]")
         elif benchmark_name == "HellaSwag":
             ds = load_dataset("hellaswag", split=f"test[:{num_samples}]")
         elif benchmark_name == "GSM8K":
@@ -50,71 +50,86 @@ def run_benchmark(
         logger.error(f"Error loading dataset for {benchmark_name}: {e}")
         return {"error": str(e)}
 
-    metric = hf_evaluate.load("accuracy")  # Default metric; override as needed
+    metric = hf_evaluate.load("accuracy")  # Default; override as needed
     scores = []
+    valid_samples = 0
 
     if benchmark_name == "MMLU":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("question", "")
             out = manual_generate(model, tokenizer, prompt)
-            if "answer" in ex:  # Check for field existence
-                metric.add(prediction=out, reference=ex["answer"])
-        scores = [metric.compute()["accuracy"]]
+            if "answer" in ex and isinstance(ex["answer"], (int, str)) and out:  # Validate
+                try:
+                    metric.add(prediction=out, reference=str(ex["answer"]))  # Ensure string for safety
+                    scores.append(1 if out == str(ex["answer"]) else 0)  # Simplified scoring
+                    valid_samples += 1
+                except ValueError:
+                    logger.warning(f"Invalid sample in MMLU: {ex.get('answer', 'N/A')}")
     elif benchmark_name == "ARC-C":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("question", "")
             out = manual_generate(model, tokenizer, prompt)
-            if "answerKey" in ex:
+            if "answerKey" in ex and out:
                 metric.add(prediction=out, reference=ex["answerKey"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if out == ex["answerKey"] else 0)
+                valid_samples += 1
     elif benchmark_name == "GPQA":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("question", "")
             out = manual_generate(model, tokenizer, prompt)
-            if "answer" in ex:
+            if "answer" in ex and out:
                 metric.add(prediction=out, reference=ex["answer"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if out == ex["answer"] else 0)
+                valid_samples += 1
     elif benchmark_name == "HellaSwag":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("ctx", "")
             out = manual_generate(model, tokenizer, prompt)
-            if "endings" in ex and "label" in ex:  # Correct field handling
-                predicted_index = ex["endings"].index(out.strip())  # Simplified; adjust as needed
+            if "endings" in ex and "label" in ex and out:
+                predicted_index = ex["endings"].index(out.strip()) if out.strip() in ex["endings"] else -1
                 metric.add(prediction=predicted_index, reference=ex["label"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if predicted_index == ex["label"] else 0)
+                valid_samples += 1
     elif benchmark_name == "GSM8K":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("question", "") + "\nLet's think step by step."
             out = manual_generate(model, tokenizer, prompt)
             ans = extract_boxed_answer(out)
-            if "answer" in ex:
+            if "answer" in ex and ans:
                 metric.add(prediction=ans, reference=ex["answer"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if ans == ex["answer"] else 0)
+                valid_samples += 1
     elif benchmark_name == "MATH":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("problem", "") + "\nLet's think step by step."
             out = manual_generate(model, tokenizer, prompt)
             ans = extract_boxed_answer(out)
-            if "solution" in ex:
+            if "solution" in ex and ans:
                 metric.add(prediction=ans, reference=ex["solution"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if ans == ex["solution"] else 0)
+                valid_samples += 1
     elif benchmark_name == "IFEval":
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = ex.get("prompt", "")
             out = manual_generate(model, tokenizer, prompt)
-            if "expected_output" in ex:
+            if "expected_output" in ex and out:
                 metric.add(prediction=out, reference=ex["expected_output"])
-        scores = [metric.compute()["accuracy"]]
+                scores.append(1 if out == ex["expected_output"] else 0)
+                valid_samples += 1
     elif benchmark_name == "TLDR9+":
         rouge = hf_evaluate.load("rouge")
         for ex in tqdm(ds, desc=benchmark_name):
             prompt = "Summarize: " + ex.get("article", "")[:512]
             out = manual_generate(model, tokenizer, prompt)
-            if "highlights" in ex:
+            if "highlights" in ex and out:
                 rouge.add(prediction=out, reference=ex["highlights"])
-        scores = [rouge.compute()["rougeL"]]
+                scores.append(rouge.compute()["rougeL"])  # ROUGE score per sample
+                valid_samples += 1
     
-    return compute_average_metric(scores, benchmark_name)
+    if valid_samples > 0:
+        return compute_average_metric(scores, benchmark_name)
+    else:
+        return {"average": 0.0, "std_dev": 0.0, "metric": benchmark_name, "error": "No valid samples"}
 
 def run_all_benchmarks(model, tokenizer, num_samples: int, is_instruct: bool) -> dict:
     """
