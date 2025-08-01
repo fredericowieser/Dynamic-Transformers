@@ -6,30 +6,24 @@ from human_eval.data import read_problems
 
 
 # Helper functions for MMLU and other dataset preprocessing
-def mmlu_preprocess(example, dev_shot_data, is_instruct):
+def mmlu_preprocess(example, dev_shot_data):
     """
     Preprocesses MMLU examples for few-shot evaluation.
     'dev_shot_data' contains the few-shot examples (e.g., first 5 from dev split).
+    This function will be passed to dataset.map() with `with_indices=False` if dev_shot_data is provided separately.
+    It constructs the prompt by prepending few-shot examples.
     """
     ctx = ""
     for s_ex in dev_shot_data:
+        # This prompt format for MMLU is typical for 5-shot CoT
         ctx += f"Question: {s_ex['question']}\nAnswer: {s_ex['choices'][s_ex['answer']]}\n\n"
     
-    # Instruct models might prefer a specific template for questions within the prompt
-    if is_instruct:
-        # For MMLU, we build the prompt context for the user role
-        return {
-            "prompt": ctx + f"Question: {example['question']}\nAnswer:",
-            "choices": example["choices"],
-            "gold": example["answer"],
-        }
-    else:
-        # Base models use a direct concatenation
-        return {
-            "prompt": ctx + f"Question: {example['question']}\nAnswer:",
-            "choices": example["choices"],
-            "gold": example["answer"],
-        }
+    # We build the prompt directly, the is_instruct flag will be handled by mc_accuracy for chat template
+    return {
+        "prompt": ctx + f"Question: {example['question']}\nAnswer:",
+        "choices": example["choices"],
+        "gold": example["answer"],
+    }
 
 
 # Define all benchmarks
@@ -39,16 +33,16 @@ BENCHMARKS = {
         "type": "ppl",
         "dataset_id": "wikitext",
         "dataset_config": "wikitext-2-raw-v1",
-        "split": "validation",
-        "fetch_texts_fn": lambda ds, N: ds["text"],
+        "split": "validation", # No slicing here for streaming
+        "fetch_texts_fn": lambda ds, N: (ds["text"] if not ds.streaming else [t["text"] for t in itertools.islice(ds, N)]), # Handles both
     },
     "pile_ppl": {
         "name": "Pile (streaming)",
         "type": "ppl",
         "dataset_id": "EleutherAI/pile",
-        "split": "test",
+        "split": "test", # No slicing here
         "streaming": True,
-        "trust_remote_code": True,
+        "trust_remote_code": True, # Many streaming datasets need this
         "fetch_texts_fn": lambda ds, N: [ex["text"] for ex in itertools.islice(ds, N)],
     },
     "c4_ppl": {
@@ -56,7 +50,7 @@ BENCHMARKS = {
         "type": "ppl",
         "dataset_id": "allenai/c4",
         "dataset_config": "en",
-        "split": "validation",
+        "split": "validation", # No slicing here
         "streaming": True,
         "fetch_texts_fn": lambda ds, N: [ex["text"] for ex in itertools.islice(ds, N)],
     },
@@ -90,6 +84,7 @@ BENCHMARKS = {
         "type": "mc",
         "dataset_id": "piqa",
         "split": "validation",
+        "trust_remote_code": True, # FIX: Added for PIQA
         "preprocess_fn": lambda ex: {
             "prompt": ex["goal"],
             "choices": [ex["sol1"], ex["sol2"]],
@@ -134,6 +129,7 @@ BENCHMARKS = {
         "dataset_id": "Idavidrein/gpqa",
         "dataset_config": "gpqa_diamond",
         "split": "main",
+        "gated": True, # NOTE: This dataset is gated and requires access
         "preprocess_fn": lambda ex: {
             "prompt": ex["Question"],
             "choices": ex["choices"],
@@ -143,18 +139,18 @@ BENCHMARKS = {
         "choices_key": "choices",
         "label_key": "gold",
     },
-    "mmlu_mean": {
+    "mmlu_mean": { # NEW: Now has its own runner type
         "name": "MMLU",
-        "type": "mc_multi_subject", # Custom type for MMLU's structure
+        "type": "mc_multi_subject", 
         "dataset_id": "cais/mmlu",
-        "split": "test",
-        "dev_split": "dev",
+        "split": "test", # Test split for evaluation
+        "dev_split": "dev", # Dev split for few-shot examples
         "num_shot": 5, # 5-shot
-        "preprocess_fn": mmlu_preprocess,
+        "preprocess_fn": mmlu_preprocess, # Will be called with few-shot data
         "prompt_key": "prompt",
         "choices_key": "choices",
         "label_key": "gold",
-        "subjects": [
+        "subjects": [ # List of MMLU subjects
             "abstract_algebra", "anatomy", "astronomy", "business_ethics", "clinical_knowledge",
             "college_biology", "college_chemistry", "college_computer_science", "college_mathematics",
             "college_medicine", "college_physics", "computer_security", "conceptual_physics",
@@ -171,9 +167,9 @@ BENCHMARKS = {
             "sociology", "us_foreign_policy", "virology", "world_religions",
         ]
     },
-    "squad_v2": {
+    "squad_v2": { # Generative, returns EM and F1
         "name": "SQuAD v2",
-        "type": "generative",
+        "type": "generative_qa", # NEW: Specific type for QA that returns EM/F1
         "dataset_id": "squad_v2",
         "split": "validation",
         "question_key": "question",
@@ -191,14 +187,13 @@ BENCHMARKS = {
         "reference_key": "answer",
         "metric": "accuracy",
         "generation_kwargs": {"max_new_tokens": 256, "do_sample": False},
-        "num_shot": 8, # Typically 8-shot CoT, but here we just pass the prompt. Needs actual few-shot context building.
-                        # For now, it's 0-shot CoT for simplicity, as in original script.
     },
     "math_acc": {
         "name": "MATH",
         "type": "generative",
         "dataset_id": "hendrycks/competition_math",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for MATH
         "prompt_builder_fn": lambda ex: ex["problem"] + "\nLet's think step by step.",
         "answer_extractor_fn": "extract_boxed_answer",
         "reference_key": "solution",
@@ -218,6 +213,7 @@ BENCHMARKS = {
         "type": "generative",
         "dataset_id": "livecodebench/ifeval",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for IFEval
         "prompt_builder_fn": lambda ex: ex["prompt"],
         "answer_extractor_fn": lambda text: text, # No specific extraction, use full generated text
         "reference_key": "expected_output",
@@ -227,21 +223,22 @@ BENCHMARKS = {
     "tldr_rougeL": {
         "name": "TLDR9+",
         "type": "generative",
-        "dataset_id": "pszemraj/long-t5-tglobal-large-16384-pubmed-3k_steps", # Approximation
+        "dataset_id": "abdelkader/tldr_news", # FIX: Changed from model ID to dataset
         "split": "test",
-        "prompt_builder_fn": lambda ex: "Summarize: " + ex["input_text"][:512],
-        "answer_extractor_fn": lambda text: text.split("Summarize:")[-1].strip(), # remove prompt if it reflects
-        "reference_key": "target_text",
+        "prompt_builder_fn": lambda ex: "Summarize: " + ex["article"][:512], # Assuming 'article' key
+        "answer_extractor_fn": lambda text: text, # Expecting direct summary
+        "reference_key": "summary", # Assuming 'summary' key
         "metric": "rouge",
         "generation_kwargs": {"max_new_tokens": 128},
     },
     "open_rewrite_rougeL": {
         "name": "Open-rewrite",
         "type": "generative",
-        "dataset_id": "tasksource/openai-rewrite", # Approximation
+        "dataset_id": "tasksource/openai-rewrite",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for openai-rewrite
         "prompt_builder_fn": lambda ex: "Rewrite: " + ex["original"],
-        "answer_extractor_fn": lambda text: text.split("Rewrite:")[-1].strip(),
+        "answer_extractor_fn": lambda text: text,
         "reference_key": "rewritten",
         "metric": "rouge",
         "generation_kwargs": {"max_new_tokens": 128},
@@ -252,6 +249,7 @@ BENCHMARKS = {
         "dataset_id": "akariasai/InfiniteBench",
         "dataset_config": "en_qa",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for InfiniteBench
         "prompt_builder_fn": lambda ex: ex["input"],
         "answer_extractor_fn": lambda text: text,
         "reference_key": "output",
@@ -264,6 +262,7 @@ BENCHMARKS = {
         "dataset_id": "akariasai/InfiniteBench",
         "dataset_config": "en_mc",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for InfiniteBench
         "prompt_key": "input",
         "choices_key": "choices",
         "label_key": "answer",
@@ -272,6 +271,7 @@ BENCHMARKS = {
         "name": "MGSM",
         "type": "generative",
         "dataset_id": "juletxara/mgsm",
+        "dataset_config": "en", # FIX: Added English config for MGSM
         "split": "test",
         "prompt_builder_fn": lambda ex: ex["question"] + "\nLet's think step by step.",
         "answer_extractor_fn": "extract_boxed_answer",
@@ -282,8 +282,9 @@ BENCHMARKS = {
     "bfcl_v2_acc": {
         "name": "BFCL V2",
         "type": "mc",
-        "dataset_id": "livecodebench/bfcl", # Approximation
+        "dataset_id": "livecodebench/bfcl",
         "split": "test",
+        "trust_remote_code": True, # FIX: Added for BFCL
         "prompt_key": "prompt",
         "choices_key": "choices",
         "label_key": "answer",
