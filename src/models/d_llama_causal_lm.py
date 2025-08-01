@@ -16,10 +16,8 @@ log = logging.getLogger(__name__)
 class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
     config_class = DynamicLlamaConfig
 
-    def __init__(self, config: DynamicLlamaConfig, device=None):
+    def __init__(self, config: DynamicLlamaConfig):
         super().__init__(config)
-        self.device = device if device else torch.device("cpu")
-        self.to(self.device)
         
         self.dynamic_k = config.dynamic_k
         self.ce_bias = config.ce_bias
@@ -35,9 +33,11 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
         self._last_gate_means = None
 
     def _modify_model_architecture(self):
+        device = next(self.parameters()).device
         new_layers = torch.nn.ModuleList()
         for i, layer in enumerate(self.model.layers):
             custom_layer = DynamicLlamaDecoderLayer(self.config, i)
+            custom_layer.to(device)
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
         self.model.layers = new_layers
