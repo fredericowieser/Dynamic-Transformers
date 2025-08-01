@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 class DynamicLlamaForCausalLM(LlamaForCausalLM):
     config_class = DynamicLlamaConfig
 
-    def __init__(self, config: DynamicLlamaConfig):
+    def __init__(self, config: DynamicLlamaConfig, device=None):
         self.dynamic_k = config.dynamic_k
         self.ce_bias = config.ce_bias
         self.gate_warmup_iters = config.gate_warmup_iters
@@ -30,6 +30,8 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):
                 raise ValueError(f"{param} must be set in the config.")
 
         super().__init__(config)
+        self.device = device if device else torch.device("cpu")
+        self.to(self.device)
 
         self._modify_model_architecture()
 

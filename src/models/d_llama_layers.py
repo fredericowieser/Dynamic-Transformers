@@ -1,31 +1,28 @@
 import logging
-
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.models.llama.modeling_llama import (LlamaAttention,
-                                                      LlamaDecoderLayer,
-                                                      LlamaMLP)
+from transformers.models.llama.modeling_llama import LlamaAttention, LlamaDecoderLayer, LlamaMLP
 
 log = logging.getLogger(__name__)
 
-
 class FeedForward(nn.Module):
-    def __init__(self, config, skip_init=False, state_dict=None):
+    def __init__(self, config, skip_init=False, state_dict=None, device=None):
         super().__init__()
-        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
+        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
+        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False).to(device)
         self.act_fn = nn.SiLU()
         self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, "hidden_dropout_prob") else 0.0)
         
         if not skip_init and state_dict is None:
             self._initialize_weights()
-            log.info("Initialized weights for FeedForward")
+            log.info("Initialized weights for FeedForward on device %s", device)
         elif state_dict is not None:
-            # Load state dict directly if provided
             self.load_state_dict(state_dict, strict=True)
-            log.info("Loaded pre-trained weights for FeedForward")
+            if device:
+                self.to(device)  # Move to device after loading
+            log.info("Loaded pre-trained weights for FeedForward on device %s", device)
 
     def _initialize_weights(self):
         for name, param in self.named_parameters():
@@ -34,44 +31,39 @@ class FeedForward(nn.Module):
             elif "bias" in name:
                 nn.init.zeros_(param)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        device = next(self.parameters()).device  # Ensure input is on the same device
+        if x.device != device:
+            x = x.to(device)
         x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
         return self.dropout(x)
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
-    def __init__(self, config, layer_idx: int, load_from_pretrained=False, state_dict=None):
+    def __init__(self, config, layer_idx: int, load_from_pretrained=False, state_dict=None, device=None):
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
         self.token_wise_gating = getattr(config, "token_wise", True)
         
         if not load_from_pretrained:
-            self.prior_ffn = FeedForward(config, skip_init=False)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.prior_ffn = FeedForward(config, skip_init=False, device=device)
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
         else:
-            self.prior_ffn = FeedForward(config, skip_init=True, state_dict=None)  # Create with skip, but load later
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps)
-            log.info(f"Layer {self.layer_idx} created for pre-trained weights (token_wise={self.token_wise_gating})")
+            self.prior_ffn = FeedForward(config, skip_init=True, state_dict=None, device=device)
+            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
+            log.info(f"Layer {self.layer_idx} created for pre-trained weights (token_wise={self.token_wise_gating}) on device {device}")
 
-    def _initialize_prior_components(self):
-        if hasattr(self, 'prior_ffn'):
-            log.info(f"Initializing weights for prior_ffn in layer {self.layer_idx}")
-            for name, param in self.prior_ffn.named_parameters():
-                if "weight" in name:
-                    nn.init.normal_(param, mean=0.0, std=0.02)
-                elif "bias" in name:
-                    nn.init.zeros_(param)
-        if hasattr(self, 'prior_layernorm'):
-            for name, param in self.prior_layernorm.named_parameters():
-                if "bias" in name:
-                    nn.init.zeros_(param)
+        if device:
+            self.to(device)  # Move the entire layer to the device
 
-    def load_prior_components(self, state_dict):
+    def load_prior_components(self, state_dict, device=None):
         if self.prior_ffn is None:
-            self.prior_ffn = FeedForward(self.config)  # Create only if not exists
+            self.prior_ffn = FeedForward(self.config, skip_init=True, device=device)
         if self.prior_layernorm is None:
-            self.prior_layernorm = nn.LayerNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
+            self.prior_layernorm = nn.LayerNorm(self.config.hidden_size, eps=self.config.rms_norm_eps).to(device)
         self.load_state_dict(state_dict, strict=True)
+        if device:
+            self.to(device)
 
     def _prepare_attention_inputs(
         self,
