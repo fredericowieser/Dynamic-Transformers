@@ -33,17 +33,17 @@ model:
 # New flag: Initialize prior_ffn with weights from the corresponding layer's LlamaMLP
     init_prior_from_mlp: false 
 
-  lora: # New section for LoRA configuration
-    enable_lora_main_path: false # Flag to enable LoRA for the main decoder path (Attention & MLP)
-    enable_lora_prior_ffn: false # Flag to enable LoRA for the prior_ffn
-    r: 8                    # LoRA attention dimension
-    lora_alpha: 16          # LoRA scaling factor
-    lora_dropout: 0.05      # Dropout probability for LoRA layers
-    bias: "none"            # Type of bias to add ("none", "all", "lora_only")
-    # Target modules for the main decoder path (LlamaAttention, LlamaMLP)
-    lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    # Target modules for the prior FFN (FeedForward class)
-    lora_target_modules_prior_ffn: ["w1", "w2", "w3"] # These are the linear layers within FeedForward
+    lora: # New section for LoRA configuration
+      enable_lora_main_path: false # Flag to enable LoRA for the main decoder path (Attention & MLP)
+      enable_lora_prior_ffn: false # Flag to enable LoRA for the prior_ffn
+      r: 8                    # LoRA attention dimension
+      lora_alpha: 16          # LoRA scaling factor
+      lora_dropout: 0.05      # Dropout probability for LoRA layers
+      bias: "none"            # Type of bias to add ("none", "all", "lora_only")
+      # Target modules for the main decoder path (LlamaAttention, LlamaMLP)
+      lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+      # Target modules for the prior FFN (FeedForward class)
+      lora_target_modules_prior_ffn: ["w1", "w2", "w3"] # These are the linear layers within FeedForward
 
 training:
   accumulate_grad_batches: 4
