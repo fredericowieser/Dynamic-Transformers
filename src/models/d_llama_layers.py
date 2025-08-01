@@ -95,26 +95,19 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             self.mlp = get_peft_model(self.mlp, lora_config_main)
             log.info(f"LoRA applied to main path of Layer {self.layer_idx}.")
 
-        # --- NEW ADDITION/FIX FOR ROTARY_EMB ---
-        # Ensure that self.self_attn always has a rotary_emb attribute.
-        # This acts as a safeguard if the LlamaAttention object somehow loses it or doesn't initialize it.
-        # This should ideally be handled by transformers, but we need a robust fallback.
+        # --- REVISED FIX FOR ROTARY_EMB INITIALIZATION ---
+        # Initialize LlamaRotaryEmbedding by passing the full config,
+        # which is often the expected way in recent transformers versions.
         if not hasattr(self.self_attn, 'rotary_emb') or self.self_attn.rotary_emb is None:
             log.warning(f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback.")
             
-            # Get necessary parameters from config (which holds the architectural details)
-            num_heads = config.num_attention_heads
-            head_dim = config.hidden_size // num_heads
-            rope_theta = getattr(config, 'rope_theta', 10000.0) # Default if not in config
-
-            # Create and assign the rotary embedding module
-            self.self_attn.rotary_emb = LlamaRotaryEmbedding(
-                head_dim,
-                base=rope_theta,
-            )
+            # Pass the entire config object. LlamaRotaryEmbedding's __init__ will extract
+            # dim, max_position_embeddings, and base (rope_theta) from it.
+            self.self_attn.rotary_emb = LlamaRotaryEmbedding(config=self.config) # <-- CHANGE THIS LINE
+            
             if device:
                 self.self_attn.rotary_emb.to(device)
-        # --- END NEW ADDITION/FIX ---
+        # --- END REVISED FIX ---
 
 
         enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
