@@ -1,6 +1,7 @@
 import logging
 
 import torch
+import accelerate
 import torch.nn as nn
 from transformers import LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -33,11 +34,14 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
         self._last_gate_means = None
 
     def _modify_model_architecture(self):
-        device = next(self.parameters()).device
+        device = next(self.parameters()).device if next(self.parameters(), None) is not None else torch.device("cpu")
         new_layers = torch.nn.ModuleList()
         for i, layer in enumerate(self.model.layers):
             custom_layer = DynamicLlamaDecoderLayer(self.config, i)
-            custom_layer.to(device)
+            if custom_layer._is_meta:
+                custom_layer = custom_layer.to_empty(device=device)
+            else:
+                custom_layer = custom_layer.to(device)
             custom_layer.load_state_dict(layer.state_dict(), strict=False)
             new_layers.append(custom_layer)
         self.model.layers = new_layers
