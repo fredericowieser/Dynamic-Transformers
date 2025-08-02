@@ -25,10 +25,10 @@ model:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
     # CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
-    dynamic_k: 0.90 # Threshold for Conditional Unconditional (CU) gate 
+    dynamic_k: 0.95 # Threshold for Conditional Unconditional (CU) gate 
     token_wise: true # Use token-wise dynamic gating
     # CE = D_st > D_ch - ce_bias # (B,) bool
-    ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
+    ce_bias: 0.05 # Bias for the Conditional Expectation (CE) gate
 
 # New flag: Initialize prior_ffn with weights from the corresponding layer's LlamaMLP
     init_prior_from_mlp: true 
@@ -58,7 +58,7 @@ training:
   scheduler:
     factor: 0.1           
     patience: 10
-    
+
   gate_warmup_iters: 100 # Steps to warm up the dynamic gating mechanism
 
 logging:
