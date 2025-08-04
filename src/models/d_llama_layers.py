@@ -1,6 +1,8 @@
 import logging
+
 import torch
 import torch.nn.functional as F
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch import nn
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
@@ -8,7 +10,6 @@ from transformers.models.llama.modeling_llama import (
     LlamaMLP,
     LlamaRotaryEmbedding,
 )
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 from .d_llama_fnn import FeedForward
 
@@ -16,13 +17,21 @@ log = logging.getLogger(__name__)
 
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
-    def __init__(self, config, layer_idx: int, load_from_pretrained=False, state_dict=None, device=None,
-                 init_prior_from_mlp: bool = False, original_mlp_state_dict_for_prior_init: dict = None): # New params
+    def __init__(
+        self,
+        config,
+        layer_idx: int,
+        load_from_pretrained=False,
+        state_dict=None,
+        device=None,
+        init_prior_from_mlp: bool = False,
+        original_mlp_state_dict_for_prior_init: dict = None,
+    ):  # New params
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
         self.token_wise_gating = getattr(config, "token_wise", True)
-        
+
         # Apply LoRA to self_attn and mlp (main decoder path) if enabled
         enable_lora_main = getattr(config, "enable_lora_main_path", False)
         if enable_lora_main:
@@ -43,12 +52,17 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         else:
             base_attn_module = self.self_attn
 
-        if not hasattr(base_attn_module, 'rotary_emb') or base_attn_module.rotary_emb is None:
-            log.warning(f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback.")
-            
+        if (
+            not hasattr(base_attn_module, "rotary_emb")
+            or base_attn_module.rotary_emb is None
+        ):
+            log.warning(
+                f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
+            )
+
             # Assign rotary_emb to the *base* attention module
             base_attn_module.rotary_emb = LlamaRotaryEmbedding(config=self.config)
-            
+
             if device:
                 base_attn_module.rotary_emb.to(device)
 
@@ -62,21 +76,36 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         }
 
         if init_prior_from_mlp:
-            self.prior_ffn = FeedForward(config, skip_init=True, device=device,
-                                         init_from_other_mlp_weights=True,
-                                         other_mlp_state_dict=original_mlp_state_dict_for_prior_init,
-                                         enable_lora=enable_lora_prior_ffn,
-                                         lora_params=lora_params_prior_ffn)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
+            self.prior_ffn = FeedForward(
+                config,
+                skip_init=True,
+                device=device,
+                init_from_other_mlp_weights=True,
+                other_mlp_state_dict=original_mlp_state_dict_for_prior_init,
+                enable_lora=enable_lora_prior_ffn,
+                lora_params=lora_params_prior_ffn,
+            )
+            self.prior_layernorm = nn.LayerNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(device)
         else:
-            self.prior_ffn = FeedForward(config, skip_init=load_from_pretrained, state_dict=None, device=device,
-                                         enable_lora=enable_lora_prior_ffn,
-                                         lora_params=lora_params_prior_ffn)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
+            self.prior_ffn = FeedForward(
+                config,
+                skip_init=load_from_pretrained,
+                state_dict=None,
+                device=device,
+                enable_lora=enable_lora_prior_ffn,
+                lora_params=lora_params_prior_ffn,
+            )
+            self.prior_layernorm = nn.LayerNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(device)
 
         if device:
             self.to(device)
-            log.info(f"Layer {self.layer_idx} created (token_wise={self.token_wise_gating}) on device {device}")
+            log.info(
+                f"Layer {self.layer_idx} created (token_wise={self.token_wise_gating}) on device {device}"
+            )
 
     def load_prior_components(self, state_dict, device=None):
         if self.prior_ffn is None:
@@ -84,12 +113,16 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             # This method needs more context if it's meant to re-initialize from scratch
             # or just load into an existing structure with potential LoRA adapters.
             # For now, assuming it's for loading into an already set up structure.
-            log.warning("load_prior_components might behave unexpectedly with LoRA. Ensure prior_ffn is correctly initialized before calling this.")
+            log.warning(
+                "load_prior_components might behave unexpectedly with LoRA. Ensure prior_ffn is correctly initialized before calling this."
+            )
             # Placeholder: a more robust implementation might involve passing config and checking
             # current LoRA state or re-instantiating FeedForward with full parameters.
             self.prior_ffn = FeedForward(self.config, skip_init=True, device=device)
         if self.prior_layernorm is None:
-            self.prior_layernorm = nn.LayerNorm(self.config.hidden_size, eps=self.config.rms_norm_eps).to(device)
+            self.prior_layernorm = nn.LayerNorm(
+                self.config.hidden_size, eps=self.config.rms_norm_eps
+            ).to(device)
         self.load_state_dict(state_dict, strict=True)
         if device:
             self.to(device)
@@ -126,13 +159,11 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
 
         if position_ids is not None:
             batch_size, seq_len, hidden_size = hidden_states.shape
-            
+
             dummy_value_states = hidden_states.reshape(
                 batch_size, seq_len, num_heads, head_dim
-            ).transpose(
-                1, 2
-            )
-            
+            ).transpose(1, 2)
+
             # Retrieve the rotary embedding module from the attention layer (or its base model if wrapped by PEFT)
             # This should now always succeed due to the fallback in __init__
             if isinstance(self.self_attn, PeftModel):
@@ -199,7 +230,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
 
         # Compute gate conditions
         CE = D_st > D_ch - gate_config["ce_bias"]
-        CU = (D_st > gate_config["dynamic_k"] * D_st.detach().mean())
+        CU = D_st > gate_config["dynamic_k"] * D_st.detach().mean()
 
         # Combine conditions
         gate_vec = (CE | CU).float()

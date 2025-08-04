@@ -1,34 +1,64 @@
 import logging
+
 import torch
 import torch.nn.functional as F
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch import nn
-
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 log = logging.getLogger(__name__)
 
+
 class FeedForward(nn.Module):
-    def __init__(self, config, skip_init=False, state_dict=None, device=None,
-                 init_from_other_mlp_weights=False, other_mlp_state_dict=None,
-                 enable_lora=False, lora_params=None):
+    def __init__(
+        self,
+        config,
+        skip_init=False,
+        state_dict=None,
+        device=None,
+        init_from_other_mlp_weights=False,
+        other_mlp_state_dict=None,
+        enable_lora=False,
+        lora_params=None,
+    ):
         super().__init__()
-        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False).to(device)
+        self.w1 = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
+        ).to(device)
+        self.w3 = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
+        ).to(device)
+        self.w2 = nn.Linear(
+            config.intermediate_size, config.hidden_size, bias=False
+        ).to(device)
         self.act_fn = nn.SiLU()
-        self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, "hidden_dropout_prob") else 0.0)
-        
+        self.dropout = nn.Dropout(
+            config.hidden_dropout_prob
+            if hasattr(config, "hidden_dropout_prob")
+            else 0.0
+        )
+
         if init_from_other_mlp_weights and other_mlp_state_dict is not None:
-            log.info("Initializing prior_ffn from LlamaMLP weights for FeedForward on device %s", device)
-            self.w1.weight.data.copy_(other_mlp_state_dict["gate_proj.weight"].to(device))
+            log.info(
+                "Initializing prior_ffn from LlamaMLP weights for FeedForward on device %s",
+                device,
+            )
+            self.w1.weight.data.copy_(
+                other_mlp_state_dict["gate_proj.weight"].to(device)
+            )
             self.w3.weight.data.copy_(other_mlp_state_dict["up_proj.weight"].to(device))
-            self.w2.weight.data.copy_(other_mlp_state_dict["down_proj.weight"].to(device))
+            self.w2.weight.data.copy_(
+                other_mlp_state_dict["down_proj.weight"].to(device)
+            )
             if "gate_proj.bias" in other_mlp_state_dict and self.w1.bias is not None:
-                self.w1.bias.data.copy_(other_mlp_state_dict["gate_proj.bias"].to(device))
+                self.w1.bias.data.copy_(
+                    other_mlp_state_dict["gate_proj.bias"].to(device)
+                )
             if "up_proj.bias" in other_mlp_state_dict and self.w3.bias is not None:
                 self.w3.bias.data.copy_(other_mlp_state_dict["up_proj.bias"].to(device))
             if "down_proj.bias" in other_mlp_state_dict and self.w2.bias is not None:
-                self.w2.bias.data.copy_(other_mlp_state_dict["down_proj.bias"].to(device))
+                self.w2.bias.data.copy_(
+                    other_mlp_state_dict["down_proj.bias"].to(device)
+                )
             self.to(device)
             skip_init = True
 
@@ -40,7 +70,7 @@ class FeedForward(nn.Module):
             if device:
                 self.to(device)  # Move to device after loading
             log.info("Loaded pre-trained weights for FeedForward on device %s", device)
-        
+
         if enable_lora and lora_params:
             lora_config = LoraConfig(
                 r=lora_params["lora_r"],

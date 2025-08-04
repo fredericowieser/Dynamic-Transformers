@@ -20,6 +20,19 @@ class DynamicLlamaConfig(LlamaConfig):
         self.lora_alpha = kwargs.pop("lora_alpha", 16)
         self.lora_dropout = kwargs.pop("lora_dropout", 0.05)
         self.lora_bias = kwargs.pop("lora_bias", "none")
-        self.lora_target_modules_main = kwargs.pop("lora_target_modules_main", ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
-        self.lora_target_modules_prior_ffn = kwargs.pop("lora_target_modules_prior_ffn", ["w1", "w2", "w3"])
+        self.lora_target_modules_main = kwargs.pop(
+            "lora_target_modules_main",
+            [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+        )
+        self.lora_target_modules_prior_ffn = kwargs.pop(
+            "lora_target_modules_prior_ffn", ["w1", "w2", "w3"]
+        )
         self.init_prior_from_mlp = kwargs.pop("init_prior_from_mlp", False)

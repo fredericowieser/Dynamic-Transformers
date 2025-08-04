@@ -15,12 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Now import from the new modular structure
 from eval.benchmarks import BENCHMARKS
 from eval.dynamic_llama_utils import load_dynamic_llama_model_and_tokenizer
+from eval.runners import run_mmlu_benchmark  # NEW: Dedicated MMLU runner
 from eval.runners import (
     run_generative_benchmark,
     run_humaneval_benchmark,
     run_multiple_choice_benchmark,
     run_perplexity_benchmark,
-    run_mmlu_benchmark, # NEW: Dedicated MMLU runner
 )
 
 # Configure logging
@@ -98,7 +98,7 @@ def main():
 
     # Initialize a text generation pipeline for generative tasks once
     # Ensure device is handled correctly for the pipeline (e.g., device=model.device.index if CUDA)
-    pipe_device = -1 # Default to CPU
+    pipe_device = -1  # Default to CPU
     if str(model.device).startswith("cuda"):
         pipe_device = model.device.index if model.device.index is not None else 0
 
@@ -113,7 +113,7 @@ def main():
     )
 
     results = {}
-    
+
     for benchmark_name, config in BENCHMARKS.items():
         log.info(f"\n--- Running {benchmark_name} ({config['type']} benchmark) ---")
         try:
@@ -127,28 +127,26 @@ def main():
                     model, tokenizer, config, num_samples, device, args.is_instruct
                 )
                 results[benchmark_name] = score
-            elif config["type"] == "mc_multi_subject": # New type for MMLU
+            elif config["type"] == "mc_multi_subject":  # New type for MMLU
                 score = run_mmlu_benchmark(
                     model, tokenizer, config, num_samples, device, args.is_instruct
                 )
                 results[benchmark_name] = score
             elif config["type"] == "generative":
-                score = run_generative_benchmark(
-                    gen_pipe, model, config, num_samples
-                )
+                score = run_generative_benchmark(gen_pipe, model, config, num_samples)
                 results[benchmark_name] = score
             elif config["type"] == "humaneval":
-                score = run_humaneval_benchmark(
-                    model, tokenizer, config, device
-                )
+                score = run_humaneval_benchmark(model, tokenizer, config, device)
                 results[benchmark_name] = score
             else:
-                log.warning(f"Unknown benchmark type: {config['type']} for {benchmark_name}. Skipping.")
+                log.warning(
+                    f"Unknown benchmark type: {config['type']} for {benchmark_name}. Skipping."
+                )
 
         except Exception as e:
             log.error(f"Error running {benchmark_name}: {type(e).__name__}: {e}")
             results[benchmark_name] = f"ERROR: {type(e).__name__}: {e}"
-            
+
     # Save final results
     with open(args.output_file, "w") as f:
         json.dump(results, f, indent=2)

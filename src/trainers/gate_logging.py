@@ -6,6 +6,7 @@ import torch
 log = logging.getLogger(__name__)
 ROLLING_WINDOW_SIZE = 100
 
+
 class GateLogger:
     """
     Handles logging and rolling statistics for dynamic gate activations.
@@ -15,7 +16,7 @@ class GateLogger:
         self.per_layer_gate_activation_rolling_history = [
             {
                 "mean": deque(maxlen=ROLLING_WINDOW_SIZE),
-                "std":  deque(maxlen=ROLLING_WINDOW_SIZE),
+                "std": deque(maxlen=ROLLING_WINDOW_SIZE),
             }
             for _ in range(num_layers)
         ]
