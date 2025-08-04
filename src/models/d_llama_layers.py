@@ -1,66 +1,128 @@
 import logging
+
 import torch
 import torch.nn.functional as F
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch import nn
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaDecoderLayer, LlamaMLP
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaDecoderLayer,
+    LlamaMLP,
+    LlamaRotaryEmbedding,
+)
+
+from .d_llama_fnn import FeedForward
 
 log = logging.getLogger(__name__)
 
-class FeedForward(nn.Module):
-    def __init__(self, config, skip_init=False, state_dict=None, device=None):
-        super().__init__()
-        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False).to(device)
-        self.act_fn = nn.SiLU()
-        self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, "hidden_dropout_prob") else 0.0)
-        
-        if not skip_init and state_dict is None:
-            self._initialize_weights()
-            log.info("Initialized weights for FeedForward on device %s", device)
-        elif state_dict is not None:
-            self.load_state_dict(state_dict, strict=True)
-            if device:
-                self.to(device)  # Move to device after loading
-            log.info("Loaded pre-trained weights for FeedForward on device %s", device)
-
-    def _initialize_weights(self):
-        for name, param in self.named_parameters():
-            if "weight" in name:
-                nn.init.normal_(param, mean=0.0, std=0.02)
-            elif "bias" in name:
-                nn.init.zeros_(param)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        device = next(self.parameters()).device  # Ensure input is on the same device
-        if x.device != device:
-            x = x.to(device)
-        x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
-        return self.dropout(x)
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
-    def __init__(self, config, layer_idx: int, load_from_pretrained=False, state_dict=None, device=None):
+    def __init__(
+        self,
+        config,
+        layer_idx: int,
+        load_from_pretrained=False,
+        state_dict=None,
+        device=None,
+        init_prior_from_mlp: bool = False,
+        original_mlp_state_dict_for_prior_init: dict = None,
+    ):  # New params
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
         self.token_wise_gating = getattr(config, "token_wise", True)
-        
-        if not load_from_pretrained:
-            self.prior_ffn = FeedForward(config, skip_init=False, device=device)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
+
+        # Apply LoRA to self_attn and mlp (main decoder path) if enabled
+        enable_lora_main = getattr(config, "enable_lora_main_path", False)
+        if enable_lora_main:
+            lora_config_main = LoraConfig(
+                r=config.lora_r,
+                lora_alpha=config.lora_alpha,
+                target_modules=config.lora_target_modules_main,
+                lora_dropout=config.lora_dropout,
+                bias=config.lora_bias,
+            )
+            self.self_attn = get_peft_model(self.self_attn, lora_config_main)
+            self.mlp = get_peft_model(self.mlp, lora_config_main)
+            log.info(f"LoRA applied to main path of Layer {self.layer_idx}.")
+
+        # ROPE Fix: Ensure rotary_emb is always initialized
+        if isinstance(self.self_attn, PeftModel):
+            base_attn_module = self.self_attn.base_model
         else:
-            self.prior_ffn = FeedForward(config, skip_init=True, state_dict=None, device=device)
-            self.prior_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps).to(device)
-            log.info(f"Layer {self.layer_idx} created for pre-trained weights (token_wise={self.token_wise_gating}) on device {device}")
+            base_attn_module = self.self_attn
+
+        if (
+            not hasattr(base_attn_module, "rotary_emb")
+            or base_attn_module.rotary_emb is None
+        ):
+            log.warning(
+                f"Layer {self.layer_idx}: LlamaAttention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
+            )
+
+            # Assign rotary_emb to the *base* attention module
+            base_attn_module.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+
+            if device:
+                base_attn_module.rotary_emb.to(device)
+
+        enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
+        lora_params_prior_ffn = {
+            "lora_r": config.lora_r,
+            "lora_alpha": config.lora_alpha,
+            "lora_dropout": config.lora_dropout,
+            "lora_bias": config.lora_bias,
+            "lora_target_modules_prior_ffn": config.lora_target_modules_prior_ffn,
+        }
+
+        if init_prior_from_mlp:
+            self.prior_ffn = FeedForward(
+                config,
+                skip_init=True,
+                device=device,
+                init_from_other_mlp_weights=True,
+                other_mlp_state_dict=original_mlp_state_dict_for_prior_init,
+                enable_lora=enable_lora_prior_ffn,
+                lora_params=lora_params_prior_ffn,
+            )
+            self.prior_layernorm = nn.LayerNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(device)
+        else:
+            self.prior_ffn = FeedForward(
+                config,
+                skip_init=load_from_pretrained,
+                state_dict=None,
+                device=device,
+                enable_lora=enable_lora_prior_ffn,
+                lora_params=lora_params_prior_ffn,
+            )
+            self.prior_layernorm = nn.LayerNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(device)
 
         if device:
-            self.to(device)  # Move the entire layer to the device
+            self.to(device)
+            log.info(
+                f"Layer {self.layer_idx} created (token_wise={self.token_wise_gating}) on device {device}"
+            )
 
     def load_prior_components(self, state_dict, device=None):
         if self.prior_ffn is None:
+            # Need to re-instantiate, considering LoRA and init_from_mlp if applicable
+            # This method needs more context if it's meant to re-initialize from scratch
+            # or just load into an existing structure with potential LoRA adapters.
+            # For now, assuming it's for loading into an already set up structure.
+            log.warning(
+                "load_prior_components might behave unexpectedly with LoRA. Ensure prior_ffn is correctly initialized before calling this."
+            )
+            # Placeholder: a more robust implementation might involve passing config and checking
+            # current LoRA state or re-instantiating FeedForward with full parameters.
             self.prior_ffn = FeedForward(self.config, skip_init=True, device=device)
         if self.prior_layernorm is None:
-            self.prior_layernorm = nn.LayerNorm(self.config.hidden_size, eps=self.config.rms_norm_eps).to(device)
+            self.prior_layernorm = nn.LayerNorm(
+                self.config.hidden_size, eps=self.config.rms_norm_eps
+            ).to(device)
         self.load_state_dict(state_dict, strict=True)
         if device:
             self.to(device)
@@ -91,21 +153,25 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         if past_key_value is not None:
             attn_args["past_key_value"] = past_key_value
 
-        # Handle position embeddings if position_ids are provided
+        # Access attention parameters directly from config
+        num_heads = self.config.num_attention_heads
+        head_dim = self.config.hidden_size // num_heads
+
         if position_ids is not None:
             batch_size, seq_len, hidden_size = hidden_states.shape
-            num_heads = self.self_attn.num_heads
-            head_dim = self.self_attn.head_dim
 
-            # Create dummy tensor for rotary embedding computation
             dummy_value_states = hidden_states.reshape(
                 batch_size, seq_len, num_heads, head_dim
-            ).transpose(
-                1, 2
-            )  # -> (B, num_heads, T, head_dim)
+            ).transpose(1, 2)
 
-            # Compute cos and sin using the attention layer's rotary embedding
-            cos, sin = self.self_attn.rotary_emb(dummy_value_states, position_ids)
+            # Retrieve the rotary embedding module from the attention layer (or its base model if wrapped by PEFT)
+            # This should now always succeed due to the fallback in __init__
+            if isinstance(self.self_attn, PeftModel):
+                rotary_embedding_module = self.self_attn.base_model.rotary_emb
+            else:
+                rotary_embedding_module = self.self_attn.rotary_emb
+
+            cos, sin = rotary_embedding_module(dummy_value_states, position_ids)
             attn_args["position_embeddings"] = (cos, sin)
 
         return attn_args
@@ -163,10 +229,8 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             D_ch = D_ch - beta
 
         # Compute gate conditions
-        CE = D_st > D_ch - gate_config["ce_bias"]  # Complexity Enhancement
-        CU = (
-            D_st > gate_config["dynamic_k"] * D_st.detach().mean()
-        )  # Complexity Understanding
+        CE = D_st > D_ch - gate_config["ce_bias"]
+        CU = D_st > gate_config["dynamic_k"] * D_st.detach().mean()
 
         # Combine conditions
         gate_vec = (CE | CU).float()
@@ -175,7 +239,6 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         gate_metrics = {
             "avg_ce_proportion": CE.float().mean(),
             "avg_cu_proportion": CU.float().mean(),
-            # Ensure consistent output shape for gate statistics
             "gate_vec_for_stats": (
                 gate_vec.mean(dim=1) if self.token_wise_gating else gate_vec
             ),
@@ -239,13 +302,9 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         # Store original input for gating decision
         original_input_to_block = hidden_states  # (B, T, C)
 
-        # ===== Standard Llama Decoder Path =====
-
-        # Self-attention
+        # Standard Llama Decoder Path
         residual_attn = hidden_states
         hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
-
-        # Prepare and execute attention
         attn_args = self._prepare_attention_inputs(
             hidden_states_pre_attn_ln,
             attention_mask,
@@ -255,11 +314,10 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             use_cache,
         )
         attn_outputs = self.self_attn(**attn_args)
-
         attention_output = attn_outputs[0]  # (B, T, C)
         hidden_states_after_attn = residual_attn + attention_output
 
-        # MLP (Posterior path)
+        # MLP "Posterior"
         residual_mlp = hidden_states_after_attn
         hidden_states_pre_mlp_ln = self.post_attention_layernorm(
             hidden_states_after_attn
@@ -267,36 +325,24 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln)  # (B, T, C)
         posterior_full_path_output = residual_mlp + posterior_mlp_output  # (B, T, C)
 
-        # ===== Dynamic Prior Prediction =====
+        # Dynamic "Prior" FFN
 
         # Use previous attention output (shifted) as input to prior FFN
         prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0))
         prior_input = self.prior_layernorm(prev_attention_output)
         prior_prediction = self.prior_ffn(prior_input)  # (B, T, C)
 
-        # ===== Dynamic Gating Logic =====
-
-        # Compute fundamental gate signals
+        # Dynamic Gating Logic
         d_st_tok, d_ch_tok = self._compute_gate_signals(
             posterior_full_path_output, prior_prediction, original_input_to_block
         )
-
-        # Apply gating strategy and compute gates
         gate_vec, gate_metrics = self._apply_gating_strategy(
             d_st_tok, d_ch_tok, gate_config
         )
-
-        # Apply gates to produce final output
         hidden_states_final = self._apply_gate_to_outputs(
             gate_vec, posterior_full_path_output, original_input_to_block
         )
-
-        # ===== Compute Prior Loss =====
-
         prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach())
-
-        # ===== Prepare Outputs =====
-
         outputs = (hidden_states_final,)
 
         # Add attention outputs if requested

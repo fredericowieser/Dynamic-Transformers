@@ -1,15 +1,9 @@
-# @package _global_
-
-# Default configuration for a full run.
-# Values can be overridden from the command line, e.g.,
-# python main.py data=open_code_instruct training.optimizer.base_lr=1e-5
-
 defaults:
   - _self_
-  - data: sft_mix # This sets sft_mix as the default configuration.
+  - data: sft_mix
 
 run:
-  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}"
+  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}-lora_main=${model.model_cfg.lora.enable_lora_main_path}-lora_prior=${model.model_cfg.lora.enable_lora_prior_ffn}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto" # "cpu", "cuda", "mps", etc.
@@ -20,20 +14,34 @@ data:
   name: ${hydra:runtime.choices.data}
 
 model:
-  _target_: src.trainers.d_llama_trainer.DynamicLlamaTrainer  # Updated: New path to trainer
+  _target_: src.trainers.d_llama_trainer.DynamicLlamaTrainer
   model_cfg:
     model_name: "meta-llama/Llama-3.2-1B-instruct"
     prior_loss_weight: 0.1
     # CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
-    dynamic_k: 0.95 # Threshold for Conditional Unconditional (CU) gate 
+    dynamic_k: 0.95
     token_wise: true # Use token-wise dynamic gating
     # CE = D_st > D_ch - ce_bias # (B,) bool
-    ce_bias: 0.01 # Bias for the Conditional Expectation (CE) gate
+    ce_bias: 0.05
+
+    init_prior_from_mlp: true 
+
+    lora:
+      enable_lora_main_path: true
+      enable_lora_prior_ffn: true
+      r: 8                    # LoRA attention dimension
+      lora_alpha: 16          # LoRA scaling factor
+      lora_dropout: 0.05      # Dropout probability for LoRA layers
+      bias: "none"            # Type of bias to add ("none", "all", "lora_only")
+      # Target modules for the main decoder path (LlamaAttention, LlamaMLP)
+      lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+      # Target modules for the prior FFN (FeedForward class)
+      lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
 
 training:
-  accumulate_grad_batches: 4
-  max_iters: 10000
-  eval_interval: 100
+  accumulate_grad_batches: 64
+  max_iters: 100000
+  eval_interval: 200
   
   optimizer:
     base_lr: 1.0e-4       # Max LR for base model
@@ -41,15 +49,15 @@ training:
     weight_decay: 0.01
 
   scheduler:
-    factor: 0.1           # Factor to reduce LR by (e.g., 0.1 = 10x reduction)
-    patience: 10          # Epochs to wait for val_loss improvement before reducing LR
+    factor: 0.1           
+    patience: 10
 
-  gate_warmup_iters: 10 # Steps to warm up the dynamic gating mechanism
+  gate_warmup_iters: 100
 
 logging:
   tensorboard:
     enabled: true
   wandb:
-    enabled: true # Set to true to use WandB
+    enabled: true
     project: "Dynamic-Transformers"
     entity: "huawei-noahs-ark"

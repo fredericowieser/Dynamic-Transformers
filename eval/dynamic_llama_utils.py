@@ -1,15 +1,15 @@
+import glob
 import logging
 import os
 import sys
-import glob
 
 import torch
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoConfig, AutoTokenizer
 
 # Assume src is directly importable because we added its parent directory to sys.path in evaluate.py
 try:
-    from src.models.d_llama_config import DynamicLlamaConfig
     from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
+    from src.models.d_llama_config import DynamicLlamaConfig
 except ImportError:
     logging.error(
         "Could not import DynamicLlamaConfig or DynamicLlamaForCausalLM from src.models.d_llama_causal_lm."
@@ -29,7 +29,7 @@ def load_weights(model, model_dir, device):
     This utility is taken from your `inference.py` script.
     """
     state_dict = {}
-    
+
     # Try safetensors first
     try:
         from safetensors.torch import load_file as safe_load
@@ -124,7 +124,7 @@ def load_dynamic_llama_model_and_tokenizer(
         log.info(f"Overriding config.gate_warmup_iters to {gate_warmup_iters}")
     elif not hasattr(config, "gate_warmup_iters") or config.gate_warmup_iters is None:
         # Default as per your DynamicLlamaDecoderLayer default (0) if not set.
-        config.gate_warmup_iters = 0 
+        config.gate_warmup_iters = 0
         log.info("gate_warmup_iters not explicitly set, defaulting to 0.")
 
     if token_wise is not None:
@@ -137,15 +137,14 @@ def load_dynamic_llama_model_and_tokenizer(
 
     # Ensure prior_loss_weight is present, though it's used by trainer, not model init logic
     if not hasattr(config, "prior_loss_weight") or config.prior_loss_weight is None:
-        config.prior_loss_weight = 0.0 # Safe default
+        config.prior_loss_weight = 0.0  # Safe default
         log.info("prior_loss_weight not explicitly set, defaulting to 0.0.")
-
 
     # 3. Instantiate the DynamicLlamaForCausalLM with the prepared config
     # We instantiate directly and then load weights, bypassing AutoModelForCausalLM.from_pretrained
     # to ensure our custom config is fully respected.
     model = DynamicLlamaForCausalLM(config=config)
-    
+
     # Apply device map if cuda
     if device == "cuda":
         # Using device_map="auto" during instantiation is generally better
@@ -154,7 +153,7 @@ def load_dynamic_llama_model_and_tokenizer(
         # This will put the entire model on CUDA.
         # Accelerate is good for device_map="auto" but that's for HF models directly
         # For custom, you often just move it to device.
-        model.to(device) 
+        model.to(device)
     else:
         model.to(device)
 
@@ -173,7 +172,9 @@ def load_dynamic_llama_model_and_tokenizer(
         # Fallback for models without explicit pad_token_id
         # Use EOS token ID, a common practice
         tokenizer.pad_token_id = tokenizer.eos_token_id
-        log.info(f"tokenizer.pad_token_id not found, using eos_token_id: {tokenizer.eos_token_id}")
+        log.info(
+            f"tokenizer.pad_token_id not found, using eos_token_id: {tokenizer.eos_token_id}"
+        )
 
     model.config.pad_token_id = tokenizer.pad_token_id
     log.info(f"Final model.config.pad_token_id set to {model.config.pad_token_id}")

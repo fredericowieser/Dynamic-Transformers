@@ -1,78 +1,87 @@
 # pyproject.toml
+
 [project]
 name = "dynamic-transformer"
 version = "0.1.0"
-description = "Dynamic Transformer"
+description = "Dynamic Transformer with Variational Predictive Routing and PEFT support."
 authors = [
   { name="Fred", email="fred@example.com" },
 ]
 readme = "README.md"
-license = { file="LICENSE" } # It's good practice to add a LICENSE file (e.g., MIT, Apache-2.0)
-requires-python = ">=3.10"
+license = { text = "MIT" }
+requires-python = ">=3.10,<3.12" # Pinning to explicitly allow 3.10 and 3.11, but exclude 3.12 to avoid antlr4 issues
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Machine Learning",
+    "Framework :: PyTorch",
 ]
 
-# --- Core Dependencies ---
-# These are the essential packages required to run the main training script.
+# Core dependencies for training the model
 dependencies = [
+    # Main ML Frameworks
     "torch>=2.2.0",
     "pytorch-lightning>=2.2.0",
-    "hydra-core>=1.3.2",
-    # Omegaconf and its dependencies are pinned to versions known to be stable together.
-    "omegaconf>=2.3.0",
-    "antlr4-python3-runtime", # '~=4.10.1' means '>=4.10.1, <4.11.0'
-    "PyYAML>=6.0",
-    # Hugging Face ecosystem
-    "transformers==4.43.0",
-    "datasets>=2.18.0",
+    "lightning-utilities>=0.11.0",
     "accelerate>=0.27.0",
+
+    # Hugging Face Ecosystem
+    "transformers>=4.54.1,<4.55.0",
+    "peft>=0.16.0,<0.17.0",
+    "huggingface-hub>=0.23.0",
+    "datasets>=2.18.0",
     "safetensors>=0.4.2",
-    "sentencepiece>=0.2.0", # Often a required tokenizer dependency
-    "tensorboard>=2.19.0",
-    "huggingface-hub>=0.33.1",
-    "human-eval>=1.0.3",
-    "scikit-learn>=1.7.1",
-    "zstandard>=0.23.0",
-    "wandb>=0.20.1",
-    "ruff>=0.12.4",
-    "click>=8.2.1",
+
+    # Configuration and Utilities
+    "hydra-core>=1.3.2,<1.4.0",
+    "omegaconf>=2.3.0,<2.4.0",
+    "antlr4-python3-runtime==4.9.3", # <-- CHANGE THIS LINE
+    "PyYAML>=6.0",
+    "sentencepiece>=0.2.0",
+    "tqdm>=4.66.0",
+    "numpy>=1.26.0",
+    "regex>=2024.5.15",
+    "packaging>=24.0",
+    "filelock>=3.14.0",
+    "fsspec>=2024.3.0",
+    "psutil>=6.0.0",
+    "requests>=2.32.0",
+    "charset-normalizer>=3.3.0",
+    "idna>=3.6",
+    "urllib3>=2.2.0",
+    "typing-extensions>=4.8.0",
+    "pillow>=10.0.0",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/user/repo" # Replace with your repo URL
-"Bug Tracker" = "https://github.com/user/repo/issues" # Replace with your repo URL
+"Homepage" = "https://github.com/user/your-repo-name"
+"Bug Tracker" = "https://github.com/user/your-repo-name/issues"
 
 [project.optional-dependencies]
-# --- Logging Dependencies ---
-# Install with: uv pip install -e ".[logging]"
 logging = [
     "wandb>=0.16.0",
     "tensorboard>=2.16.0",
 ]
 
-# --- Development Dependencies ---
-# Install with: uv pip install -e ".[dev]"
 dev = [
     "pytest>=8.0",
-    "ipykernel", # For Jupyter notebook support
-    "ruff",      # For linting and formatting
+    "ipykernel",
+    "ruff>=0.12.4",
+    "human-eval>=1.0.3",
+    "scikit-learn>=1.4.0",
+    "zstandard>=0.23.0",
 ]
 
-# To install all optional dependencies, use:
-# uv pip install -e ".[logging,dev]" or uv pip sync --all-extras
-
 [tool.ruff]
-# See https://docs.astral.sh/ruff/configuration/
 line-length = 80
 indent-width = 4
 
 [tool.ruff.lint]
-# A good starting set of rules
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = []
 

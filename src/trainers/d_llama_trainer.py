@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
 from src.models.d_llama_config import DynamicLlamaConfig
 from src.trainers.gate_logging import GateLogger
-from src.utils.llama_config_utils import fix_rope_scaling, fix_pad_token_id
+from src.utils.llama_config_utils import fix_pad_token_id, fix_rope_scaling
 
 log = logging.getLogger(__name__)
 
@@ -32,11 +32,21 @@ class DynamicLlamaTrainer(pl.LightningModule):
         config = fix_pad_token_id(config)
         log.info("Config fixes applied.")
         required_params = {
-            "dynamic_k":          self.model_cfg.dynamic_k,
-            "ce_bias":            self.model_cfg.ce_bias,
-            "token_wise":         self.model_cfg.token_wise,
-            "gate_warmup_iters":  self.training_cfg.gate_warmup_iters,
-            "prior_loss_weight":  self.model_cfg.prior_loss_weight,
+            "dynamic_k": self.model_cfg.dynamic_k,
+            "ce_bias": self.model_cfg.ce_bias,
+            "token_wise": self.model_cfg.token_wise,
+            "gate_warmup_iters": self.training_cfg.gate_warmup_iters,
+            "prior_loss_weight": self.model_cfg.prior_loss_weight,
+            "init_prior_from_mlp": self.model_cfg.init_prior_from_mlp,  # New
+            # LoRA parameters from model.lora in base.yaml
+            "enable_lora_main_path": self.model_cfg.lora.enable_lora_main_path,  # New
+            "enable_lora_prior_ffn": self.model_cfg.lora.enable_lora_prior_ffn,  # New
+            "lora_r": self.model_cfg.lora.r,
+            "lora_alpha": self.model_cfg.lora.lora_alpha,
+            "lora_dropout": self.model_cfg.lora.lora_dropout,
+            "lora_bias": self.model_cfg.lora.bias,
+            "lora_target_modules_main": self.model_cfg.lora.lora_target_modules_main,
+            "lora_target_modules_prior_ffn": self.model_cfg.lora.lora_target_modules_prior_ffn,
         }
         for param, value in required_params.items():
             if value is None:
@@ -64,31 +74,74 @@ class DynamicLlamaTrainer(pl.LightningModule):
         )
 
     def _setup_parameter_groups(self):
-        log.info("Setting up parameter groups for differential learning rates.")
-        named = list(self.model.named_parameters())
-        self.new_prior_params = [
-            p for n, p in named
-            if "prior_ffn" in n or "prior_layernorm" in n
-        ]
-        self.original_params = [
-            p for n, p in named
-            if "prior_ffn" not in n and "prior_layernorm" not in n
-        ]
-        for p in self.original_params:
-            p.requires_grad = True
-
         log.info(
-            f"Found {len(self.original_params)} original parameters and "
-            f"{len(self.new_prior_params)} new prior parameters."
+            "Setting up parameter groups for differential learning rates and LoRA."
         )
+        named_params = list(self.model.named_parameters())
+
+        self.original_params = []
+        self.new_prior_params = []
+
+        enable_lora_main = getattr(self.model.config, "enable_lora_main_path", False)
+        enable_lora_prior = getattr(self.model.config, "enable_lora_prior_ffn", False)
+
+        for n, p in named_params:
+            if p.requires_grad:
+                is_prior_param = "prior_ffn" in n or "prior_layernorm" in n
+
+                if is_prior_param:
+                    self.new_prior_params.append(p)
+                else:
+                    self.original_params.append(p)
+            else:
+                log.debug(f"Parameter '{n}' is frozen.")
+
+        if enable_lora_main:
+            log.info(
+                f"LoRA enabled for main decoder path. Training {len(self.original_params)} LoRA parameters."
+            )
+            if len(self.original_params) == 0:
+                log.warning(
+                    "No trainable parameters found for the main decoder path despite LoRA being enabled. Check target modules."
+                )
+        else:
+            log.info(
+                f"Full training for main decoder path. Training {len(self.original_params)} parameters."
+            )
+
+        if enable_lora_prior:
+            log.info(
+                f"LoRA enabled for prior FFN. Training {len(self.new_prior_params)} LoRA parameters."
+            )
+            if len(self.new_prior_params) == 0:
+                log.warning(
+                    "No trainable parameters found for the prior FFN despite LoRA being enabled. Check target modules."
+                )
+        else:
+            log.info(
+                f"Full training for prior FFN. Training {len(self.new_prior_params)} parameters."
+            )
+
+        total_trainable = len(self.original_params) + len(self.new_prior_params)
+        model_total_trainable = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
+
+        # Checking sum of numel for a more accurate comparison of trainable parameters
+        if total_trainable != model_total_trainable:
+            log.warning(
+                f"Mismatch in trainable parameter count! _setup_parameter_groups found {total_trainable} (numel), model reports {model_total_trainable} (numel). This might indicate a miscategorization."
+            )
 
     def forward(self, **inputs):
         if "input_ids" not in inputs:
             raise ValueError("input_ids must be provided.")
-        inputs.update({
-            "current_iter":   self.global_step,
-            "return_metrics": True,
-        })
+        inputs.update(
+            {
+                "current_iter": self.global_step,
+                "return_metrics": True,
+            }
+        )
         return self.model(**inputs)
 
     def _calculate_loss(self, batch):
@@ -151,12 +204,12 @@ class DynamicLlamaTrainer(pl.LightningModule):
         )
 
     def _log_step_metrics(
-            self,
-            prefix: str,
-            outputs: tuple,
-            on_step: bool,
-            on_epoch: bool,
-        ):
+        self,
+        prefix: str,
+        outputs: tuple,
+        on_step: bool,
+        on_epoch: bool,
+    ):
         (
             total_loss,
             lm_loss,
@@ -170,14 +223,28 @@ class DynamicLlamaTrainer(pl.LightningModule):
             cu_proportions_per_layer,
         ) = outputs
 
-        self.log(f"{prefix}/loss", total_loss,
-                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
-        self.log(f"{prefix}/lm_loss", lm_loss,
-                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
-        self.log(f"{prefix}/prior_loss", prior_loss,
-                 on_step=on_step, on_epoch=on_epoch)
-        self.log(f"{prefix}/perplexity", perplexity,
-                 on_step=on_step, on_epoch=on_epoch, prog_bar=True)
+        self.log(
+            f"{prefix}/loss",
+            total_loss,
+            on_step=on_step,
+            on_epoch=on_epoch,
+            prog_bar=True,
+        )
+        self.log(
+            f"{prefix}/lm_loss",
+            lm_loss,
+            on_step=on_step,
+            on_epoch=on_epoch,
+            prog_bar=True,
+        )
+        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
+        self.log(
+            f"{prefix}/perplexity",
+            perplexity,
+            on_step=on_step,
+            on_epoch=on_epoch,
+            prog_bar=True,
+        )
 
         # Log overall CE and CU metrics
         self.log(
@@ -250,15 +317,17 @@ class DynamicLlamaTrainer(pl.LightningModule):
         ]
         schedulers = []
         for opt in optimizers:
-            schedulers.append({
-                "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    opt,
-                    mode="min",
-                    factor=self.training_cfg.scheduler.factor,
-                    patience=self.training_cfg.scheduler.patience,
-                    min_lr=1e-5,  # Shared minimum LR
-                ),
-                "monitor":  "val/loss",
-                "interval": "epoch",
-            })
+            schedulers.append(
+                {
+                    "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        opt,
+                        mode="min",
+                        factor=self.training_cfg.scheduler.factor,
+                        patience=self.training_cfg.scheduler.patience,
+                        min_lr=1e-5,  # Shared minimum LR
+                    ),
+                    "monitor": "val/loss",
+                    "interval": "epoch",
+                }
+            )
         return optimizers, schedulers

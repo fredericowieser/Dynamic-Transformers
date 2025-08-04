@@ -80,12 +80,21 @@ def main(cfg: DictConfig) -> None:
     # Access the underlying Hugging Face model
     hf_model = model.model
 
-    # --- FIX: Access config values from the correct path (model.model_cfg) ---
-    hf_model.config.architectures = [
-        "models.dynamic_llama_causal.DynamicLlamaForCausalLM"
-    ]
-    hf_model.config.dynamic_k = cfg.model.model_cfg.dynamic_k
-    hf_model.config.token_wise = cfg.model.model_cfg.token_wise
+    # --- FIX: Convert ListConfig to list before saving ---
+    # These attributes are Omegaconf ListConfig objects due to Hydra parsing.
+    # They need to be converted to native Python lists for JSON serialization.
+    if hasattr(hf_model.config, "lora_target_modules_main") and OmegaConf.is_list(
+        hf_model.config.lora_target_modules_main
+    ):
+        hf_model.config.lora_target_modules_main = OmegaConf.to_container(
+            hf_model.config.lora_target_modules_main, resolve=True
+        )
+    if hasattr(hf_model.config, "lora_target_modules_prior_ffn") and OmegaConf.is_list(
+        hf_model.config.lora_target_modules_prior_ffn
+    ):
+        hf_model.config.lora_target_modules_prior_ffn = OmegaConf.to_container(
+            hf_model.config.lora_target_modules_prior_ffn, resolve=True
+        )
 
     # Save the underlying Hugging Face model with the updated config
     hf_model.save_pretrained(save_path, safe_serialization=True)

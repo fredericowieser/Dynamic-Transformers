@@ -1,4 +1,3 @@
-
 import argparse
 import glob
 import os
@@ -7,8 +6,8 @@ import sys
 import torch
 from transformers import AutoTokenizer
 
-from src.models.d_llama_config import DynamicLlamaConfig
 from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
+from src.models.d_llama_config import DynamicLlamaConfig
 
 try:
     from safetensors.torch import load_file as safe_load
@@ -58,9 +57,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Infer with DynamicLlamaForCausalLM (manual load w/ shards)"
     )
-    parser.add_argument(
-        "model_dir", help="Path to the saved `final_model` folder"
-    )
+    parser.add_argument("model_dir", help="Path to the saved `final_model` folder")
     parser.add_argument(
         "--prompt",
         type=str,
@@ -172,8 +169,9 @@ def main():
     inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
 
     # Generate
-    with torch.no_grad(), torch.autocast(
-        device_type=device.split(":")[0], dtype=torch.bfloat16
+    with (
+        torch.no_grad(),
+        torch.autocast(device_type=device.split(":")[0], dtype=torch.bfloat16),
     ):
         outputs = model.generate(
             **inputs,
