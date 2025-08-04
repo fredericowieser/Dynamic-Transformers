@@ -14,7 +14,7 @@ from .d_llama_layers import DynamicLlamaDecoderLayer
 log = logging.getLogger(__name__)
 
 
-class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
+class DynamicLlamaForCausalLM(LlamaForCausalLM):
     config_class = DynamicLlamaConfig
 
     def __init__(self, config: DynamicLlamaConfig):
@@ -29,7 +29,6 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
             if getattr(config, param) is None:
                 raise ValueError(f"{param} must be set in the config.")
 
-        # New: Store LoRA flags from config for internal use (e.g. in _setup_parameter_groups)
         self.enable_lora_main_path = getattr(config, "enable_lora_main_path", False)
         self.enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
         self.init_prior_from_mlp = getattr(config, "init_prior_from_mlp", False)
@@ -49,7 +48,6 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
             if init_prior_from_mlp_flag:
                 original_mlp_state_dict = layer.mlp.state_dict()
                 original_mlp_state_dict = {k: v.cpu() for k, v in original_mlp_state_dict.items()}
-
 
             custom_layer = DynamicLlamaDecoderLayer(
                 self.config,
@@ -132,7 +130,7 @@ class DynamicLlamaForCausalLM(LlamaForCausalLM):  # Inherit from GenerationMixin
             "input_ids": input_ids,
             "attention_mask": attention_mask_4d,
             "position_ids": position_ids,
-            **kwargs  # Pass through other kwargs
+            **kwargs
         }
 
     def prepare_inputs_for_generation(

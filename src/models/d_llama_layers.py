@@ -10,66 +10,10 @@ from transformers.models.llama.modeling_llama import (
 )
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
+from .d_llama_fnn import FeedForward
+
 log = logging.getLogger(__name__)
 
-class FeedForward(nn.Module):
-    def __init__(self, config, skip_init=False, state_dict=None, device=None,
-                 init_from_other_mlp_weights=False, other_mlp_state_dict=None,
-                 enable_lora=False, lora_params=None):
-        super().__init__()
-        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w3 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False).to(device)
-        self.w2 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False).to(device)
-        self.act_fn = nn.SiLU()
-        self.dropout = nn.Dropout(config.hidden_dropout_prob if hasattr(config, "hidden_dropout_prob") else 0.0)
-        
-        if init_from_other_mlp_weights and other_mlp_state_dict is not None:
-            log.info("Initializing prior_ffn from LlamaMLP weights for FeedForward on device %s", device)
-            self.w1.weight.data.copy_(other_mlp_state_dict["gate_proj.weight"].to(device))
-            self.w3.weight.data.copy_(other_mlp_state_dict["up_proj.weight"].to(device))
-            self.w2.weight.data.copy_(other_mlp_state_dict["down_proj.weight"].to(device))
-            if "gate_proj.bias" in other_mlp_state_dict and self.w1.bias is not None:
-                self.w1.bias.data.copy_(other_mlp_state_dict["gate_proj.bias"].to(device))
-            if "up_proj.bias" in other_mlp_state_dict and self.w3.bias is not None:
-                self.w3.bias.data.copy_(other_mlp_state_dict["up_proj.bias"].to(device))
-            if "down_proj.bias" in other_mlp_state_dict and self.w2.bias is not None:
-                self.w2.bias.data.copy_(other_mlp_state_dict["down_proj.bias"].to(device))
-            self.to(device)
-            skip_init = True
-
-        if not skip_init and state_dict is None:
-            self._initialize_weights()
-            log.info("Initialized weights for FeedForward on device %s", device)
-        elif state_dict is not None:
-            self.load_state_dict(state_dict, strict=True)
-            if device:
-                self.to(device)  # Move to device after loading
-            log.info("Loaded pre-trained weights for FeedForward on device %s", device)
-        
-        if enable_lora and lora_params:
-            lora_config = LoraConfig(
-                r=lora_params["lora_r"],
-                lora_alpha=lora_params["lora_alpha"],
-                target_modules=lora_params["lora_target_modules_prior_ffn"],
-                lora_dropout=lora_params["lora_dropout"],
-                bias=lora_params["lora_bias"],
-            )
-            self = get_peft_model(self, lora_config)
-            log.info("LoRA applied to FeedForward for prior_ffn.")
-
-    def _initialize_weights(self):
-        for name, param in self.named_parameters():
-            if "weight" in name:
-                nn.init.normal_(param, mean=0.0, std=0.02)
-            elif "bias" in name:
-                nn.init.zeros_(param)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        device = next(self.parameters()).device  # Ensure input is on the same device
-        if x.device != device:
-            x = x.to(device)
-        x = self.w2(self.act_fn(self.w1(x)) * self.w3(x))
-        return self.dropout(x)
 
 class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config, layer_idx: int, load_from_pretrained=False, state_dict=None, device=None,
@@ -93,8 +37,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             self.mlp = get_peft_model(self.mlp, lora_config_main)
             log.info(f"LoRA applied to main path of Layer {self.layer_idx}.")
 
-        # --- REVISED FIX FOR ROTARY_EMB INITIALIZATION ---
-        # Get the actual base attention module, whether it's wrapped by PeftModel or not.
+        # ROPE Fix: Ensure rotary_emb is always initialized
         if isinstance(self.self_attn, PeftModel):
             base_attn_module = self.self_attn.base_model
         else:
@@ -107,9 +50,7 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             base_attn_module.rotary_emb = LlamaRotaryEmbedding(config=self.config)
             
             if device:
-                base_attn_module.rotary_emb.to(device) # Move the new module to device
-        # --- END REVISED FIX ---
-
+                base_attn_module.rotary_emb.to(device)
 
         enable_lora_prior_ffn = getattr(config, "enable_lora_prior_ffn", False)
         lora_params_prior_ffn = {
@@ -257,10 +198,8 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             D_ch = D_ch - beta
 
         # Compute gate conditions
-        CE = D_st > D_ch - gate_config["ce_bias"]  # Complexity Enhancement
-        CU = (
-            D_st > gate_config["dynamic_k"] * D_st.detach().mean()
-        )  # Complexity Understanding
+        CE = D_st > D_ch - gate_config["ce_bias"]
+        CU = (D_st > gate_config["dynamic_k"] * D_st.detach().mean())
 
         # Combine conditions
         gate_vec = (CE | CU).float()
@@ -269,7 +208,6 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         gate_metrics = {
             "avg_ce_proportion": CE.float().mean(),
             "avg_cu_proportion": CU.float().mean(),
-            # Ensure consistent output shape for gate statistics
             "gate_vec_for_stats": (
                 gate_vec.mean(dim=1) if self.token_wise_gating else gate_vec
             ),
@@ -333,13 +271,9 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         # Store original input for gating decision
         original_input_to_block = hidden_states  # (B, T, C)
 
-        # ===== Standard Llama Decoder Path =====
-
-        # Self-attention
+        # Standard Llama Decoder Path
         residual_attn = hidden_states
         hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
-
-        # Prepare and execute attention
         attn_args = self._prepare_attention_inputs(
             hidden_states_pre_attn_ln,
             attention_mask,
@@ -349,11 +283,10 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
             use_cache,
         )
         attn_outputs = self.self_attn(**attn_args)
-
         attention_output = attn_outputs[0]  # (B, T, C)
         hidden_states_after_attn = residual_attn + attention_output
 
-        # MLP (Posterior path)
+        # MLP "Posterior"
         residual_mlp = hidden_states_after_attn
         hidden_states_pre_mlp_ln = self.post_attention_layernorm(
             hidden_states_after_attn
@@ -361,36 +294,24 @@ class DynamicLlamaDecoderLayer(LlamaDecoderLayer):
         posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln)  # (B, T, C)
         posterior_full_path_output = residual_mlp + posterior_mlp_output  # (B, T, C)
 
-        # ===== Dynamic Prior Prediction =====
+        # Dynamic "Prior" FFN
 
         # Use previous attention output (shifted) as input to prior FFN
         prev_attention_output = F.pad(attention_output[:, :-1, :], (0, 0, 1, 0))
         prior_input = self.prior_layernorm(prev_attention_output)
         prior_prediction = self.prior_ffn(prior_input)  # (B, T, C)
 
-        # ===== Dynamic Gating Logic =====
-
-        # Compute fundamental gate signals
+        # Dynamic Gating Logic
         d_st_tok, d_ch_tok = self._compute_gate_signals(
             posterior_full_path_output, prior_prediction, original_input_to_block
         )
-
-        # Apply gating strategy and compute gates
         gate_vec, gate_metrics = self._apply_gating_strategy(
             d_st_tok, d_ch_tok, gate_config
         )
-
-        # Apply gates to produce final output
         hidden_states_final = self._apply_gate_to_outputs(
             gate_vec, posterior_full_path_output, original_input_to_block
         )
-
-        # ===== Compute Prior Loss =====
-
         prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach())
-
-        # ===== Prepare Outputs =====
-
         outputs = (hidden_states_final,)
 
         # Add attention outputs if requested
