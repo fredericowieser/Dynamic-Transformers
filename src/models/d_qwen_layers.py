@@ -18,6 +18,13 @@ class DynamicQwenDecoderLayer(nn.Module):
         # small FFN for prior prediction
         self.prior_ffn = FeedForward(config)
 
+    # --- START OF CHANGE ---
+    # Add a property to expose attention_type from the base_layer
+    @property
+    def attention_type(self):
+        return self.base_layer.attention_type
+    # --- END OF CHANGE ---
+
     def forward(self,
                 hidden_states,
                 attention_mask=None,
