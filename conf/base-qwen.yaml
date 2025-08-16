@@ -1,6 +1,6 @@
-defaults:
-  - _self_
-  - data: sft_mix
+# defaults:
+#   - _self_
+#   - data: sft_mix
 
 run:
   name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynk=${model.model_cfg.dynamic_k}-ceb=${model.model_cfg.ce_bias}"
@@ -18,9 +18,28 @@ model:
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
+    # --- START OF CHANGE ---
+    prior_loss_weight: 0.1 # Add this line, value should match your needs
+    # --- END OF CHANGE ---
+
     # Dynamic gating params
     dynamic_k: 0.95           # CU threshold multiplier
     ce_bias: 0.05             # CE bias term
+
+    # --- START OF OPTIONAL CHANGE (For LoRA parity if needed, won't cause *this* error but good for consistency) ---
+    # init_prior_from_mlp: false # If you want to enable this, add it here (Qwen models typically don't init from MLP weights directly like Llama)
+
+    # lora:
+    #   enable_lora_main_path: false
+    #   enable_lora_prior_ffn: false
+    #   r: 8
+    #   lora_alpha: 16
+    #   lora_dropout: 0.05
+    #   bias: "none"
+    #   # These target modules might need adjustment for Qwen's specific layer names
+    #   lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # Check Qwen's actual module names
+    #   lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
+    # --- END OF OPTIONAL CHANGE ---
 
 training:
   accumulate_grad_batches: 64
@@ -28,7 +47,10 @@ training:
   eval_interval: 200
 
   optimizer:
-    lr: 1.0e-4
+    # --- START OF CHANGE ---
+    base_lr: 1.0e-4       # Max LR for base model
+    prior_ffn_lr: 1.0e-2  # Max LR for prior FFN
+    # --- END OF CHANGE ---
     weight_decay: 0.01
 
   scheduler:
