@@ -1,3 +1,5 @@
+# src/models/d_qwen_layers.py
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -34,10 +36,8 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
                 f"Layer {self.layer_idx}: Qwen2Attention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
             )
             head_dim = config.hidden_size // config.num_attention_heads
-            # rope_theta = getattr(config, "rope_theta", 10000.0)
 
             # --- START OF CHANGE ---
-            # Removed 'max_position_embeddings' as it's not a valid argument for Qwen2RotaryEmbedding's __init__
             base_attn_module.rotary_emb = Qwen2RotaryEmbedding(
                 self.config,
             )
@@ -82,15 +82,41 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
         # we'd do that here. However, `Qwen2Attention`'s default `forward` *should* compute it from `position_ids`.
         # The error implies a problem with `position_embeddings` itself when it should be `None` and processed.
         # Passing `layer_idx` is crucial for Qwen2Attention for KV caching.
+
+        # --- START OF CHANGE ---
+        # Get the base attention module if PEFT is applied
+        if isinstance(self.self_attn, nn.Module) and hasattr(self.self_attn, 'base_model'):
+            base_attn = self.self_attn.base_model
+        else:
+            base_attn = self.self_attn
+
+        # Prepare input for rotary embedding calculation
+        # Qwen2RotaryEmbedding expects input shape (batch_size, num_heads, seq_len, head_dim)
+        # Replicate Llama's approach using the hidden_states directly for reshaping
+        batch_size, seq_len, hidden_size_ = hidden_states_pre_attn_ln.shape
+        num_attention_heads = self.config.num_attention_heads
+        head_dim = self.config.hidden_size // num_attention_heads
+
+        # This dummy input assumes `hidden_states_pre_attn_ln` is suitable as `x` for rotary_emb
+        input_for_rope = hidden_states_pre_attn_ln.view(
+            batch_size, seq_len, num_attention_heads, head_dim
+        ).transpose(1, 2) # (B, N_H, T, H_D)
+
+        cos, sin = base_attn.rotary_emb(input_for_rope, position_ids)
+        position_embeddings = (cos, sin)
+
         attn_outputs = self.self_attn(
             hidden_states_pre_attn_ln,
             attention_mask=attention_mask,
-            position_ids=position_ids, # Passed explicitly
+            # position_ids=position_ids, # No longer needed here, passed via position_embeddings
             past_key_values=past_key_values,
             output_attentions=output_attentions,
             use_cache=use_cache,
             layer_idx=self.layer_idx, # Critical for Qwen2's KV caching in Attention
+            position_embeddings=position_embeddings, # Explicitly pass pre-calculated embeddings
         )
+        # --- END OF CHANGE ---
+
         attention_output = attn_outputs[0]  # (B, T, C)
         hidden_states_after_attn = original_input_to_block + attention_output # Add residual connection
 
