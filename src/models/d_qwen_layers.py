@@ -133,12 +133,13 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
         # To align perfectly, we'd need to thread `attention_output` from previous layer or redefine `prior_input`.
         # For simplicity, let's use the input to the current layer as `prior_input` after its layernorm.
         prior_input = self.prior_layernorm(original_input_to_block) # Apply layernorm to input for prior
-        prior_prediction = self.prior_ffn(prior_input)  # (B, T, C)
+        prior_output = self.prior_ffn(prior_input)  # (B, T, C)
+        prior_hidden_states = original_input_to_block + prior_output  # (B, T, C)
 
 
         # Dynamic Gating Logic
         d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1)  # (B, T)
-        d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1)  # (B, T)
+        d_ch_tok = F.mse_loss(posterior_full_path_output, prior_hidden_states, reduction="none").mean(-1)  # (B, T)
 
         # Determine if token_wise_gating is enabled from config
         token_wise_gating = getattr(self.config, "token_wise", True) # Default True if not in config
