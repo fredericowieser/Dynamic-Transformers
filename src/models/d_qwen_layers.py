@@ -64,16 +64,16 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer): # NEW: Inherit from Qwen2Decod
             log.info(f"Loaded pre-trained weights for DynamicQwenDecoderLayer {self.layer_idx}.")
 
 
-    @property
-    def attention_type(self):
-        # Qwen2DecoderLayer base class already handles this through its config.
-        # This property might be implicitly handled or directly accessed by Qwen2Model.
-        # However, keeping it explicit to be safe.
-        # Qwen2 stores attn_type in config.attn_config (list of dicts, or single dict)
-        # Assuming single dict or first element of list:
-        if isinstance(self.config.attn_config, list):
-            return self.config.attn_config[0].get("attn_type", "mha") # Default to mha
-        return self.config.attn_config.get("attn_type", "mha")
+    # @property
+    # def attention_type(self):
+    #     # Qwen2DecoderLayer base class already handles this through its config.
+    #     # This property might be implicitly handled or directly accessed by Qwen2Model.
+    #     # However, keeping it explicit to be safe.
+    #     # Qwen2 stores attn_type in config.attn_config (list of dicts, or single dict)
+    #     # Assuming single dict or first element of list:
+    #     if isinstance(self.config.attn_config, list):
+    #         return self.config.attn_config[0].get("attn_type", "mha") # Default to mha
+    #     return self.config.attn_config.get("attn_type", "mha")
 
     # The forward pass now largely mirrors DynamicLlamaDecoderLayer
     def forward(
