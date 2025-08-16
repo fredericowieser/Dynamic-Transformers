@@ -1,81 +1,55 @@
-# src/models/d_qwen_layers.py
-
 import torch
 import torch.nn.functional as F
 from torch import nn
-# Import necessary base Qwen2 modules
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
-    Qwen2DecoderLayer, # <-- Now inheriting from this
+    Qwen2DecoderLayer,
     Qwen2MLP,
     Qwen2RMSNorm,
-    Qwen2RotaryEmbedding, # <-- Added for explicit rotary_emb handling
+    Qwen2RotaryEmbedding,
 )
 from src.models.d_qwen_fnn import FeedForward
 
 import logging
 log = logging.getLogger(__name__)
 
-# class DynamicQwenDecoderLayer(nn.Module): # OLD: Was a wrapper
-class DynamicQwenDecoderLayer(Qwen2DecoderLayer): # NEW: Inherit from Qwen2DecoderLayer
-    """
-    Extends Qwen2DecoderLayer with dynamic token-wise gating.
-    It takes control of the forward pass to integrate a prior FFN
-    and apply gating decisions, mirroring the DynamicLlamaDecoderLayer structure.
-    """
+class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
     def __init__(self, config, layer_idx: int, load_from_pretrained: bool = False, original_layer_state_dict: dict = None):
-        # Call the base class constructor. This initializes self_attn, mlp, layernorms.
         super().__init__(config, layer_idx)
         self.config = config
         self.layer_idx = layer_idx
 
-        # Initialize the new prior FFN and its layernorm
         self.prior_ffn = FeedForward(config)
         self.prior_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # Explicitly initialize rotary_emb on self_attn if it's somehow missing or wrapped strangely,
-        # mirroring the robust initialization in DynamicLlamaDecoderLayer.
-        # This can be useful if PEFT is involved later.
         if isinstance(self.self_attn, nn.Module) and hasattr(self.self_attn, 'base_model') and isinstance(self.self_attn.base_model, Qwen2Attention):
             base_attn_module = self.self_attn.base_model
         elif isinstance(self.self_attn, Qwen2Attention):
             base_attn_module = self.self_attn
         else:
-            # Fallback for unexpected self_attn type, assume direct access to components
-            # This might be too aggressive, but covers typical setups.
             base_attn_module = self.self_attn
 
         if not hasattr(base_attn_module, "rotary_emb") or base_attn_module.rotary_emb is None:
             log.warning(
                 f"Layer {self.layer_idx}: Qwen2Attention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
             )
-            # Qwen2's rotary_emb might need specific args, ensure this matches the base Qwen2Attention init
-            base_attn_module.rotary_emb = Qwen2RotaryEmbedding(config.head_dim, max_position_embeddings=config.max_position_embeddings, base=config.rope_theta)
+            # --- START OF CHANGE ---
+            # Calculate head_dim from hidden_size and num_attention_heads
+            head_dim = config.hidden_size // config.num_attention_heads
+            # Use getattr for rope_theta for robustness
+            rope_theta = getattr(config, "rope_theta", 10000.0)
 
-        # Load original weights if provided (when patching a pretrained model)
+            base_attn_module.rotary_emb = Qwen2RotaryEmbedding(
+                head_dim, # Use calculated head_dim
+                max_position_embeddings=config.max_position_embeddings,
+                base=rope_theta # Use retrieved rope_theta
+            )
+            # --- END OF CHANGE ---
+
         if load_from_pretrained and original_layer_state_dict is not None:
-            # Strict=False because `prior_ffn` and `prior_layernorm` are new components.
-            # `super().__init__` already loaded original components, but this ensures any remaining
-            # weights (if there were non-strict differences) or new components are handled.
-            # However, for components already loaded by super().__init__, `load_state_dict` here would overwrite.
-            # A more granular approach might be to load only the new components.
-            # But the Llama version calls load_state_dict on the whole layer which then takes care of all params.
             self.load_state_dict(original_layer_state_dict, strict=False)
             log.info(f"Loaded pre-trained weights for DynamicQwenDecoderLayer {self.layer_idx}.")
 
-
-    # @property
-    # def attention_type(self):
-    #     # Qwen2DecoderLayer base class already handles this through its config.
-    #     # This property might be implicitly handled or directly accessed by Qwen2Model.
-    #     # However, keeping it explicit to be safe.
-    #     # Qwen2 stores attn_type in config.attn_config (list of dicts, or single dict)
-    #     # Assuming single dict or first element of list:
-    #     if isinstance(self.config.attn_config, list):
-    #         return self.config.attn_config[0].get("attn_type", "mha") # Default to mha
-    #     return self.config.attn_config.get("attn_type", "mha")
-
-    # The forward pass now largely mirrors DynamicLlamaDecoderLayer
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -84,12 +58,11 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer): # NEW: Inherit from Qwen2Decod
         past_key_values: tuple[torch.Tensor] | None = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        # Dynamic gating parameters (from d_qwen_causal_lm.py forward kwargs)
         current_iter: int = 0,
         dynamic_k: float = 0.5,
         ce_bias: float = 0.0,
         gate_warmup_iters: int = 1000,
-        **kwargs, # Accept extra kwargs, for future compatibility or other passes
+        **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         """
         Forward pass of the Dynamic Qwen Decoder Layer.
