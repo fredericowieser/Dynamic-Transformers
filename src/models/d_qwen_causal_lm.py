@@ -102,7 +102,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
         # Re-apply any post-load fixes
-        model.config = fix_pad_token_id(fix_rope_scaling(model.config))
+        # model.config = fix_pad_token_id(fix_rope_scaling(model.config))
         # Re-patch layers
         patch_qwen_layers(model)
         return model
