@@ -178,7 +178,7 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
         hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block
 
         # Prior Loss
-        prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach())
+        prior_loss = F.mse_loss(prior_hidden_states, posterior_full_path_output.detach())
 
         # Prepare outputs (mirroring Qwen2DecoderLayer output format + custom metrics)
         outputs = (hidden_states_final,) # Primary output
