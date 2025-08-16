@@ -1,95 +1,239 @@
+# src/models/d_qwen_layers.py
+
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+# Import necessary base Qwen2 modules
+from transformers.models.qwen2.modeling_qwen2 import (
+    Qwen2Attention,
+    Qwen2DecoderLayer, # <-- Now inheriting from this
+    Qwen2MLP,
+    Qwen2RMSNorm,
+    Qwen2RotaryEmbedding, # <-- Added for explicit rotary_emb handling
+)
 from src.models.d_qwen_fnn import FeedForward
 
-class DynamicQwenDecoderLayer(nn.Module):
-    """
-    Wraps a QwenDecoderLayer, adding dynamic token-wise gating:
-      - Computes posterior via base_layer
-      - Predicts a "prior" via FeedForward on the original input
-      - Gates between posterior vs. input based on CE/CU criteria
-    """
-    def __init__(self, base_layer: Qwen2DecoderLayer, config):
-        super().__init__()
-        self.base_layer = base_layer
-        self.config = config
-        # small FFN for prior prediction
-        self.prior_ffn = FeedForward(config)
+import logging
+log = logging.getLogger(__name__)
 
-    # --- START OF CHANGE ---
-    # Add a property to expose attention_type from the base_layer
+# class DynamicQwenDecoderLayer(nn.Module): # OLD: Was a wrapper
+class DynamicQwenDecoderLayer(Qwen2DecoderLayer): # NEW: Inherit from Qwen2DecoderLayer
+    """
+    Extends Qwen2DecoderLayer with dynamic token-wise gating.
+    It takes control of the forward pass to integrate a prior FFN
+    and apply gating decisions, mirroring the DynamicLlamaDecoderLayer structure.
+    """
+    def __init__(self, config, layer_idx: int, load_from_pretrained: bool = False, original_layer_state_dict: dict = None):
+        # Call the base class constructor. This initializes self_attn, mlp, layernorms.
+        super().__init__(config, layer_idx)
+        self.config = config
+        self.layer_idx = layer_idx
+
+        # Initialize the new prior FFN and its layernorm
+        self.prior_ffn = FeedForward(config)
+        self.prior_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        # Explicitly initialize rotary_emb on self_attn if it's somehow missing or wrapped strangely,
+        # mirroring the robust initialization in DynamicLlamaDecoderLayer.
+        # This can be useful if PEFT is involved later.
+        if isinstance(self.self_attn, nn.Module) and hasattr(self.self_attn, 'base_model') and isinstance(self.self_attn.base_model, Qwen2Attention):
+            base_attn_module = self.self_attn.base_model
+        elif isinstance(self.self_attn, Qwen2Attention):
+            base_attn_module = self.self_attn
+        else:
+            # Fallback for unexpected self_attn type, assume direct access to components
+            # This might be too aggressive, but covers typical setups.
+            base_attn_module = self.self_attn
+
+        if not hasattr(base_attn_module, "rotary_emb") or base_attn_module.rotary_emb is None:
+            log.warning(
+                f"Layer {self.layer_idx}: Qwen2Attention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
+            )
+            # Qwen2's rotary_emb might need specific args, ensure this matches the base Qwen2Attention init
+            base_attn_module.rotary_emb = Qwen2RotaryEmbedding(config.head_dim, max_position_embeddings=config.max_position_embeddings, base=config.rope_theta)
+
+        # Load original weights if provided (when patching a pretrained model)
+        if load_from_pretrained and original_layer_state_dict is not None:
+            # Strict=False because `prior_ffn` and `prior_layernorm` are new components.
+            # `super().__init__` already loaded original components, but this ensures any remaining
+            # weights (if there were non-strict differences) or new components are handled.
+            # However, for components already loaded by super().__init__, `load_state_dict` here would overwrite.
+            # A more granular approach might be to load only the new components.
+            # But the Llama version calls load_state_dict on the whole layer which then takes care of all params.
+            self.load_state_dict(original_layer_state_dict, strict=False)
+            log.info(f"Loaded pre-trained weights for DynamicQwenDecoderLayer {self.layer_idx}.")
+
+
     @property
     def attention_type(self):
-        return self.base_layer.attention_type
-    # --- END OF CHANGE ---
+        # Qwen2DecoderLayer base class already handles this through its config.
+        # This property might be implicitly handled or directly accessed by Qwen2Model.
+        # However, keeping it explicit to be safe.
+        # Qwen2 stores attn_type in config.attn_config (list of dicts, or single dict)
+        # Assuming single dict or first element of list:
+        if isinstance(self.config.attn_config, list):
+            return self.config.attn_config[0].get("attn_type", "mha") # Default to mha
+        return self.config.attn_config.get("attn_type", "mha")
 
-    def forward(self,
-                hidden_states,
-                attention_mask=None,
-                position_ids=None,
-                past_key_values=None,
-                use_cache=False,
-                output_attentions=False,
-                **kwargs):
-        # pop gating args (fall back to config)
-        current_iter = kwargs.pop("current_iter", 0)
-        dynamic_k = kwargs.pop("dynamic_k", self.config.dynamic_k)
-        ce_bias = kwargs.pop("ce_bias", self.config.ce_bias)
-        warmup = kwargs.pop("gate_warmup_iters",
-                            self.config.gate_warmup_iters)
+    # The forward pass now largely mirrors DynamicLlamaDecoderLayer
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: tuple[torch.Tensor] | None = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        # Dynamic gating parameters (from d_qwen_causal_lm.py forward kwargs)
+        current_iter: int = 0,
+        dynamic_k: float = 0.5,
+        ce_bias: float = 0.0,
+        gate_warmup_iters: int = 1000,
+        **kwargs, # Accept extra kwargs, for future compatibility or other passes
+    ) -> tuple[torch.Tensor, ...]:
+        """
+        Forward pass of the Dynamic Qwen Decoder Layer.
+        This method implements the core dynamic gating mechanism where each layer
+        can choose between using its full computation (posterior) or bypassing it
+        based on complexity measures.
+        """
 
-        # original input to block
-        x0 = hidden_states
+        # Store original input for gating decision
+        original_input_to_block = hidden_states  # (B, T, C)
 
-        # run the base Qwen layer (gets new hidden + other outputs)
-        outputs = self.base_layer(
-            hidden_states,
+        # Qwen2DecoderLayer components are now directly accessible
+        # First RMSNorm
+        hidden_states_pre_attn_ln = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        # The Qwen2Attention module is typically called like this internally by Qwen2DecoderLayer.
+        # We need to ensure position_ids are correctly passed.
+        # If Qwen2Attention expects position_embeddings to be precomputed (which the error suggests it might be in some cases),
+        # we'd do that here. However, `Qwen2Attention`'s default `forward` *should* compute it from `position_ids`.
+        # The error implies a problem with `position_embeddings` itself when it should be `None` and processed.
+        # Passing `layer_idx` is crucial for Qwen2Attention for KV caching.
+        attn_outputs = self.self_attn(
+            hidden_states_pre_attn_ln,
             attention_mask=attention_mask,
-            position_ids=position_ids,
+            position_ids=position_ids, # Passed explicitly
             past_key_values=past_key_values,
-            use_cache=use_cache,
             output_attentions=output_attentions,
+            use_cache=use_cache,
+            layer_idx=self.layer_idx, # Critical for Qwen2's KV caching in Attention
         )
-        # hidden_states_out is first element
-        hs = outputs[0]
+        attention_output = attn_outputs[0]  # (B, T, C)
+        hidden_states_after_attn = original_input_to_block + attention_output # Add residual connection
 
-        # compute prior prediction from original input
-        prior = self.prior_ffn(x0)
+        # MLP "Posterior"
+        residual_mlp = hidden_states_after_attn
+        hidden_states_pre_mlp_ln = self.post_attention_layernorm(hidden_states_after_attn)
+        posterior_mlp_output = self.mlp(hidden_states_pre_mlp_ln)  # (B, T, C)
+        posterior_full_path_output = residual_mlp + posterior_mlp_output  # (B, T, C)
 
-        # compute per-token mse losses
-        d_st = F.mse_loss(hs, x0, reduction="none").mean(-1)  # (B,T)
-        d_ch = F.mse_loss(hs, prior, reduction="none").mean(-1)  # (B,T)
+        # Dynamic "Prior" FFN
+        # Similar to Llama, use previous hidden state (or initial block input) for prior FFN.
+        # Let's use `original_input_to_block` for `prior_ffn` as `prior_input` for now.
+        # Llama's `prev_attention_output` suggests using the output of the *previous* layer's attention for current layer's prior.
+        # To align perfectly, we'd need to thread `attention_output` from previous layer or redefine `prior_input`.
+        # For simplicity, let's use the input to the current layer as `prior_input` after its layernorm.
+        prior_input = self.prior_layernorm(original_input_to_block) # Apply layernorm to input for prior
+        prior_prediction = self.prior_ffn(prior_input)  # (B, T, C)
 
-        # CE: expected change criterion
-        CE = d_st > (d_ch - ce_bias)
-        # CU: unexpected (surprise) criterion
-        mean_dst = d_st.detach().mean()
-        CU = d_st > (dynamic_k * mean_dst)
 
-        # warmup: only CU or only CE first?
-        if current_iter < warmup:
-            gate = CE.float()  # bias toward CE during warmup
+        # Dynamic Gating Logic
+        d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1)  # (B, T)
+        d_ch_tok = F.mse_loss(posterior_full_path_output, prior_prediction, reduction="none").mean(-1)  # (B, T)
+
+        # Determine if token_wise_gating is enabled from config
+        token_wise_gating = getattr(self.config, "token_wise", True) # Default True if not in config
+
+        # Apply gating strategy
+        if token_wise_gating:
+            D_st, D_ch = d_st_tok, d_ch_tok  # Shape: (B, T)
         else:
-            gate = (CE | CU).float()
+            D_st = d_st_tok.mean(dim=1)  # Shape: (B,)
+            D_ch = d_ch_tok.mean(dim=1)  # Shape: (B,)
 
-        # mix hidden states
-        gate = gate.unsqueeze(-1)  # (B,T,1)
-        mixed = gate * hs + (1.0 - gate) * x0
+        # Apply warmup bias if configured
+        if gate_warmup_iters > 0:
+            bias_scale = max(
+                0.0,
+                1.0 - current_iter / gate_warmup_iters,
+            )
+            beta = D_ch.detach().mean() * bias_scale
+            D_ch = D_ch - beta
 
-        # replace the hidden state in outputs tuple
-        outputs = (mixed, ) + outputs[1:]
-        return outputs
+        # Compute gate conditions
+        CE = D_st > D_ch - ce_bias
+        CU = D_st > dynamic_k * D_st.detach().mean() # Note: D_st.detach().mean() computes mean across B*T for token-wise, or B for block-wise
+
+        # Combine conditions
+        gate_vec = (CE | CU).float()
+
+        # Apply gate
+        if token_wise_gating:
+            # gate_vec: (B, T) -> (B, T, 1)
+            gate = gate_vec.unsqueeze(-1)
+        else:
+            # gate_vec: (B,) -> (B, 1, 1)
+            gate = gate_vec.view(-1, 1, 1)
+
+        hidden_states_final = gate * posterior_full_path_output + (1.0 - gate) * original_input_to_block
+
+        # Prior Loss
+        prior_loss = F.mse_loss(prior_prediction, posterior_full_path_output.detach())
+
+        # Prepare outputs (mirroring Qwen2DecoderLayer output format + custom metrics)
+        outputs = (hidden_states_final,) # Primary output
+
+        if output_attentions:
+            outputs += (attn_outputs[1],) # Attention weights are at index 1 of attn_outputs
+        if use_cache:
+            outputs += (attn_outputs[2],) # Present_key_value is at index 2 of attn_outputs
+
+        # Add dynamic gating metrics for trainer logging
+        avg_ce_proportion = CE.float().mean()
+        avg_cu_proportion = CU.float().mean()
+        # gate_vec_for_stats should reflect actual gates for logging
+        gate_vec_for_stats = gate_vec # Keep original shape (B,T) or (B,) before unsqueezing/viewing for mix
+
+        # The order of these custom metrics MUST match what `DynamicQwenForCausalLM.forward` expects
+        # (avg_ce_proportion, avg_cu_proportion, prior_loss, gate_vec_for_stats)
+        return outputs + (avg_ce_proportion, avg_cu_proportion, prior_loss, gate_vec_for_stats)
+
 
 def patch_qwen_layers(model):
     """
-    Replace each QwenDecoderLayer in model with DynamicQwenDecoderLayer.
-    Call this after loading the pretrained model and setting model.config.
+    Replaces each Qwen2DecoderLayer in model.model.layers with DynamicQwenDecoderLayer.
+    It transfers the state_dict from the original layers.
     """
-    # --- START OF CHANGE ---
-    for i, layer in enumerate(model.model.layers): # Changed model.qwen.layers to model.model.layers
-    # --- END OF CHANGE ---
-        dynamic = DynamicQwenDecoderLayer(layer, model.config)
-        model.model.layers[i] = dynamic # Ensure the modified layer is assigned back correctly
+    log.info("Patching Qwen model layers to DynamicQwenDecoderLayer.")
+    new_layers = nn.ModuleList()
+    for i, layer in enumerate(model.model.layers):
+        original_layer_state_dict = layer.state_dict()
+        # Ensure state_dict is on CPU before passing, constructor handles device move
+        original_layer_state_dict = {k: v.cpu() for k, v in original_layer_state_dict.items()}
+
+        custom_layer = DynamicQwenDecoderLayer(
+            model.config,
+            layer_idx=i,
+            load_from_pretrained=True,
+            original_layer_state_dict=original_layer_state_dict,
+        )
+        # Move to device as done in Llama
+        device = next(model.parameters()).device # Get current device of the model
+        try:
+            # Check if custom_layer is on 'meta' device or needs to be moved
+            layer_device = next(custom_layer.parameters()).device
+            if str(layer_device) == "meta":
+                custom_layer = custom_layer.to_empty(device=device)
+            else:
+                custom_layer = custom_layer.to(device)
+        except StopIteration:
+            # If layer has no parameters (e.g., still meta and empty), move it to device
+            custom_layer = custom_layer.to_empty(device=device)
+
+        new_layers.append(custom_layer)
+        log.info(f"Successfully re-instantiated layer {i} as DynamicQwenDecoderLayer for loading.")
+    model.model.layers = new_layers
     return model
