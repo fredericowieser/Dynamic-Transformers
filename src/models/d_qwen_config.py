@@ -18,14 +18,12 @@ class DynamicQwenConfig(Qwen2Config):
         super().__init__(**kwargs)
 
         # required dynamic-gating parameters
-        if dynamic_k is None or ce_bias is None or gate_warmup_iters is None:
-            missing = [n for n,v in [
-                ("dynamic_k", dynamic_k),
-                ("ce_bias", ce_bias),
-                ("gate_warmup_iters", gate_warmup_iters),
-            ] if v is None]
-            raise ValueError(f"Missing DynamicQwenConfig args: {missing}")
+        # --- START OF CHANGE ---
+        # Removed strict check here. These will be set to None if not explicitly passed
+        # during a standard initialization (e.g., from_pretrained).
+        # The actual validation will now happen in the trainer/model __init__.
+        # --- END OF CHANGE ---
 
-        self.dynamic_k = float(dynamic_k)
-        self.ce_bias = float(ce_bias)
-        self.gate_warmup_iters = int(gate_warmup_iters)
+        self.dynamic_k = dynamic_k
+        self.ce_bias = ce_bias
+        self.gate_warmup_iters = gate_warmup_iters

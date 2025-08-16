@@ -12,23 +12,32 @@ log = logging.getLogger(__name__)
 
 # Define the rolling window size
 ROLLING_WINDOW_SIZE = 100
-
 class DynamicQwenTrainer(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
         super().__init__()
         # save for logging and checkpointing
         self.save_hyperparameters("model_cfg", "training_cfg")
 
-        # --- START OF CHANGE ---
         log.info(f"Loading and configuring model: {model_cfg.model_name}")
-        # Load the base config and set dynamic parameters
-        config = DynamicQwenConfig.from_pretrained(
-            model_cfg.model_name,
-            dynamic_k=model_cfg.dynamic_k,
-            ce_bias=model_cfg.ce_bias,
-            gate_warmup_iters=training_cfg.get("gate_warmup_iters", 0),
-        )
-        # Instantiate our DynamicQwen model with the configured config
+        # --- START OF CHANGE ---
+        # Load the base config. dynamic_k, ce_bias, gate_warmup_iters will be None initially
+        config = DynamicQwenConfig.from_pretrained(model_cfg.model_name)
+
+        # Explicitly set dynamic parameters on the loaded config object
+        # This mirrors the Llama trainer's approach to setting config attributes
+        if model_cfg.dynamic_k is None:
+            raise ValueError("model_cfg.dynamic_k must be provided in the Hydra config.")
+        config.dynamic_k = model_cfg.dynamic_k
+
+        if model_cfg.ce_bias is None:
+            raise ValueError("model_cfg.ce_bias must be provided in the Hydra config.")
+        config.ce_bias = model_cfg.ce_bias
+
+        if training_cfg.gate_warmup_iters is None:
+            raise ValueError("training_cfg.gate_warmup_iters must be provided in the Hydra config.")
+        config.gate_warmup_iters = training_cfg.gate_warmup_iters
+
+        # Instantiate our DynamicQwen model with the fully configured config
         self.model = DynamicQwenForCausalLM(config)
         # --- END OF CHANGE ---
 
