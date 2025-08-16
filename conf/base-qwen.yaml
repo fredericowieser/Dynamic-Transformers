@@ -16,7 +16,6 @@ data:
 model:
   _target_: src.trainers.d_qwen_trainer.DynamicQwenTrainer
   model_cfg:
-    # Pretrained Qwen2.5 small instruct model
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
     # Dynamic gating params
