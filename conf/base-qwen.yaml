@@ -1,0 +1,46 @@
+defaults:
+  - _self_
+  - data: sft_mix
+
+run:
+  name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynk=${model.model_cfg.dynamic_k}-ceb=${model.model_cfg.ce_bias}"
+  output_dir: "outputs/${run.name}"
+  seed: 42
+  device: "auto"           # "cpu", "cuda", "mps", etc.
+  precision: "bf16-mixed"  # "32-true", "16-mixed", "bf16-mixed"
+  run_final_evaluation: true
+
+data:
+  name: ${hydra:runtime.choices.data}
+
+model:
+  _target_: src.trainers.d_qwen_trainer.DynamicQwenTrainer
+  model_cfg:
+    # Pretrained Qwen2.5 small instruct model
+    model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+
+    # Dynamic gating params
+    dynamic_k: 0.95           # CU threshold multiplier
+    ce_bias: 0.05             # CE bias term
+    gate_warmup_iters: 100    # Warmup steps for CU
+
+training:
+  accumulate_grad_batches: 64
+  max_iters: 100000
+  eval_interval: 200
+
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.01
+
+  scheduler:
+    factor: 0.1
+    patience: 10
+
+logging:
+  tensorboard:
+    enabled: true
+  wandb:
+    enabled: true
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
