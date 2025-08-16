@@ -4,7 +4,7 @@ import logging
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_scheduler
 from omegaconf import DictConfig
 from src.models.d_qwen_causal_lm import DynamicQwenForCausalLM
 from src.models.d_qwen_config import DynamicQwenConfig
@@ -318,31 +318,49 @@ class DynamicQwenTrainer(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        optimizers = [
-            torch.optim.AdamW(
-                self.original_params,
-                lr=self.training_cfg.optimizer.base_lr,
-                weight_decay=self.training_cfg.optimizer.weight_decay,
-            ),
-            torch.optim.AdamW(
-                self.new_prior_params,
-                lr=self.training_cfg.optimizer.prior_ffn_lr,
-                weight_decay=self.training_cfg.optimizer.weight_decay,
-            ),
+        optimizer_base = torch.optim.AdamW(
+            self.original_params,
+            lr=self.training_cfg.optimizer.base_lr,
+            weight_decay=self.training_cfg.optimizer.weight_decay,
+        )
+        optimizer_prior = torch.optim.AdamW(
+            self.new_prior_params,
+            lr=self.training_cfg.optimizer.prior_ffn_lr,
+            weight_decay=self.training_cfg.optimizer.weight_decay,
+        )
+        optimizers = [optimizer_base, optimizer_prior]
+
+        # --- START OF CHANGE ---
+        num_training_steps = self.training_cfg.max_iters # Total training steps from config
+        num_warmup_steps = self.training_cfg.gate_warmup_iters # Using gate warmup steps for LR warmup
+
+        # Linear warmup with cosine annealing for base optimizer
+        lr_scheduler_base = get_scheduler(
+            name="cosine", # Or "linear" as in some parts of the paper
+            optimizer=optimizer_base,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        # Linear warmup with cosine annealing for prior FFN optimizer
+        lr_scheduler_prior = get_scheduler(
+            name="cosine", # Or "linear"
+            optimizer=optimizer_prior,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+
+        schedulers = [
+            {
+                "scheduler": lr_scheduler_base,
+                "interval": "step", # Update scheduler every step
+                "frequency": 1,
+            },
+            {
+                "scheduler": lr_scheduler_prior,
+                "interval": "step", # Update scheduler every step
+                "frequency": 1,
+            },
         ]
-        schedulers = []
-        for opt in optimizers:
-            schedulers.append(
-                {
-                    "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                        opt,
-                        mode="min",
-                        factor=self.training_cfg.scheduler.factor,
-                        patience=self.training_cfg.scheduler.patience,
-                        min_lr=1e-5,  # Shared minimum LR
-                    ),
-                    "monitor": "val/loss",
-                    "interval": "epoch",
-                }
-            )
+        # --- END OF CHANGE ---
+
         return optimizers, schedulers
