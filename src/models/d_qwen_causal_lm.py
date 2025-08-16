@@ -1,4 +1,7 @@
+# src/models/d_qwen_causal_lm.py
+
 import logging
+import torch # <-- Add this import
 from transformers import Qwen2ForCausalLM
 from transformers import AutoConfig
 from src.models.d_qwen_config import DynamicQwenConfig
@@ -8,11 +11,6 @@ from src.models.d_qwen_layers import patch_qwen_layers
 logger = logging.getLogger(__name__)
 
 class DynamicQwenForCausalLM(Qwen2ForCausalLM):
-    """
-    QwenForCausalLM with dynamic, token-wise gating.
-    We patch each decoder layer to be DynamicQwenDecoderLayer,
-    and inject gating args (dynamic_k, ce_bias, gate_warmup_iters).
-    """
     config_class = DynamicQwenConfig
 
     def __init__(self, config: DynamicQwenConfig):
@@ -68,6 +66,19 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         return_dict=True,
         **kwargs,
     ):
+        # --- START OF CHANGE ---
+        # Ensure position_ids are generated if not provided
+        if input_ids is not None and position_ids is None:
+            batch_size, seq_len = input_ids.shape
+            device = input_ids.device
+            position_ids = (
+                torch.arange(seq_len, dtype=torch.long, device=device)
+                .unsqueeze(0)
+                .expand(batch_size, -1)
+            )
+            logger.debug(f"Generated default position_ids for seq_len={seq_len}")
+        # --- END OF CHANGE ---
+
         # Inject gating arguments into each layer
         kwargs["dynamic_k"] = self.dynamic_k
         kwargs["ce_bias"] = self.ce_bias
@@ -83,7 +94,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            position_ids=position_ids,
+            position_ids=position_ids, # Pass the (potentially newly generated) position_ids
             past_key_values=past_key_values,
             labels=labels,
             use_cache=use_cache,
