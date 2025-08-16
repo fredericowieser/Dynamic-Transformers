@@ -1,6 +1,6 @@
-# defaults:
-#   - _self_
-#   - data: sft_mix
+defaults:
+  - _self_
+  - data: sft_mix
 
 run:
   name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynk=${model.model_cfg.dynamic_k}-ceb=${model.model_cfg.ce_bias}"
