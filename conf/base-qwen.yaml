@@ -29,22 +29,22 @@ model:
     # --- START OF OPTIONAL CHANGE (For LoRA parity if needed, won't cause *this* error but good for consistency) ---
     init_prior_from_mlp: true # If you want to enable this, add it here (Qwen models typically don't init from MLP weights directly like Llama)
 
-    # lora:
-    #   enable_lora_main_path: false
-    #   enable_lora_prior_ffn: false
-    #   r: 8
-    #   lora_alpha: 16
-    #   lora_dropout: 0.05
-    #   bias: "none"
-    #   # These target modules might need adjustment for Qwen's specific layer names
-    #   lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # Check Qwen's actual module names
-    #   lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
+    lora:
+      enable_lora_main_path: false
+      enable_lora_prior_ffn: false
+      r: 8
+      lora_alpha: 16
+      lora_dropout: 0.05
+      bias: "none"
+      # These target modules might need adjustment for Qwen's specific layer names
+      lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # Check Qwen's actual module names
+      lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
     # --- END OF OPTIONAL CHANGE ---
 
 training:
   accumulate_grad_batches: 64
   max_iters: 100000
-  eval_interval: 200
+  eval_interval: 1000
 
   optimizer:
     # --- START OF CHANGE ---
