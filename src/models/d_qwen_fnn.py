@@ -21,7 +21,11 @@ class FeedForward(nn.Module):
 
         # activation and dropout
         self.act = nn.SiLU()  # approximate SwiGLU gating
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        # --- START OF CHANGE ---
+        # Qwen2Config uses 'hidden_dropout' for general dropout.
+        # Use getattr for robustness, falling back to 0.0 if not found.
+        self.dropout = nn.Dropout(getattr(config, "hidden_dropout", 0.0))
+        # --- END OF CHANGE ---
 
         # init weights
         self._init_weights()
