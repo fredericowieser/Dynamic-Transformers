@@ -39,7 +39,7 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
             # --- START OF CHANGE ---
             # Removed 'max_position_embeddings' as it's not a valid argument for Qwen2RotaryEmbedding's __init__
             base_attn_module.rotary_emb = Qwen2RotaryEmbedding(
-                head_dim,
+                self.config,
             )
             # --- END OF CHANGE ---
 
