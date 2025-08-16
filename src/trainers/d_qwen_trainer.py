@@ -257,6 +257,65 @@ class DynamicQwenTrainer(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         outputs = self._calculate_loss(batch)
         self._log_step_metrics("test", outputs, on_step=False, on_epoch=True)
+    
+    def _setup_parameter_groups(self):
+        log.info(
+            "Setting up parameter groups for differential learning rates and LoRA."
+        )
+        named_params = list(self.model.named_parameters())
+
+        self.original_params = []
+        self.new_prior_params = []
+
+        enable_lora_main = getattr(self.model.config, "enable_lora_main_path", False)
+        enable_lora_prior = getattr(self.model.config, "enable_lora_prior_ffn", False)
+
+        for n, p in named_params:
+            if p.requires_grad:
+                is_prior_param = "prior_ffn" in n or "prior_layernorm" in n
+
+                if is_prior_param:
+                    self.new_prior_params.append(p)
+                else:
+                    self.original_params.append(p)
+            else:
+                log.debug(f"Parameter '{n}' is frozen.")
+
+        if enable_lora_main:
+            log.info(
+                f"LoRA enabled for main decoder path. Training {len(self.original_params)} LoRA parameters."
+            )
+            if len(self.original_params) == 0:
+                log.warning(
+                    "No trainable parameters found for the main decoder path despite LoRA being enabled. Check target modules."
+                )
+        else:
+            log.info(
+                f"Full training for main decoder path. Training {len(self.original_params)} parameters."
+            )
+
+        if enable_lora_prior:
+            log.info(
+                f"LoRA enabled for prior FFN. Training {len(self.new_prior_params)} LoRA parameters."
+            )
+            if len(self.new_prior_params) == 0:
+                log.warning(
+                    "No trainable parameters found for the prior FFN despite LoRA being enabled. Check target modules."
+                )
+        else:
+            log.info(
+                f"Full training for prior FFN. Training {len(self.new_prior_params)} parameters."
+            )
+
+        total_trainable = sum(p.numel() for p in self.original_params) + sum(p.numel() for p in self.new_prior_params)
+        model_total_trainable = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
+
+        if total_trainable != model_total_trainable:
+            log.warning(
+                f"Mismatch in trainable parameter count! _setup_parameter_groups found {total_trainable} (numel), model reports {model_total_trainable} (numel). This might indicate a miscategorization."
+            )
 
     def configure_optimizers(self):
         optimizers = [
