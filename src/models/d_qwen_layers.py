@@ -80,7 +80,9 @@ def patch_qwen_layers(model):
     Replace each QwenDecoderLayer in model with DynamicQwenDecoderLayer.
     Call this after loading the pretrained model and setting model.config.
     """
-    for i, layer in enumerate(model.qwen.layers):
+    # --- START OF CHANGE ---
+    for i, layer in enumerate(model.model.layers): # Changed model.qwen.layers to model.model.layers
+    # --- END OF CHANGE ---
         dynamic = DynamicQwenDecoderLayer(layer, model.config)
-        model.qwen.layers[i] = dynamic
+        model.model.layers[i] = dynamic # Ensure the modified layer is assigned back correctly
     return model
