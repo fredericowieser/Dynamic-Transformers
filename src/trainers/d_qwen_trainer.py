@@ -26,7 +26,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             model_cfg.model_name,
             dynamic_k=model_cfg.dynamic_k,
             ce_bias=model_cfg.ce_bias,
-            gate_warmup_iters=training_cfg.gate_warmup_iters,
+            gate_warmup_iters=training_cfg.get("gate_warmup_iters", 0),
         )
         # Instantiate our DynamicQwen model with the configured config
         self.model = DynamicQwenForCausalLM(config)
