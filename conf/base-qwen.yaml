@@ -21,7 +21,6 @@ model:
     # Dynamic gating params
     dynamic_k: 0.95           # CU threshold multiplier
     ce_bias: 0.05             # CE bias term
-    gate_warmup_iters: 100    # Warmup steps for CU
 
 training:
   accumulate_grad_batches: 64
@@ -35,6 +34,8 @@ training:
   scheduler:
     factor: 0.1
     patience: 10
+  
+  gate_warmup_iters: 100    # Warmup steps for CU
 
 logging:
   tensorboard:
