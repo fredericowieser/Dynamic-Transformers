@@ -30,8 +30,8 @@ model:
     init_prior_from_mlp: false # If you want to enable this, add it here (Qwen models typically don't init from MLP weights directly like Llama)
 
     lora:
-      enable_lora_main_path: false
-      enable_lora_prior_ffn: false
+      enable_lora_main_path: true
+      enable_lora_prior_ffn: true
       r: 8
       lora_alpha: 16
       lora_dropout: 0.05
