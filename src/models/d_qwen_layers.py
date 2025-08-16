@@ -33,16 +33,14 @@ class DynamicQwenDecoderLayer(Qwen2DecoderLayer):
             log.warning(
                 f"Layer {self.layer_idx}: Qwen2Attention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
             )
-            # --- START OF CHANGE ---
-            # Calculate head_dim from hidden_size and num_attention_heads
             head_dim = config.hidden_size // config.num_attention_heads
-            # Use getattr for rope_theta for robustness
             rope_theta = getattr(config, "rope_theta", 10000.0)
 
+            # --- START OF CHANGE ---
+            # Removed 'max_position_embeddings' as it's not a valid argument for Qwen2RotaryEmbedding's __init__
             base_attn_module.rotary_emb = Qwen2RotaryEmbedding(
-                head_dim, # Use calculated head_dim
-                max_position_embeddings=config.max_position_embeddings,
-                base=rope_theta # Use retrieved rope_theta
+                head_dim,
+                base=rope_theta
             )
             # --- END OF CHANGE ---
 
