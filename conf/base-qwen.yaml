@@ -1,9 +1,11 @@
+# conf/model/qwen.yaml
+
 defaults:
   - _self_
   - data: sft_mix_qwen
 
 run:
-  name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynk=${model.model_cfg.dynamic_k}-ceb=${model.model_cfg.ce_bias}"
+  name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}-fm=${model.model_cfg.freeze_main_transformer_blocks}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"           # "cpu", "cuda", "mps", etc.
@@ -18,28 +20,24 @@ model:
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
-    # --- START OF CHANGE ---
-    prior_loss_weight: 0.1 # Add this line, value should match your needs
+    # --- START OF CHANGE: Updated Dynamic Gating and Prior FFN Parameters ---
+    # Removed: prior_loss_weight (loss is now just LM loss)
+
+    # New Dynamic Gating parameters for VPRRouter
+    capacity_gamma: 0.95                     # float in (0,1], fraction of tokens to compute (like MoD's k)
+    beta_ce_init: 10.0                       # Initial beta for CE sigmoid (controls steepness)
+    beta_cu_init: 10.0                       # Initial beta for CU sigmoid (controls steepness)
+    cu_detection_multiplier_init: 1.0        # Initial multiplier for CU norm (replaces old dynamic_k usage)
+    ce_criterion_offset_init: 0.075          # Offset for CE criterion (replaces old ce_bias)
+    token_wise_gating: True                  # Whether to apply gating per-token or per-batch
+    moving_average_window_size: 100          # Window size for D_st moving average in CU
+
+    # Prior FFN configuration
+    prior_ffn_intermediate_size_factor: 2.0  # Factor to multiply hidden_size by for prior FFN intermediate layer (e.g., 2.0 * hidden_size)
+
+    # Training control: Freeze main transformer blocks
+    freeze_main_transformer_blocks: False    # If True, only VPR router and Prior FFN params are trained.
     # --- END OF CHANGE ---
-
-    # Dynamic gating params
-    dynamic_k: 0.95           # CU threshold multiplier
-    ce_bias: 0.075             # CE bias term
-
-    # --- START OF OPTIONAL CHANGE (For LoRA parity if needed, won't cause *this* error but good for consistency) ---
-    init_prior_from_mlp: false # If you want to enable this, add it here (Qwen models typically don't init from MLP weights directly like Llama)
-
-    lora:
-      enable_lora_main_path: false
-      enable_lora_prior_ffn: false
-      r: 8
-      lora_alpha: 16
-      lora_dropout: 0.05
-      bias: "none"
-      # These target modules might need adjustment for Qwen's specific layer names
-      lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # Check Qwen's actual module names
-      lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
-    # --- END OF OPTIONAL CHANGE ---
 
 training:
   accumulate_grad_batches: 64
@@ -47,17 +45,16 @@ training:
   eval_interval: 1000
 
   optimizer:
-    # --- START OF CHANGE ---
-    base_lr: 1.0e-5       # Max LR for base model
-    prior_ffn_lr: 1.0e-5  # Max LR for prior FFN
-    # --- END OF CHANGE ---
+    base_lr: 1.0e-5       # Max LR for main transformer blocks (if not frozen) and other base model params
+    prior_ffn_lr: 1.0e-4  # Max LR for prior FFN and VPR router parameters
     weight_decay: 0.01
+    warmup_ratio: 0.01 # New: Warmup ratio for LR schedulers (e.g., 1% of max_iters)
 
   scheduler:
     factor: 0.1
     patience: 10
   
-  gate_warmup_iters: 100    # Warmup steps for CU
+  # Removed: gate_warmup_iters (this logic is now inside VPRRouter and uses current_iter directly)
 
 logging:
   tensorboard:
