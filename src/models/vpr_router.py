@@ -20,12 +20,33 @@ class VPRRouter(nn.Module):
         self.moving_average_window_size = getattr(config, "moving_average_window_size", 100)
 
         # Learnable parameters for the sigmoid activations and criteria.
-        # Initial values for these will be set via config and then learned.
         self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
         self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
 
-        # Initial 'change' multiplier for CU, will be learned.
+        # Learnable multiplier for CU norm (replaces old dynamic_k usage)
         self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+
+        # Learnable offset for CE criterion (replaces old ce_bias concept)
+        self.ce_criterion_offset = nn.Parameter(torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
+
+
+    # Add properties to expose the current learnable parameter values
+    @property
+    def current_beta_ce(self):
+        return self.beta_ce.item()
+
+    @property
+    def current_beta_cu(self):
+        return self.beta_cu.item()
+
+    @property
+    def current_cu_detection_multiplier(self):
+        return self.cu_detection_multiplier.item()
+
+    @property
+    def current_ce_criterion_offset(self):
+        return self.ce_criterion_offset.item()
+
 
     def _calculate_moving_average(self, d_st_values: torch.Tensor) -> torch.Tensor:
         """
@@ -47,7 +68,7 @@ class VPRRouter(nn.Module):
         # (B, T_padded) -> (B, T, window_size)
         windows = padded_d_st.unfold(dimension=-1, size=self.moving_average_window_size, step=1)
 
-        # FIX: Average across the window_size dimension (last dimension)
+        # Average across the window_size dimension (last dimension)
         ma_d_st = windows.mean(dim=-1) # (B, T)
 
         return ma_d_st
@@ -60,7 +81,7 @@ class VPRRouter(nn.Module):
         prior_hidden_states: torch.Tensor, # H^{D_n}_{prior} (from Prior FFN output)
         capacity_gamma: float, # This is the preset gamma (k in MoD) from config
         is_training: bool = True, # To enable deterministic routing in inference
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float, float, float]:
         """
         Computes the routing decision based on VPR criteria.
 
@@ -79,25 +100,29 @@ class VPRRouter(nn.Module):
                                 Used for deterministic routing during inference.
 
         Returns:
-            tuple: (gate_vec_final, avg_ce_proportion, avg_cu_proportion, d_st_tok, d_ch_tok, combined_gating_signal)
-            - gate_vec_final (torch.Tensor): The (B, T) or (B,) tensor of routing decisions (0 or 1).
+            tuple:
+            - gate_vec_binary (torch.Tensor): The (B, T) or (B,) tensor of binary routing decisions (0 or 1).
             - avg_ce_proportion (torch.Tensor): Scalar mean of CE activations.
             - avg_cu_proportion (torch.Tensor): Scalar mean of CU activations.
             - d_st_tok (torch.Tensor): Per-token static surprise (B, T).
             - d_ch_tok (torch.Tensor): Per-token change surprise (B, T).
-            - combined_gating_signal (torch.Tensor): Per-token continuous gating signal (B, T).
+            - combined_gating_signal_continuous (torch.Tensor): Per-token continuous gating signal (B, T).
+            - current_beta_ce (float): Current value of learnable beta_ce.
+            - current_beta_cu (float): Current value of learnable beta_cu.
+            - current_cu_detection_multiplier (float): Current value of learnable cu_detection_multiplier.
+            - current_ce_criterion_offset (float): Current value of learnable ce_criterion_offset.
         """
         # Calculate per-token MSE losses
         # MSE is averaged over the last dimension (hidden_size)
         d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1)  # (B, T)
         d_ch_tok = F.mse_loss(posterior_full_path_output, prior_hidden_states, reduction="none").mean(-1)  # (B, T)
 
-        # Let's use `ce_criterion_offset_init` from config as the offset.
-        ce_criterion_offset = self.config.ce_criterion_offset_init
+        # Use `self.ce_criterion_offset` (now a learnable parameter)
+        ce_criterion_offset_val = self.ce_criterion_offset
 
         if self.token_wise_gating:
             # Per-token calculation
-            CE_val = d_st_tok - (d_ch_tok - ce_criterion_offset) # (B, T)
+            CE_val = d_st_tok - (d_ch_tok - ce_criterion_offset_val) # (B, T)
             ma_d_st_tok = self._calculate_moving_average(d_st_tok.detach()) # Detach for stable moving average.
             CU_val = d_st_tok - (self.cu_detection_multiplier * ma_d_st_tok) # (B, T)
         else:
@@ -105,51 +130,45 @@ class VPRRouter(nn.Module):
             mean_d_st = d_st_tok.mean(dim=-1, keepdim=True) # (B, 1)
             mean_d_ch = d_ch_tok.mean(dim=-1, keepdim=True) # (B, 1)
 
-            CE_val = mean_d_st - (mean_d_ch - ce_criterion_offset) # (B, 1)
+            CE_val = mean_d_st - (mean_d_ch - ce_criterion_offset_val) # (B, 1)
             CU_val = mean_d_st - (self.cu_detection_multiplier * mean_d_st.detach()) # (B, 1)
 
         # Sigmoid gating scores
         S_CE = torch.sigmoid(self.beta_ce * CE_val)
         S_CU = torch.sigmoid(self.beta_cu * CU_val)
 
-        # Combined Gating Signal (logical OR equivalent)
-        combined_gating_signal = S_CE + S_CU - (S_CE * S_CU) # (B, T) or (B, 1)
+        # Combined Gating Signal (logical OR equivalent), this is the continuous signal
+        combined_gating_signal_continuous = S_CE + S_CU - (S_CE * S_CU) # (B, T) or (B, 1)
 
         # Determine the dynamic threshold (capacity_gamma is the percentile)
         if capacity_gamma >= 1.0: # If gamma is 1.0, process all tokens.
-            threshold = -torch.finfo(combined_gating_signal.dtype).max # Always pass
+            threshold = -torch.finfo(combined_gating_signal_continuous.dtype).max # Always pass
         else:
             # Calculate the threshold that lets capacity_gamma fraction of tokens pass
             if self.token_wise_gating:
                 # Flatten all tokens in batch to find global threshold
-                flat_g_signal = combined_gating_signal.flatten()
+                flat_g_signal = combined_gating_signal_continuous.flatten()
                 threshold = torch.quantile(flat_g_signal, (1.0 - capacity_gamma))
             else:
                 # Compute quantile per batch (for the batch_wise decision)
-                # If combined_gating_signal is (B, 1), quantile along dim=0 gives a scalar (1,)
-                threshold = torch.quantile(combined_gating_signal, (1.0 - capacity_gamma), dim=0)
-                # Ensure threshold can broadcast correctly if it collapses a dimension
-                if threshold.ndim < combined_gating_signal.ndim:
-                    threshold = threshold.view(1,) if self.token_wise_gating else threshold.view(-1, 1, 1)
+                threshold = torch.quantile(combined_gating_signal_continuous, (1.0 - capacity_gamma), dim=0)
 
-        # Final routing decision (binary gate: 1 if processed, 0 if skipped)
-        if is_training:
-            # During training, use continuous signal for gradient flow, but make it binary for gate_vec_final
-            gate_vec_final = (combined_gating_signal >= threshold).float()
-        else:
-            # During inference, apply a hard threshold for deterministic routing
-            gate_vec_final = (combined_gating_signal >= threshold).float()
-
+        # Final binary routing decision (0 or 1) based on threshold
+        gate_vec_binary = (combined_gating_signal_continuous >= threshold).float()
 
         # Metrics for logging
         avg_ce_proportion = S_CE.mean() # Average probability of expected event
         avg_cu_proportion = S_CU.mean() # Average probability of unexpected event
 
         return (
-            gate_vec_final,
+            gate_vec_binary,
             avg_ce_proportion,
             avg_cu_proportion,
             d_st_tok,
             d_ch_tok,
-            combined_gating_signal,
+            combined_gating_signal_continuous,
+            self.current_beta_ce, # Current value of learnable beta_ce.
+            self.current_beta_cu, # Current value of learnable beta_cu.
+            self.current_cu_detection_multiplier, # Current value of learnable cu_detection_multiplier.
+            self.current_ce_criterion_offset, # Current value of learnable ce_criterion_offset.
         )

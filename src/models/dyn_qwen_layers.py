@@ -45,7 +45,9 @@ class DynamicQwenDecoderLayer(nn.Module):
         # Load pre-trained weights for this layer's components
         if load_from_pretrained and original_layer_state_dict is not None:
             # Load the state_dict for self_attn, mlp, and layernorms of this layer
-            self.load_state_dict(original_layer_state_dict, strict=False) # strict=False ignores router params
+            # Using strict=False because prior_ffn and vpr_router won't be in original_layer_state_dict
+            # for Decision/Dynamic layers, so it's correct here.
+            self.load_state_dict(original_layer_state_dict, strict=False)
             log.info(f"Loaded pre-trained weights for DynamicQwenDecoderLayer {self.layer_idx} (main blocks).")
 
     def forward(
@@ -55,6 +57,7 @@ class DynamicQwenDecoderLayer(nn.Module):
         prev_decision_original_input: torch.Tensor, # Z^{n-1} from previous Decision Layer
         prev_decision_posterior_output: torch.Tensor, # H^{D_n}_{trans} from previous Decision Layer
         prev_decision_prior_output: torch.Tensor, # H^{D_n}_{prior} from previous Decision Layer
+        prior_loss_from_decision: torch.Tensor, # ADDED: Prior loss from the *preceding Decision Layer*
 
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
@@ -69,10 +72,15 @@ class DynamicQwenDecoderLayer(nn.Module):
         """
         # Call the VPR Router using signals from the *preceding Decision Layer*
         (
-            gate_vec_final, # (B, T) or (B,) binary routing decision
+            gate_vec_binary, # (B, T) or (B,) binary routing decision (for stats and forward hard decision)
             avg_ce_proportion,
             avg_cu_proportion,
-            _, _, _ # d_st_tok, d_ch_tok, combined_gating_signal (not directly returned)
+            _, _, # d_st_tok, d_ch_tok (not directly returned from router)
+            combined_gating_signal_continuous, # (B, T) or (B,) continuous signal (for backward pass)
+            router_beta_ce, # VPRRouter learnable param
+            router_beta_cu, # VPRRouter learnable param
+            router_cu_detection_multiplier, # VPRRouter learnable param
+            router_ce_criterion_offset, # VPRRouter learnable param
         ) = self.vpr_router(
             original_input_to_block=prev_decision_original_input,
             posterior_full_path_output=prev_decision_posterior_output,
@@ -81,11 +89,16 @@ class DynamicQwenDecoderLayer(nn.Module):
             is_training=self.training,
         )
 
-        # Prepare for conditional computation
+        # Prepare for conditional computation with Straight-Through Estimator (STE)
         if self.vpr_router.token_wise_gating:
-            gate = gate_vec_final.unsqueeze(-1)  # (B, T) -> (B, T, 1)
+            gate_forward = gate_vec_binary.unsqueeze(-1)  # (B, T) -> (B, T, 1) for actual forward decision
+            gate_backward = combined_gating_signal_continuous.unsqueeze(-1) # (B, T) -> (B, T, 1) for gradients
         else:
-            gate = gate_vec_final.view(-1, 1, 1)  # (B,) -> (B, 1, 1)
+            gate_forward = gate_vec_binary.view(-1, 1, 1)  # (B,) -> (B, 1, 1) for actual forward decision
+            gate_backward = combined_gating_signal_continuous.view(-1, 1, 1) # (B,) -> (B, 1, 1) for gradients
+
+        # STE: In forward, use gate_forward. In backward, gradients flow through gate_backward.
+        gate_ste = gate_forward + (gate_backward - gate_forward).detach()
 
         # Store the original input to *this* Dynamic layer for the identity path
         original_input_to_dynamic_block = hidden_states # This is Z^n from previous Decision Layer
@@ -125,9 +138,9 @@ class DynamicQwenDecoderLayer(nn.Module):
         mlp_output = self.mlp(hidden_states_pre_mlp_ln)
         full_compute_path_output = hidden_states_after_attn + mlp_output # Result of *this* layer's full compute
 
-        # Apply the dynamic gating: gate * full_compute_path + (1 - gate) * identity_path
+        # Apply the dynamic gating: gate_ste * full_compute_path + (1 - gate_ste) * identity_path
         # The identity path is the input to this dynamic block.
-        hidden_states_final = gate * full_compute_path_output + (1.0 - gate) * original_input_to_dynamic_block
+        hidden_states_final = gate_ste * full_compute_path_output + (1.0 - gate_ste) * original_input_to_dynamic_block
 
         # Prepare outputs to match expected Hugging Face Transformer layer output signature,
         # followed by our custom metrics.
@@ -139,5 +152,16 @@ class DynamicQwenDecoderLayer(nn.Module):
         if output_attentions:
             outputs += (attn_weights,)
 
-        # Append dynamic gating metrics for trainer logging
-        return outputs + (avg_ce_proportion, avg_cu_proportion, gate_vec_final)
+        # Append dynamic gating metrics for trainer logging.
+        # Pass `gate_vec_binary` for statistics because it represents the actual hard decision count.
+        # Also pass the router's learnable parameters and the prior_loss from the Decision Layer.
+        return outputs + (
+            avg_ce_proportion,
+            avg_cu_proportion,
+            gate_vec_binary,
+            prior_loss_from_decision, # ADDED: Prior loss from Decision Layer
+            router_beta_ce, # VPRRouter learnable param
+            router_beta_cu, # VPRRouter learnable param
+            router_cu_detection_multiplier, # VPRRouter learnable param
+            router_ce_criterion_offset, # VPRRouter learnable param
+        )

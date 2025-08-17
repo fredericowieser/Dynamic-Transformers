@@ -1,5 +1,3 @@
-# conf/model/qwen.yaml
-
 defaults:
   - _self_
   - data: sft_mix_qwen
@@ -20,15 +18,15 @@ model:
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
-    # --- START OF CHANGE: Updated Dynamic Gating and Prior FFN Parameters ---
     # Removed: prior_loss_weight (loss is now just LM loss)
 
     # New Dynamic Gating parameters for VPRRouter
-    capacity_gamma: 0.95                     # float in (0,1], fraction of tokens to compute (like MoD's k)
+    capacity_gamma: 0.5                     # float in (0,1], fraction of tokens to compute (like MoD's k)
     beta_ce_init: 10.0                       # Initial beta for CE sigmoid (controls steepness)
     beta_cu_init: 10.0                       # Initial beta for CU sigmoid (controls steepness)
     cu_detection_multiplier_init: 1.0        # Initial multiplier for CU norm (replaces old dynamic_k usage)
-    ce_criterion_offset_init: 0.075          # Offset for CE criterion (replaces old ce_bias)
+    ce_criterion_offset_init: 0.075          # Initial offset for CE criterion (NOW A LEARNABLE PARAMETER)
+
     token_wise_gating: True                  # Whether to apply gating per-token or per-batch
     moving_average_window_size: 100          # Window size for D_st moving average in CU
 
@@ -37,7 +35,6 @@ model:
 
     # Training control: Freeze main transformer blocks
     freeze_main_transformer_blocks: False    # If True, only VPR router and Prior FFN params are trained.
-    # --- END OF CHANGE ---
 
 training:
   accumulate_grad_batches: 64

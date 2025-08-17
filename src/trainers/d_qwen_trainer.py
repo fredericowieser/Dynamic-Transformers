@@ -1,5 +1,3 @@
-# src/trainers/d_qwen_trainer.py
-
 import logging
 import torch
 import torch.nn.functional as F
@@ -30,7 +28,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             "beta_ce_init": self.model_cfg.beta_ce_init,
             "beta_cu_init": self.model_cfg.beta_cu_init,
             "cu_detection_multiplier_init": self.model_cfg.cu_detection_multiplier_init,
-            "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init,
+            "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init, # Now a learnable parameter
             "token_wise_gating": getattr(self.model_cfg, "token_wise_gating", True),
             "moving_average_window_size": getattr(self.model_cfg, "moving_average_window_size", 100),
             "prior_ffn_intermediate_size_factor": getattr(self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0),
@@ -73,14 +71,19 @@ class DynamicQwenTrainer(pl.LightningModule):
         return self.model(**inputs)
 
     def _calculate_loss(self, batch):
+        # Unpack all metrics returned by DynamicQwenForCausalLM.forward
         (
             logits,
-            _,
-            gate_vecs_per_layer,
-            overall_avg_ce,
-            overall_avg_cu,
-            ce_proportions_per_layer,
-            cu_proportions_per_layer,
+            overall_prior_loss, # Actual aggregated prior loss for monitoring
+            gate_vecs_per_layer, # List of (B, T) gate vectors for Dynamic layers
+            overall_avg_ce_prop_from_model, # Scalar mean of CE from DynamicQwenForCausalLM
+            overall_avg_cu_prop_from_model, # Scalar mean of CU from DynamicQwenForCausalLM
+            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer
+            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer
+            overall_beta_ce, # Scalar
+            overall_beta_cu, # Scalar
+            overall_cu_detection_multiplier, # Scalar
+            overall_ce_criterion_offset, # Scalar
         ) = self.forward(**batch)
 
         shift_logits = logits[..., :-1, :].contiguous()
@@ -90,9 +93,17 @@ class DynamicQwenTrainer(pl.LightningModule):
             shift_labels.view(-1),
             ignore_index=-100,
         )
-        total_loss = lm_loss
+        total_loss = lm_loss # Prior loss is only for monitoring, not added to total_loss
         perplexity = torch.exp(lm_loss)
 
+        # Calculate overall gate activation mean from per-layer gate_vecs_per_layer
+        overall_gate_activation_mean = (
+            torch.stack([gv.mean() for gv in gate_vecs_per_layer]).mean()
+            if gate_vecs_per_layer
+            else torch.tensor(0.0, device=self.device)
+        )
+
+        # Calculate per-layer gate statistics (mean and std)
         per_layer_gate_stats = [
             {
                 "mean": gv.mean(),
@@ -104,16 +115,20 @@ class DynamicQwenTrainer(pl.LightningModule):
             }
             for gv in gate_vecs_per_layer
         ]
+
         return (
             total_loss,
             lm_loss,
-            None,
+            overall_prior_loss, # Now includes the actual prior loss for logging
             perplexity,
-            overall_avg_ce,
-            overall_avg_cu,
-            per_layer_gate_stats,
-            ce_proportions_per_layer,
-            cu_proportions_per_layer,
+            overall_gate_activation_mean,
+            overall_avg_ce_prop_from_model, # Overall average CE proportion
+            overall_avg_cu_prop_from_model, # Overall average CU proportion
+            per_layer_gate_stats, # Per-layer mean/std for gate activations
+            overall_beta_ce,
+            overall_beta_cu,
+            overall_cu_detection_multiplier,
+            overall_ce_criterion_offset,
         )
 
     def _log_step_metrics(
@@ -126,13 +141,16 @@ class DynamicQwenTrainer(pl.LightningModule):
         (
             total_loss,
             lm_loss,
-            prior_loss,
+            prior_loss, # This is now the actual aggregated prior loss
             perplexity,
-            overall_avg_ce,
-            overall_avg_cu,
-            per_layer_gate_stats,
-            ce_proportions_per_layer,
-            cu_proportions_per_layer,
+            overall_gate_activation_mean,
+            overall_avg_ce, # Overall average CE proportion (from model.forward)
+            overall_avg_cu, # Overall average CU proportion (from model.forward)
+            per_layer_gate_stats, # Per-layer gate stats
+            overall_beta_ce,
+            overall_beta_cu,
+            overall_cu_detection_multiplier,
+            overall_ce_criterion_offset,
         ) = outputs
 
         self.log(
@@ -149,6 +167,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
             prog_bar=True,
         )
+        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch) # Log the actual prior_loss
         self.log(
             f"{prefix}/perplexity",
             perplexity,
@@ -172,15 +191,37 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        overall_gate_activation_mean_for_logger = (
-            torch.tensor([s["mean"] for s in per_layer_gate_stats]).mean()
-            if per_layer_gate_stats
-            else torch.tensor(0.0, device=self.device)
+        # Log new learnable parameters from VPRRouter
+        self.log(
+            f"{prefix}_dynamic_model/router_beta_ce",
+            overall_beta_ce,
+            on_step=on_step,
+            on_epoch=on_epoch,
         )
+        self.log(
+            f"{prefix}_dynamic_model/router_beta_cu",
+            overall_beta_cu,
+            on_step=on_step,
+            on_epoch=on_epoch,
+        )
+        self.log(
+            f"{prefix}_dynamic_model/router_cu_detection_multiplier",
+            overall_cu_detection_multiplier,
+            on_step=on_step,
+            on_epoch=on_epoch,
+        )
+        self.log(
+            f"{prefix}_dynamic_model/router_ce_criterion_offset",
+            overall_ce_criterion_offset,
+            on_step=on_step,
+            on_epoch=on_epoch,
+        )
+
+
         GateLogger.log_gate_metrics(
             self,
             prefix,
-            overall_gate_activation_mean_for_logger,
+            overall_gate_activation_mean,
             per_layer_gate_stats,
             on_step,
             on_epoch,
@@ -208,7 +249,8 @@ class DynamicQwenTrainer(pl.LightningModule):
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
 
         if self.trainer.global_step > 0:
-            self.gate_logger.update_rolling_history(outputs[6])
+            # per_layer_gate_stats are at outputs[7] based on _calculate_loss return
+            self.gate_logger.update_rolling_history(outputs[7])
             self.gate_logger.log_rolling_history(
                 self.trainer.global_step,
                 self.trainer.log_every_n_steps,
@@ -231,7 +273,6 @@ class DynamicQwenTrainer(pl.LightningModule):
         self.vpr_router_params = []
         self.other_params = []
 
-        # --- START OF FIX ---
         # Iterate through all parameters that require gradients
         for n, p in self.model.named_parameters():
             if not p.requires_grad:
@@ -255,8 +296,6 @@ class DynamicQwenTrainer(pl.LightningModule):
             else:
                 # These are top-level model parameters: embed_tokens, lm_head, model.norm
                 self.other_params.append(p)
-
-        # --- END OF FIX ---
 
         # Log counts for verification
         log.info(f"Identified {len(self.main_block_params)} main block parameters (trainable if not frozen).")
@@ -308,7 +347,7 @@ class DynamicQwenTrainer(pl.LightningModule):
         num_warmup_steps = int(num_training_steps * getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0))
 
         schedulers = []
-        if optimizer_main in optimizer_groups:
+        if optimizer_main in optimizer_groups: # Check if optimizer_main was actually added
             lr_scheduler_main = get_scheduler(
                 name="cosine",
                 optimizer=optimizer_main,

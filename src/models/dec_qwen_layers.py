@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2MLP,
@@ -59,7 +60,7 @@ class DecisionQwenDecoderLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         **kwargs, # Accept extra kwargs for compatibility
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...] | None, torch.Tensor | None, torch.Tensor]:
         """
         Forward pass for the DecisionQwenDecoderLayer.
 
@@ -83,6 +84,7 @@ class DecisionQwenDecoderLayer(nn.Module):
                                                                  Used as `prior_hidden_states` for next Dynamic Layer's VPRRouter.
                 - present_key_value (tuple[torch.Tensor] | None): Updated key/value cache from THIS layer's attention.
                 - attn_weights (torch.Tensor | None): Attention weights from THIS layer's attention.
+                - prior_loss (torch.Tensor): The MSE loss between prior_hidden_states and posterior_full_path_output. For monitoring.
         """
         vpr_signal_original_input = hidden_states # This is Z^{n-1} or output from previous Dynamic
 
@@ -132,6 +134,9 @@ class DecisionQwenDecoderLayer(nn.Module):
         prior_ffn_output = self.prior_ffn(prior_input_ln)
         vpr_signal_prior_hidden_states = vpr_signal_original_input + prior_ffn_output
 
+        # Calculate prior loss for monitoring
+        prior_loss = F.mse_loss(vpr_signal_prior_hidden_states, vpr_signal_posterior_output.detach())
+
         return (
             output_hidden_states,
             vpr_signal_original_input,
@@ -139,4 +144,5 @@ class DecisionQwenDecoderLayer(nn.Module):
             vpr_signal_prior_hidden_states,
             present_key_value,
             attn_weights,
+            prior_loss, # Add prior_loss to the return
         )
