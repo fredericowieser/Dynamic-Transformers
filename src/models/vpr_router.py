@@ -1,5 +1,3 @@
-# src/models/vpr_router.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,34 +21,11 @@ class VPRRouter(nn.Module):
 
         # Learnable parameters for the sigmoid activations and criteria.
         # Initial values for these will be set via config and then learned.
-        # These replace fixed ce_bias and alpha_CU (dynamic_k in old config)
         self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
         self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
 
         # Initial 'change' multiplier for CU, will be learned.
-        # This acts as the alpha_CU in your notes, but dynamically learned.
-        # We rename it to avoid confusion with capacity_gamma.
         self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
-
-        # We will keep a running sum and count for a global moving average
-        # for D_st. This is a simplification from per-token MA but avoids complex
-        # state management across forward calls for sequential data.
-        # If a true *per-sequence, causal rolling window* is needed (i.e., for token_t,
-        # average of d_st for token_t-100 to token_t-1 within the *same sequence*),
-        # that would require a different, more complex implementation.
-        # For now, we'll use a global EMA as a proxy for the 'norm' if processing
-        # full sequences or for generation.
-        # The prompt says "Mean of the last 100 d_st values in that sequence,
-        # we could think of MA_K(d_st, K=100) as a function which takes in a
-        # Batch by Token matrix and outputs a Batch by Token matrix". This
-        # implies a causal window within the *current batch's sequences*.
-        # Let's implement this as a causal window using `unfold` or a direct loop for clarity.
-        # However, for simplicity and common practice in these models, D_st.detach().mean()
-        # is often used as the 'norm' or a learned scalar. The problem with true MA(K) on a
-        # batch-by-token matrix for dynamic models is edge cases at sequence start and
-        # needing padding for the window.
-        # Given "output a Batch by Token matrix", this is doable via `F.pad` and `F.avg_pool1d`.
-        # Let's use this for now.
 
     def _calculate_moving_average(self, d_st_values: torch.Tensor) -> torch.Tensor:
         """
@@ -66,18 +41,14 @@ class VPRRouter(nn.Module):
 
         # Pad the sequence on the left to handle window for early tokens
         # We need to compute an average up to the current token, so pad to the left
-        # Example: for window size K, token t's MA needs d_st[t-K ... t-1]
-        # For the first K tokens, the average will be over fewer than K points.
         padded_d_st = F.pad(d_st_values, (self.moving_average_window_size - 1, 0), mode='replicate')
 
         # Use unfold to create windows.
-        # The stride is 1, so each window starts at the next token.
-        # Kernel size is moving_average_window_size.
-        # (B, T_padded) -> (B, window_size, T) after unfold and permute
+        # (B, T_padded) -> (B, T, window_size)
         windows = padded_d_st.unfold(dimension=-1, size=self.moving_average_window_size, step=1)
 
-        # Calculate mean across the window dimension
-        ma_d_st = windows.mean(dim=1) # (B, T)
+        # FIX: Average across the window_size dimension (last dimension)
+        ma_d_st = windows.mean(dim=-1) # (B, T)
 
         return ma_d_st
 
@@ -121,34 +92,13 @@ class VPRRouter(nn.Module):
         d_st_tok = F.mse_loss(posterior_full_path_output, original_input_to_block, reduction="none").mean(-1)  # (B, T)
         d_ch_tok = F.mse_loss(posterior_full_path_output, prior_hidden_states, reduction="none").mean(-1)  # (B, T)
 
-        # Compute 'expected change' (CE) criterion
-        # CE = D_st > D_ch - log(ce_change_bias) (simplified from notes)
-        # Here, D_ch is effectively shifted. We can interpret the bias as a direct threshold offset.
-        # Let's stick to the interpretation from the mathematical formalization: CE_i = d_st,i - (d_ch,i - log(alpha_CE))
-        # where alpha_CE is a learnable parameter. The original VPR paper uses DKL(qst||pst) > DKL(qch||pch)
-        # For MSE, a simple comparison of raw d_st and d_ch, potentially with a learned bias, works.
-        # Let's use `cu_detection_multiplier_init` as the bias, or introduce a separate learnable bias.
-        # From the mathematical formalization: CE_i = d_st,i - (d_ch,i - log(alpha_CE))
-        # Let's make alpha_CE an internal learnable parameter here as `ce_criterion_bias`.
-
-        # CE comparison: predicts change, better fit than no change.
-        # The raw difference D_st - D_ch directly represents which hypothesis is 'better'.
-        # A positive value means Static hypothesis is worse (more surprise) than Change hypothesis.
-        # Thus, D_st - D_ch > threshold indicates expected change.
-        # Let's align with the slide's formula: D_KL(qst || pst) > D_KL(qch || pch)
-        # which means D_st > D_ch, adjusted by the ce_bias.
-        # My notes have: CE = d_st - (d_ch - log(alpha_CE))
-        # We will use this.
-
-        # Let's use `ce_criterion_offset` as the equivalent of `log(alpha_CE)`.
-        ce_criterion_offset = self.config.ce_criterion_offset_init # This will be a config value, not a learnable param here in router as it was in old trainer.
+        # Let's use `ce_criterion_offset_init` from config as the offset.
+        ce_criterion_offset = self.config.ce_criterion_offset_init
 
         if self.token_wise_gating:
             # Per-token calculation
             CE_val = d_st_tok - (d_ch_tok - ce_criterion_offset) # (B, T)
-            # CU calculation uses a causal moving average specific to each token's sequence history.
             ma_d_st_tok = self._calculate_moving_average(d_st_tok.detach()) # Detach for stable moving average.
-            # CU_val: D_st > cu_detection_multiplier * MA_K(D_st)
             CU_val = d_st_tok - (self.cu_detection_multiplier * ma_d_st_tok) # (B, T)
         else:
             # Per-batch/sequence calculation (mean over tokens)
@@ -156,7 +106,6 @@ class VPRRouter(nn.Module):
             mean_d_ch = d_ch_tok.mean(dim=-1, keepdim=True) # (B, 1)
 
             CE_val = mean_d_st - (mean_d_ch - ce_criterion_offset) # (B, 1)
-            # For non-token-wise, the 'norm' for CU is typically the overall mean
             CU_val = mean_d_st - (self.cu_detection_multiplier * mean_d_st.detach()) # (B, 1)
 
         # Sigmoid gating scores
@@ -167,30 +116,25 @@ class VPRRouter(nn.Module):
         combined_gating_signal = S_CE + S_CU - (S_CE * S_CU) # (B, T) or (B, 1)
 
         # Determine the dynamic threshold (capacity_gamma is the percentile)
-        # From MoD: top-k logic based on router weights. Here, combined_gating_signal acts as router weight.
         if capacity_gamma >= 1.0: # If gamma is 1.0, process all tokens.
             threshold = -torch.finfo(combined_gating_signal.dtype).max # Always pass
         else:
             # Calculate the threshold that lets capacity_gamma fraction of tokens pass
-            # We need to flatten and compute quantile across all B*T tokens for the threshold
-            # If per-batch, then compute quantile per batch (B, 1)
             if self.token_wise_gating:
-                # Flattern all tokens in batch to find global threshold
+                # Flatten all tokens in batch to find global threshold
                 flat_g_signal = combined_gating_signal.flatten()
                 threshold = torch.quantile(flat_g_signal, (1.0 - capacity_gamma))
             else:
                 # Compute quantile per batch (for the batch_wise decision)
-                threshold = torch.quantile(combined_gating_signal, (1.0 - capacity_gamma), dim=0, keepdim=True)
+                # If combined_gating_signal is (B, 1), quantile along dim=0 gives a scalar (1,)
+                threshold = torch.quantile(combined_gating_signal, (1.0 - capacity_gamma), dim=0)
+                # Ensure threshold can broadcast correctly if it collapses a dimension
+                if threshold.ndim < combined_gating_signal.ndim:
+                    threshold = threshold.view(1,) if self.token_wise_gating else threshold.view(-1, 1, 1)
 
         # Final routing decision (binary gate: 1 if processed, 0 if skipped)
         if is_training:
-            # During training, use continuous signal to allow gradients to flow
-            # The original MoD paper also mentions router weights along the gradient path.
-            # Here, the combined_gating_signal is already continuous.
-            # We'll apply the threshold directly as a hard decision to select which tokens *pass*
-            # but the actual "weight" for the output can still be continuous.
-            # For simplicity, let's make it a binary decision here for `gate_vec_final`.
-            # The actual scaling (g_i * f_l(X^l)_i) happens outside in the layer.
+            # During training, use continuous signal for gradient flow, but make it binary for gate_vec_final
             gate_vec_final = (combined_gating_signal >= threshold).float()
         else:
             # During inference, apply a hard threshold for deterministic routing
