@@ -369,7 +369,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
 
     @staticmethod
-    def _patch_qwen_layers_from_source(model_to_patch, config, source_layers):
+    def _patch_qwen_layers(model_to_patch, config, source_layers):
         """
         Replaces layers in model_to_patch.model.layers with alternating Decision/Dynamic layers,
         transferring weights from source_layers.
