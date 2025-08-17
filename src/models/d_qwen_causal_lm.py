@@ -2,6 +2,7 @@ import logging
 import torch
 import torch.nn as nn
 from transformers import Qwen2ForCausalLM
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from src.models.d_qwen_config import DynamicQwenConfig
 # Import the new layer types
