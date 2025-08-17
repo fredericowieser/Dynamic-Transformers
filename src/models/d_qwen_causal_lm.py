@@ -16,16 +16,16 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
     config_class = DynamicQwenConfig
 
     def __init__(self, config: DynamicQwenConfig):
-        super().__init__(config)
+        super().__init__(config) # This calls Qwen2ForCausalLM's __init__
 
+        # Overwrite Qwen2ForCausalLM's default layers with an empty ModuleList.
+        # The actual Decision/Dynamic layers will be populated by from_pretrained.
+        self.model.layers = nn.ModuleList()
+
+        # Set freezing flag, this will be applied AFTER layers are loaded/patched
         self._freeze_main_transformer_blocks = getattr(config, "freeze_main_transformer_blocks", False)
 
-        # Patch the layers: this now creates an alternating sequence of Decision and Dynamic layers.
-        self._patch_qwen_layers(self, config)
-
-        # Apply freezing based on the initial config setting
-        self._apply_main_block_freezing()
-
+        # Gate logging utility setup
         self._log_gates = False
         self._last_gate_means = None
 
@@ -43,17 +43,21 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
     def _apply_main_block_freezing(self):
         """Applies or removes gradient requirement for main transformer block parameters (attn, mlp, layernorms)."""
         for layer_idx, layer in enumerate(self.model.layers):
-            if layer_idx % 2 == 0:  # Decision Layer
-                # Freeze Decision Layer's core Qwen2 components
+            # Decision Layer (even indices) and Dynamic Layer (odd indices) both contain core Qwen2 components
+            # For each, we iterate and freeze/unfreeze based on the type of submodule.
+            if layer_idx % 2 == 0: # Decision Layer
+                # Decision Layer components (attn, mlp, input_layernorm, post_attention_layernorm)
                 for n, p in layer.named_parameters():
-                    if "prior_ffn" not in n and "prior_layernorm" not in n: # Exclude Prior FFN params
+                    # Exclude Prior FFN parameters (always trainable unless explicitly handled elsewhere)
+                    if "prior_ffn" not in n and "prior_layernorm" not in n:
                         p.requires_grad = not self._freeze_main_transformer_blocks
                         if not p.requires_grad:
                             p.data = p.data.contiguous() # Ensure contiguous for frozen params
-            else:  # Dynamic Layer
-                # Freeze Dynamic Layer's core Qwen2 components
+            else: # Dynamic Layer
+                # Dynamic Layer components (attn, mlp, input_layernorm, post_attention_layernorm)
                 for n, p in layer.named_parameters():
-                    if "vpr_router" not in n: # Exclude VPR Router params
+                    # Exclude VPR Router parameters (always trainable)
+                    if "vpr_router" not in n:
                         p.requires_grad = not self._freeze_main_transformer_blocks
                         if not p.requires_grad:
                             p.data = p.data.contiguous()
@@ -74,7 +78,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
     ) -> dict:
         """
         Generates position_ids if missing, creates 4D causal + padding mask.
-        (Copied from previous iteration, largely from DynamicLlamaForCausalLM, adapted for Qwen2 specifics)
+        (Copied from previous iteration)
         """
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
@@ -154,12 +158,12 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         attention_mask=None,
         position_ids=None,
         past_key_values=None,
-        labels=None, # Labels for CE loss, handled by trainer
+        labels=None,
         use_cache=False,
         output_attentions=False,
-        output_hidden_states=False, # We get hidden states from layers
+        output_hidden_states=False, # We manage hidden states internally, not as direct output toggle for Qwen2Model
         return_dict=True,
-        **kwargs, # Accept extra kwargs, for current_iter and return_metrics
+        **kwargs,
     ):
         if input_ids is None:
             raise ValueError("input_ids must be provided.")
@@ -172,90 +176,91 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         attention_mask = prepared["attention_mask"]
         position_ids = prepared["position_ids"]
 
+        # Setup gate logging hooks for Dynamic layers (odd indices)
         if self._log_gates:
             self._gate_means_tmp = []
-            # Hooks are now on DynamicQwenDecoderLayer instances
             def _collect_gate_stats(_, __, outputs):
-                # outputs[-1] is gate_vec_for_stats from DynamicQwenDecoderLayer
                 gate_vec = outputs[-1]
                 self._gate_means_tmp.append(gate_vec.mean().item())
                 return outputs
-            # Only attach hooks to Dynamic layers (odd indices)
             hooks = [
                 self.model.layers[i].register_forward_hook(_collect_gate_stats)
-                for i in range(1, len(self.model.layers), 2)
+                for i in range(1, len(self.model.layers), 2) # Attach hooks to Dynamic layers (odd indices)
             ]
         else:
             hooks = []
 
+        # Initialize lists for collecting outputs/metrics
         all_self_attns = [] if output_attentions else None
-        all_past_key_values = [] if use_cache else None
+        all_past_key_values = [] if use_cache else None # This will store (present_key_value_decision, present_key_value_dynamic) pairs if needed
         gate_vecs, ce_proportions, cu_proportions = [], [], []
 
-        # Variables to pass VPR signals from Decision to next Dynamic layer
-        # Initialized to None; the first Decision Layer (idx 0) will populate them.
+        # Variables to store VPR signals from the *last executed Decision Layer*
         vpr_signal_original_input = None
         vpr_signal_posterior_output = None
         vpr_signal_prior_hidden_states = None
 
         try:
             for layer_idx, layer in enumerate(self.model.layers):
-                if layer_idx % 2 == 0:  # Decision Layer
-                    # Call Decision layer. It takes current hidden_states as input.
-                    # It returns its output hidden_states AND VPR signals for the NEXT layer.
+                is_decision_layer = (layer_idx % 2 == 0)
+
+                if is_decision_layer:
+                    # Decision Layer: Processes hidden_states, produces next hidden_states AND VPR signals
                     decision_outputs = layer(
-                        hidden_states,
+                        hidden_states, # Input to this Decision layer
                         attention_mask=attention_mask,
                         position_ids=position_ids,
-                        past_key_values=past_key_values[layer_idx // 2] if past_key_values else None, # Index past_key_values by macro-layer index
+                        past_key_values=past_key_values[layer_idx // 2] if past_key_values else None, # KV from its slot
                         output_attentions=output_attentions,
                         use_cache=use_cache,
                     )
                     (
-                        hidden_states, # This is the output of the Decision Layer, becomes input to next layer
+                        hidden_states, # Output of Decision Layer, becomes input to next (Dynamic) layer
                         vpr_signal_original_input, # Signal 1 for next Dynamic Layer's router
                         vpr_signal_posterior_output, # Signal 2 for next Dynamic Layer's router
                         vpr_signal_prior_hidden_states, # Signal 3 for next Dynamic Layer's router
-                        present_key_value,
-                        attn_weights,
+                        present_key_value, # KV from this Decision Layer
+                        attn_weights, # Attentions from this Decision Layer
                     ) = decision_outputs
 
                     # Collect KV cache and attentions from this Decision layer
                     if use_cache:
+                        # Append the KV-cache of the Decision Layer to the list.
+                        # We will append the Dynamic Layer's KV-cache next iteration if needed.
                         if all_past_key_values is None:
                             all_past_key_values = (present_key_value,)
                         else:
                             all_past_key_values += (present_key_value,)
                     if output_attentions:
+                        # Append attentions from this Decision Layer
                         if all_self_attns is None:
                             all_self_attns = (attn_weights,)
                         else:
                             all_self_attns += (attn_weights,)
 
-                else:  # Dynamic Layer (layer_idx % 2 == 1)
-                    # For a Dynamic layer, the VPR signals MUST be available from the preceding Decision layer.
+                else: # Dynamic Layer: Processes hidden_states (from prev Decision), uses VPR signals (from prev Decision)
+                    # VPR signals MUST be available from the *preceding* Decision layer.
                     if vpr_signal_original_input is None or vpr_signal_posterior_output is None or vpr_signal_prior_hidden_states is None:
-                        raise ValueError(f"VPR signals not available for Dynamic Layer {layer_idx}. Ensure previous layer was a Decision Layer.")
+                        # This should theoretically not happen if layers are strictly alternating and input is not None
+                        raise ValueError(f"VPR signals not available for Dynamic Layer {layer_idx}. Preceding layer was not a Decision Layer or did not pass signals correctly.")
 
-                    # Call Dynamic layer. It takes current hidden_states as input.
-                    # It also takes the VPR signals from the *preceding* Decision Layer.
                     dynamic_outputs = layer(
-                        hidden_states, # This is the hidden_states output from the *previous* Decision Layer
+                        hidden_states, # Input to this Dynamic layer (output from previous Decision)
                         prev_decision_original_input=vpr_signal_original_input,
                         prev_decision_posterior_output=vpr_signal_posterior_output,
                         prev_decision_prior_output=vpr_signal_prior_hidden_states,
                         attention_mask=attention_mask,
                         position_ids=position_ids,
-                        past_key_values=past_key_values[layer_idx // 2] if past_key_values else None, # Index past_key_values by macro-layer index
+                        past_key_values=past_key_values[layer_idx // 2] if past_key_values else None, # KV from its slot
                         output_attentions=output_attentions,
                         use_cache=use_cache,
                         current_iter=current_iter,
                     )
 
                     # Dynamic layer returns: hidden_states_final, [present_kv], [attn_wts], avg_ce, avg_cu, gate_vec
-                    hidden_states = dynamic_outputs[0] # This is the output of the Dynamic Layer, becomes input to next layer
+                    hidden_states = dynamic_outputs[0] # Output of Dynamic Layer, becomes input to next layer
 
-                    # Unpack optional outputs and VPR metrics
+                    # Unpack optional outputs and VPR metrics from Dynamic Layer
                     output_idx_offset = 1
                     if use_cache:
                         present_key_value = dynamic_outputs[output_idx_offset]
@@ -277,7 +282,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                         cu_proportions.append(dynamic_outputs[output_idx_offset + 1])
                         gate_vecs.append(dynamic_outputs[output_idx_offset + 2])
 
-
             hidden_states = self.model.norm(hidden_states)
             logits = self.lm_head(hidden_states)
 
@@ -293,15 +297,14 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                     else torch.tensor(0.0, device=logits.device)
                 )
 
-                # Return tuple for DynamicQwenTrainer's _calculate_loss
                 return (
                     logits,
-                    None, # No prior_loss anymore
-                    gate_vecs, # Gate vecs from Dynamic layers only
+                    None, # prior_loss is removed
+                    gate_vecs,
                     overall_avg_ce,
                     overall_avg_cu,
-                    ce_proportions, # Per-layer CE proportions from Dynamic layers
-                    cu_proportions, # Per-layer CU proportions from Dynamic layers
+                    ce_proportions,
+                    cu_proportions,
                 )
             else:
                 return CausalLMOutputWithPast(
@@ -321,89 +324,75 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        # 1. Load the base Qwen2 config and apply any kwargs overrides to it
         config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path)
+        for key, default_val in [
+            ("capacity_gamma", 1.0), ("beta_ce_init", 1.0), ("beta_cu_init", 1.0),
+            ("cu_detection_multiplier_init", 1.0), ("ce_criterion_offset_init", 0.0),
+            ("token_wise_gating", True), ("moving_average_window_size", 100),
+            ("prior_ffn_intermediate_size_factor", 2.0), ("freeze_main_transformer_blocks", False)
+        ]:
+            setattr(config, key, kwargs.pop(key, getattr(config, key, default_val)))
 
-        # Apply new dynamic/freezing params from kwargs to config
-        config.capacity_gamma = kwargs.pop("capacity_gamma", getattr(config, "capacity_gamma", 1.0))
-        config.beta_ce_init = kwargs.pop("beta_ce_init", getattr(config, "beta_ce_init", 1.0))
-        config.beta_cu_init = kwargs.pop("beta_cu_init", getattr(config, "beta_cu_init", 1.0))
-        config.cu_detection_multiplier_init = kwargs.pop("cu_detection_multiplier_init", getattr(config, "cu_detection_multiplier_init", 1.0))
-        config.ce_criterion_offset_init = kwargs.pop("ce_criterion_offset_init", getattr(config, "ce_criterion_offset_init", 0.0))
-        config.token_wise_gating = kwargs.pop("token_wise_gating", getattr(config, "token_wise_gating", True))
-        config.moving_average_window_size = kwargs.pop("moving_average_window_size", getattr(config, "moving_average_window_size", 100))
-        config.prior_ffn_intermediate_size_factor = kwargs.pop("prior_ffn_intermediate_size_factor", getattr(config, "prior_ffn_intermediate_size_factor", 2.0))
-        config.freeze_main_transformer_blocks = kwargs.pop("freeze_main_transformer_blocks", getattr(config, "freeze_main_transformer_blocks", False))
-
-
-        # Load the *base* Qwen2ForCausalLM model to get its original layers.
-        # This model object will be passed to _patch_qwen_layers.
-        base_model = super().from_pretrained(
+        # 2. Load the *base* Qwen2ForCausalLM model to get its original layers and other modules (embed, norm, lm_head).
+        base_hf_model = super().from_pretrained(
             pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
 
-        # Create an instance of our custom CausalLM class which will then patch the layers
-        # The base_model's original layers will be replaced.
-        custom_model = cls(config) # Instantiate custom class to trigger its __init__ and _patch_qwen_layers
+        # 3. Create an instance of our custom DynamicQwenForCausalLM.
+        # Its __init__ will set up an empty layers ModuleList.
+        custom_model = cls(config)
 
-        # Transfer relevant parts from the base_model to the custom_model
-        # This effectively copies the embedded_tokens, lm_head, and norm layers
-        # and also ensures the patched layers (Decision/Dynamic) get their weights.
-        custom_model.model.embed_tokens = base_model.model.embed_tokens
-        custom_model.model.norm = base_model.model.norm
-        custom_model.lm_head = base_model.lm_head
+        # 4. Transfer core model components (embeddings, final norm, LM head) from the base HF model.
+        custom_model.model.embed_tokens = base_hf_model.model.embed_tokens
+        custom_model.model.norm = base_hf_model.model.norm
+        custom_model.lm_head = base_hf_model.lm_head
 
-        # Ensure the patched layers in `custom_model` have their weights transferred from `base_model`'s original layers.
-        # This is handled within _patch_qwen_layers during custom_model's __init__,
-        # which loads state_dicts from the original base_model.layers.
-        # However, to explicitly handle this and be robust, let's pass the original layers to the patcher.
-        # Re-calling patch_qwen_layers with base_model's original layers as source.
-        cls._patch_qwen_layers_from_source(custom_model, config, base_model.model.layers)
+        # 5. Populate custom_model.model.layers with our alternating Decision/Dynamic layers,
+        # transferring weights from the original layers of base_hf_model.
+        cls._patch_and_populate_layers(custom_model, config, base_hf_model.model.layers)
 
-        # Ensure dynamic parameters are set on the instance (as @property setters are used)
-        # These are now attributes of the custom_model instance, set via its config
-        custom_model._freeze_main_transformer_blocks = config.freeze_main_transformer_blocks
+        # 6. Apply freezing configuration to the newly populated layers.
+        # This is safe now because _apply_main_block_freezing expects populated layers.
         custom_model._apply_main_block_freezing()
-
 
         return custom_model
 
 
     @staticmethod
-    def _patch_qwen_layers_from_source(model_to_patch, config, source_layers):
+    def _patch_and_populate_layers(model_to_patch, config, source_hf_layers):
         """
         Replaces layers in model_to_patch.model.layers with alternating Decision/Dynamic layers,
-        transferring weights from source_layers.
+        transferring weights from source_hf_layers.
         """
-        logger.info("Patching Qwen model layers to alternating Decision/Dynamic layers.")
+        logger.info(f"Patching {len(source_hf_layers)} Qwen model layers into alternating Decision/Dynamic layers.")
         new_layers = nn.ModuleList()
-        # The number of new layers will be the same as original layers.
-        # We assume an even number of layers for strict alternation,
-        # or handle odd numbers by making the last one a Decision layer.
-        # For simplicity, let's assume original num_hidden_layers is even or it's implicitly handled.
-        # If it's 24 layers, we'll have 12 Decision, 12 Dynamic.
-        for i, original_layer in enumerate(source_layers):
+        device = next(model_to_patch.parameters()).device # Get current device of the model
+
+        for i, original_layer in enumerate(source_hf_layers):
             original_layer_state_dict = original_layer.state_dict()
             original_layer_state_dict = {k: v.cpu() for k, v in original_layer_state_dict.items()}
-            device = next(model_to_patch.parameters()).device # Get current device of the model
 
             if i % 2 == 0:  # Even index: Decision Layer
+                # Decision layer receives original Qwen2 weights for its core components + new Prior FFN.
                 new_layer_instance = DecisionQwenDecoderLayer(
                     config,
                     layer_idx=i,
                     load_from_pretrained=True,
                     original_layer_state_dict=original_layer_state_dict,
-                )
+                ).to(device) # Ensure it's on the correct device
                 logger.info(f"Instantiated layer {i} as DecisionQwenDecoderLayer.")
             else:  # Odd index: Dynamic Layer
+                # Dynamic layer receives original Qwen2 weights for its core components + new VPR Router.
                 new_layer_instance = DynamicQwenDecoderLayer(
                     config,
                     layer_idx=i,
                     load_from_pretrained=True,
-                    original_layer_state_dict=original_layer_state_dict, # Dynamic layer also loads its own MLP/Attention weights
-                )
+                    original_layer_state_dict=original_layer_state_dict,
+                ).to(device) # Ensure it's on the correct device
                 logger.info(f"Instantiated layer {i} as DynamicQwenDecoderLayer.")
 
-            new_layers.append(new_layer_instance.to(device))
+            new_layers.append(new_layer_instance)
 
         model_to_patch.model.layers = new_layers
         return model_to_patch
