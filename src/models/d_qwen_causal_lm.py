@@ -324,35 +324,55 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        # 1. Load the base Qwen2 config and apply any kwargs overrides to it
-        config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path)
+        # 1. Handle the 'config' argument from kwargs: Pop it so it's not passed twice to super().from_pretrained
+        config_from_kwargs = kwargs.pop("config", None)
+
+        # 2. Determine the base config for our model:
+        if config_from_kwargs is None:
+            # If no config was provided in kwargs, load a DynamicQwenConfig from the pretrained path
+            config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path)
+        else:
+            # If a config was provided in kwargs, ensure it's our DynamicQwenConfig type.
+            # If it's a base Qwen2Config, upgrade it.
+            if not isinstance(config_from_kwargs, DynamicQwenConfig):
+                logger.warning("Upgrading provided config to DynamicQwenConfig to ensure all dynamic parameters are available.")
+                config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path, **config_from_kwargs.to_dict())
+            else:
+                config = config_from_kwargs # It's already our custom config type
+
+        # 3. Apply any *other* kwargs overrides (custom model parameters) to this 'config' object.
+        # This is where Hydra's `model_cfg` parameters would come in.
         for key, default_val in [
             ("capacity_gamma", 1.0), ("beta_ce_init", 1.0), ("beta_cu_init", 1.0),
             ("cu_detection_multiplier_init", 1.0), ("ce_criterion_offset_init", 0.0),
             ("token_wise_gating", True), ("moving_average_window_size", 100),
             ("prior_ffn_intermediate_size_factor", 2.0), ("freeze_main_transformer_blocks", False)
         ]:
+            # Pop custom keys from kwargs before passing kwargs to super().from_pretrained
             setattr(config, key, kwargs.pop(key, getattr(config, key, default_val)))
 
-        # 2. Load the *base* Qwen2ForCausalLM model to get its original layers and other modules (embed, norm, lm_head).
+
+        # 4. Load the *base* Qwen2ForCausalLM model. This instance provides the original
+        # Qwen2DecoderLayers and other components (embed_tokens, norm, lm_head) to copy from.
+        # `kwargs` will now be clean of 'config' and our custom parameters, preventing duplicates.
         base_hf_model = super().from_pretrained(
             pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
 
-        # 3. Create an instance of our custom DynamicQwenForCausalLM.
+        # 5. Create an instance of our custom DynamicQwenForCausalLM.
         # Its __init__ will set up an empty layers ModuleList.
-        custom_model = cls(config)
+        custom_model = cls(config) # Pass the *fully prepared* config object
 
-        # 4. Transfer core model components (embeddings, final norm, LM head) from the base HF model.
+        # 6. Transfer core model components (embeddings, final norm, LM head) from the base HF model.
         custom_model.model.embed_tokens = base_hf_model.model.embed_tokens
         custom_model.model.norm = base_hf_model.model.norm
         custom_model.lm_head = base_hf_model.lm_head
 
-        # 5. Populate custom_model.model.layers with our alternating Decision/Dynamic layers,
+        # 7. Populate custom_model.model.layers with our alternating Decision/Dynamic layers,
         # transferring weights from the original layers of base_hf_model.
         cls._patch_and_populate_layers(custom_model, config, base_hf_model.model.layers)
 
-        # 6. Apply freezing configuration to the newly populated layers.
+        # 8. Apply freezing configuration to the newly populated layers.
         # This is safe now because _apply_main_block_freezing expects populated layers.
         custom_model._apply_main_block_freezing()
 
@@ -388,7 +408,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                     config,
                     layer_idx=i,
                     load_from_pretrained=True,
-                    original_layer_state_dict=original_layer_state_dict,
+                    original_layer_state_dict=original_layer_state_dict, # Dynamic layer also loads its own MLP/Attention weights
                 ).to(device) # Ensure it's on the correct device
                 logger.info(f"Instantiated layer {i} as DynamicQwenDecoderLayer.")
 
