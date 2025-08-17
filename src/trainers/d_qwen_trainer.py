@@ -5,65 +5,48 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from transformers import AutoTokenizer, get_scheduler
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf # Import OmegaConf to handle ListConfig
 from src.models.d_qwen_causal_lm import DynamicQwenForCausalLM
 from src.models.d_qwen_config import DynamicQwenConfig
 from src.trainers.gate_logging import GateLogger
 
 log = logging.getLogger(__name__)
 
-# Define the rolling window size
-ROLLING_WINDOW_SIZE = 100
-
 
 class DynamicQwenTrainer(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
         super().__init__()
-        # save for logging and checkpointing
+        # Save for logging and checkpointing
         self.save_hyperparameters()
-        self.automatic_optimization = False
+        self.automatic_optimization = False # Manual optimization for multiple optimizers
         self.model_cfg = model_cfg
         self.training_cfg = training_cfg
 
         log.info(f"Loading and configuring model: {self.model_cfg.model_name}")
-        # Load the base config. dynamic_k, ce_bias, gate_warmup_iters will be None initially
+        # Load the base config. New dynamic parameters will be None initially
         config = DynamicQwenConfig.from_pretrained(self.model_cfg.model_name)
 
-        # Explicitly set dynamic parameters on the loaded config object
+        # Explicitly set dynamic/training parameters on the loaded config object
         # This mirrors the Llama trainer's approach to setting config attributes
-        # --- START OF CHANGE ---
-        # Define parameters that are meant to be set on the *model's config* (DynamicQwenConfig)
+        # --- START OF CHANGE: Updated config parameters ---
         required_params_for_model_config = {
-            "dynamic_k": self.model_cfg.dynamic_k,
-            "ce_bias": self.model_cfg.ce_bias,
-            "gate_warmup_iters": self.training_cfg.gate_warmup_iters,
-            # LoRA parameters are specifically handled by getattr with defaults
-            "enable_lora_main_path": getattr(self.model_cfg, "lora", {}).get("enable_lora_main_path", False),
-            "enable_lora_prior_ffn": getattr(self.model_cfg, "lora", {}).get("enable_lora_prior_ffn", False),
-            "lora_r": getattr(self.model_cfg, "lora", {}).get("r", 8),
-            "lora_alpha": getattr(self.model_cfg, "lora", {}).get("lora_alpha", 16),
-            "lora_dropout": getattr(self.model_cfg, "lora", {}).get("lora_dropout", 0.05),
-            "lora_bias": getattr(self.model_cfg, "lora", {}).get("bias", "none"),
-            "lora_target_modules_main": getattr(self.model_cfg, "lora", {}).get("lora_target_modules_main", []),
-            "lora_target_modules_prior_ffn": getattr(self.model_cfg, "lora", {}).get("lora_target_modules_prior_ffn", []),
-            "init_prior_from_mlp": getattr(self.model_cfg, "init_prior_from_mlp", False),
+            "capacity_gamma": self.model_cfg.capacity_gamma,
+            "beta_ce_init": self.model_cfg.beta_ce_init,
+            "beta_cu_init": self.model_cfg.beta_cu_init,
+            "cu_detection_multiplier_init": self.model_cfg.cu_detection_multiplier_init,
+            "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init,
+            "token_wise_gating": getattr(self.model_cfg, "token_wise_gating", True), # Default to True
+            "moving_average_window_size": getattr(self.model_cfg, "moving_average_window_size", 100),
+            "prior_ffn_intermediate_size_factor": getattr(self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0),
+            "freeze_main_transformer_blocks": getattr(self.model_cfg, "freeze_main_transformer_blocks", False),
         }
 
-        # Set these parameters on the model's config object
         for param, value in required_params_for_model_config.items():
-            # The 'None' check below ensures that if any of these explicitly listed
-            # parameters are found to be None (e.g., if Hydra provides 'null' or it's implicitly None),
-            # an error is raised, unless it's a LoRA flag which can be False by default.
-            if value is None and param not in ["enable_lora_main_path", "enable_lora_prior_ffn", "init_prior_from_mlp"]:
-                raise ValueError(f"{param} must be provided in the Hydra config for the Qwen model configuration.")
+            if value is None:
+                # Only warn for non-boolean/non-optional parameters that are None
+                if not isinstance(value, bool) and "init" not in param and "factor" not in param:
+                    raise ValueError(f"{param} must be provided in the Hydra config for the Qwen model configuration.")
             setattr(config, param, value)
-
-        # Separately check for 'prior_loss_weight' as it's a trainer-level parameter
-        # and not an attribute of DynamicQwenConfig.
-        # This ensures it's always provided by the Hydra config before it's used in _calculate_loss.
-        if not hasattr(self.model_cfg, "prior_loss_weight") or self.model_cfg.prior_loss_weight is None:
-            raise ValueError("model_cfg.prior_loss_weight must be provided in the Hydra config for the DynamicQwenTrainer.")
-        # The value will be accessed later directly via self.model_cfg.prior_loss_weight
         # --- END OF CHANGE ---
 
         # Instantiate our DynamicQwen model with the fully configured config
@@ -71,7 +54,7 @@ class DynamicQwenTrainer(pl.LightningModule):
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
 
-        # tokenizer (pad_token may need fixing)
+        # Tokenizer (pad_token may need fixing)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = (
@@ -80,7 +63,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             )
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
-        # learning rate
+        # Parameter grouping for differential learning rates and freezing
         self._setup_parameter_groups()
 
         # Gate logging utility
@@ -101,13 +84,17 @@ class DynamicQwenTrainer(pl.LightningModule):
         return self.model(**inputs)
 
     def _calculate_loss(self, batch):
+        # --- START OF CHANGE: Updated return signature from model.forward ---
         (
             logits,
-            prior_loss,
+            _, # prior_loss is no longer returned
             gate_vecs_per_layer,
-            ce_proportions_per_layer,
-            cu_proportions_per_layer,
+            overall_avg_ce, # Overall means directly from model
+            overall_avg_cu, # Overall means directly from model
+            ce_proportions_per_layer, # Per-layer proportions still available
+            cu_proportions_per_layer, # Per-layer proportions still available
         ) = self.forward(**batch)
+        # --- END OF CHANGE ---
 
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
@@ -116,25 +103,10 @@ class DynamicQwenTrainer(pl.LightningModule):
             shift_labels.view(-1),
             ignore_index=-100,
         )
-        total_loss = lm_loss + self.model_cfg.prior_loss_weight * prior_loss
+        total_loss = lm_loss # Prior loss removed from total loss
         perplexity = torch.exp(lm_loss)
 
-        overall_avg_ce = (
-            torch.stack(ce_proportions_per_layer).mean()
-            if ce_proportions_per_layer
-            else torch.tensor(0.0, device=self.device)
-        )
-        overall_avg_cu = (
-            torch.stack(cu_proportions_per_layer).mean()
-            if cu_proportions_per_layer
-            else torch.tensor(0.0, device=self.device)
-        )
-        overall_gate_activation_mean = (
-            torch.stack(gate_vecs_per_layer).mean()
-            if gate_vecs_per_layer
-            else torch.tensor(0.0, device=self.device)
-        )
-
+        # Gate stats calculation
         per_layer_gate_stats = [
             {
                 "mean": gv.mean(),
@@ -149,12 +121,11 @@ class DynamicQwenTrainer(pl.LightningModule):
         return (
             total_loss,
             lm_loss,
-            prior_loss,
+            None, # prior_loss is None now
             perplexity,
-            overall_gate_activation_mean,
+            overall_avg_ce, # Now directly the overall mean
+            overall_avg_cu, # Now directly the overall mean
             per_layer_gate_stats,
-            overall_avg_ce,
-            overall_avg_cu,
             ce_proportions_per_layer,
             cu_proportions_per_layer,
         )
@@ -166,18 +137,19 @@ class DynamicQwenTrainer(pl.LightningModule):
         on_step: bool,
         on_epoch: bool,
     ):
+        # --- START OF CHANGE: Updated outputs unpacking ---
         (
             total_loss,
             lm_loss,
-            prior_loss,
+            prior_loss, # Will be None
             perplexity,
-            overall_gate_activation_mean,
-            per_layer_gate_stats,
             overall_avg_ce,
             overall_avg_cu,
+            per_layer_gate_stats,
             ce_proportions_per_layer,
             cu_proportions_per_layer,
         ) = outputs
+        # --- END OF CHANGE ---
 
         self.log(
             f"{prefix}/loss",
@@ -193,7 +165,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
             prog_bar=True,
         )
-        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
+        # prior_loss is no longer logged as it's removed
         self.log(
             f"{prefix}/perplexity",
             perplexity,
@@ -202,7 +174,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        # Log overall CE and CU metrics
+        # Log overall CE and CU metrics (now directly provided)
         self.log(
             f"{prefix}_dynamic_model/overall_avg_ce_proportion",
             overall_avg_ce,
@@ -219,32 +191,53 @@ class DynamicQwenTrainer(pl.LightningModule):
         )
 
         # Gate-related logging delegated out
+        # Overall gate activation mean now derived from overall_avg_ce and overall_avg_cu conceptually
+        # We will use the direct per-layer gate means from per_layer_gate_stats for logging.
+        # So overall_gate_activation_mean argument might be removed from GateLogger.log_gate_metrics if not needed.
+        # For simplicity, pass the mean of per-layer gate means if needed, or update GateLogger.
+        # Let's derive overall_gate_activation_mean here for GateLogger.
+        overall_gate_activation_mean_for_logger = (
+            torch.tensor([s["mean"] for s in per_layer_gate_stats]).mean()
+            if per_layer_gate_stats
+            else torch.tensor(0.0, device=self.device)
+        )
         GateLogger.log_gate_metrics(
             self,
             prefix,
-            overall_gate_activation_mean,
+            overall_gate_activation_mean_for_logger, # Pass computed mean
             per_layer_gate_stats,
             on_step,
             on_epoch,
         )
 
     def training_step(self, batch, batch_idx):
-        opt_base, opt_prior = self.optimizers()
-        opt_base.zero_grad()
-        opt_prior.zero_grad()
+        optimizers = self.optimizers()
+        # Zero grads for all optimizers
+        for opt in optimizers:
+            opt.zero_grad()
 
         outputs = self._calculate_loss(batch)
         total_loss = outputs[0]
         self.manual_backward(total_loss)
-        opt_base.step()
-        opt_prior.step()
+
+        # Step all optimizers
+        for opt in optimizers:
+            opt.step()
+
+        # Update learning rate schedulers
+        schedulers = self.lr_schedulers()
+        if isinstance(schedulers, list):
+            for sch in schedulers:
+                sch.step()
+        else:
+            schedulers.step()
 
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
 
         # Gate rolling stats update & logging
-        per_layer_gate_stats = outputs[5]
+        # per_layer_gate_stats is outputs[6]
         if self.trainer.global_step > 0:
-            self.gate_logger.update_rolling_history(per_layer_gate_stats)
+            self.gate_logger.update_rolling_history(outputs[6])
             self.gate_logger.log_rolling_history(
                 self.trainer.global_step,
                 self.trainer.log_every_n_steps,
@@ -257,110 +250,121 @@ class DynamicQwenTrainer(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         outputs = self._calculate_loss(batch)
         self._log_step_metrics("test", outputs, on_step=False, on_epoch=True)
-    
+
     def _setup_parameter_groups(self):
         log.info(
-            "Setting up parameter groups for differential learning rates and LoRA."
+            "Setting up parameter groups for dynamic components and main block freezing."
         )
-        named_params = list(self.model.named_parameters())
+        # Initialize lists for different parameter groups
+        self.main_block_params = []
+        self.prior_ffn_params = []
+        self.vpr_router_params = []
+        self.other_params = [] # For other model params like embeddings, lm_head, etc.
 
-        self.original_params = []
-        self.new_prior_params = []
+        freeze_main = self.model.freeze_main_transformer_blocks
 
-        enable_lora_main = getattr(self.model.config, "enable_lora_main_path", False)
-        enable_lora_prior = getattr(self.model.config, "enable_lora_prior_ffn", False)
+        # Iterate through the model's named parameters
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                log.debug(f"Parameter '{n}' is frozen (requires_grad=False).")
+                continue # Skip if already frozen (e.g., from base Hugging Face model or explicit .eval())
 
-        for n, p in named_params:
-            if p.requires_grad:
-                is_prior_param = "prior_ffn" in n or "prior_layernorm" in n
-
-                if is_prior_param:
-                    self.new_prior_params.append(p)
+            if "decision_layer" in n:
+                if "prior_ffn" in n or "prior_layernorm" in n:
+                    self.prior_ffn_params.append(p)
                 else:
-                    self.original_params.append(p)
+                    # These are original Qwen2 block parameters within DecisionLayer
+                    # Their requires_grad status is controlled by model._apply_main_block_freezing
+                    self.main_block_params.append(p)
+            elif "dynamic_layer.vpr_router" in n:
+                self.vpr_router_params.append(p)
             else:
-                log.debug(f"Parameter '{n}' is frozen.")
+                # Parameters like embeddings, LM head, etc.
+                self.other_params.append(p)
 
-        if enable_lora_main:
-            log.info(
-                f"LoRA enabled for main decoder path. Training {len(self.original_params)} LoRA parameters."
-            )
-            if len(self.original_params) == 0:
-                log.warning(
-                    "No trainable parameters found for the main decoder path despite LoRA being enabled. Check target modules."
-                )
-        else:
-            log.info(
-                f"Full training for main decoder path. Training {len(self.original_params)} parameters."
-            )
+        # Log counts for verification
+        log.info(f"Identified {len(self.main_block_params)} main block parameters (trainable if not frozen).")
+        log.info(f"Identified {len(self.prior_ffn_params)} prior FFN parameters (always trainable).")
+        log.info(f"Identified {len(self.vpr_router_params)} VPR router parameters (always trainable).")
+        log.info(f"Identified {len(self.other_params)} other trainable parameters (e.g., embeddings, LM head).")
 
-        if enable_lora_prior:
-            log.info(
-                f"LoRA enabled for prior FFN. Training {len(self.new_prior_params)} LoRA parameters."
-            )
-            if len(self.new_prior_params) == 0:
-                log.warning(
-                    "No trainable parameters found for the prior FFN despite LoRA being enabled. Check target modules."
-                )
-        else:
-            log.info(
-                f"Full training for prior FFN. Training {len(self.new_prior_params)} parameters."
-            )
-
-        total_trainable = sum(p.numel() for p in self.original_params) + sum(p.numel() for p in self.new_prior_params)
-        model_total_trainable = sum(
-            p.numel() for p in self.model.parameters() if p.requires_grad
+        total_trainable_summed = (
+            sum(p.numel() for p in self.main_block_params)
+            + sum(p.numel() for p in self.prior_ffn_params)
+            + sum(p.numel() for p in self.vpr_router_params)
+            + sum(p.numel() for p in self.other_params)
         )
+        model_total_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
-        if total_trainable != model_total_trainable:
+        if total_trainable_summed != model_total_trainable:
             log.warning(
-                f"Mismatch in trainable parameter count! _setup_parameter_groups found {total_trainable} (numel), model reports {model_total_trainable} (numel). This might indicate a miscategorization."
+                f"Mismatch in trainable parameter count! _setup_parameter_groups found {total_trainable_summed} (numel), model reports {model_total_trainable} (numel). This might indicate a miscategorization or initial freezing."
             )
 
     def configure_optimizers(self):
-        optimizer_base = torch.optim.AdamW(
-            self.original_params,
-            lr=self.training_cfg.optimizer.base_lr,
+        # We will use two optimizers: one for main blocks (+ other params), one for dynamic components.
+        # This gives flexibility for freezing or different LRs.
+
+        optimizer_groups = []
+
+        # 1. Optimizer for Main Transformer Blocks and other base model parameters (embeddings, LM head)
+        # This group is only added if main blocks are not frozen, or if there are other_params.
+        main_and_other_params = self.main_block_params + self.other_params
+        if main_and_other_params: # Only create optimizer if there are parameters to optimize
+            optimizer_main = torch.optim.AdamW(
+                main_and_other_params,
+                lr=self.training_cfg.optimizer.base_lr,
+                weight_decay=self.training_cfg.optimizer.weight_decay,
+            )
+            optimizer_groups.append(optimizer_main)
+            log.info(f"Main/Other Params Optimizer created with LR: {self.training_cfg.optimizer.base_lr}")
+        else:
+            log.info("No parameters for Main/Other Params Optimizer (possibly frozen or empty).")
+
+
+        # 2. Optimizer for Prior FFN and VPR Router parameters (the 'dynamic' parts)
+        dynamic_component_params = self.prior_ffn_params + self.vpr_router_params
+        if not dynamic_component_params:
+            raise ValueError("No trainable parameters found for prior FFN or VPR Router. Check your model configuration and parameter groups.")
+
+        optimizer_dynamic = torch.optim.AdamW(
+            dynamic_component_params,
+            lr=self.training_cfg.optimizer.prior_ffn_lr, # Using prior_ffn_lr for all dynamic components
             weight_decay=self.training_cfg.optimizer.weight_decay,
         )
-        optimizer_prior = torch.optim.AdamW(
-            self.new_prior_params,
-            lr=self.training_cfg.optimizer.prior_ffn_lr,
-            weight_decay=self.training_cfg.optimizer.weight_decay,
-        )
-        optimizers = [optimizer_base, optimizer_prior]
+        optimizer_groups.append(optimizer_dynamic)
+        log.info(f"Prior FFN/VPR Router Optimizer created with LR: {self.training_cfg.optimizer.prior_ffn_lr}")
 
-        # --- START OF CHANGE ---
-        num_training_steps = self.training_cfg.max_iters # Total training steps from config
-        num_warmup_steps = self.training_cfg.gate_warmup_iters # Using gate warmup steps for LR warmup
 
-        # Linear warmup with cosine annealing for base optimizer
-        lr_scheduler_base = get_scheduler(
-            name="cosine", # Or "linear" as in some parts of the paper
-            optimizer=optimizer_base,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps,
-        )
-        # Linear warmup with cosine annealing for prior FFN optimizer
-        lr_scheduler_prior = get_scheduler(
+        # --- Learning Rate Schedulers ---
+        num_training_steps = self.training_cfg.max_iters
+        # No more gate_warmup_iters for LR warmup directly, use a general warmup
+        num_warmup_steps = int(num_training_steps * getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0))
+
+        schedulers = []
+        if optimizer_main in optimizer_groups: # Check if optimizer_main was actually added
+            lr_scheduler_main = get_scheduler(
+                name="cosine", # Or "linear"
+                optimizer=optimizer_main,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps,
+            )
+            schedulers.append({
+                "scheduler": lr_scheduler_main,
+                "interval": "step",
+                "frequency": 1,
+            })
+
+        lr_scheduler_dynamic = get_scheduler(
             name="cosine", # Or "linear"
-            optimizer=optimizer_prior,
+            optimizer=optimizer_dynamic,
             num_warmup_steps=num_warmup_steps,
             num_training_steps=num_training_steps,
         )
+        schedulers.append({
+            "scheduler": lr_scheduler_dynamic,
+            "interval": "step",
+            "frequency": 1,
+        })
 
-        schedulers = [
-            {
-                "scheduler": lr_scheduler_base,
-                "interval": "step", # Update scheduler every step
-                "frequency": 1,
-            },
-            {
-                "scheduler": lr_scheduler_prior,
-                "interval": "step", # Update scheduler every step
-                "frequency": 1,
-            },
-        ]
-        # --- END OF CHANGE ---
-
-        return optimizers, schedulers
+        return optimizer_groups, schedulers
