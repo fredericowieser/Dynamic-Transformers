@@ -13,7 +13,7 @@ from src.models.dyn_qwen_layers import DynamicQwenDecoderLayer # This is now the
 logger = logging.getLogger(__name__)
 
 
-class DynamicQwenForCausalLM(nn.Module): # Inherit from nn.Module, not Qwen2ForCausalLM directly
+class DynamicQwenForCausalLM(Qwen2ForCausalLM): # Inherit from nn.Module, not Qwen2ForCausalLM directly
     config_class = DynamicQwenConfig
 
     def __init__(self, config: DynamicQwenConfig):
@@ -346,23 +346,24 @@ class DynamicQwenForCausalLM(nn.Module): # Inherit from nn.Module, not Qwen2ForC
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        # 1. Handle `config` from kwargs: Pop it so it's not passed twice to super() or Qwen2ForCausalLM.from_pretrained
+        # 1. Handle `config` from kwargs: Pop it so it's not passed twice if kwargs includes it.
         config_from_kwargs = kwargs.pop("config", None)
 
-        # 2. Determine the base config for our custom model.
+        # 2. Prepare the config object for our custom model.
         if config_from_kwargs is None:
-            # If no config was provided in kwargs, load our custom config.
             config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path)
         else:
-            # If a config was provided, ensure it's our DynamicQwenConfig type.
-            # If it's a base Qwen2Config, attempt to upgrade it.
             if not isinstance(config_from_kwargs, DynamicQwenConfig):
-                logger.warning("Upgrading provided config to DynamicQwenConfig to ensure all dynamic parameters are available.")
-                config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path, **config_from_kwargs.to_dict())
+                logger.warning(
+                    "Provided config is not DynamicQwenConfig. Attempting to load as DynamicQwenConfig."
+                )
+                config = DynamicQwenConfig.from_pretrained(
+                    pretrained_model_name_or_path, **config_from_kwargs.to_dict()
+                )
             else:
-                config = config_from_kwargs # It's already our custom config type
+                config = config_from_kwargs
 
-        # 3. Apply any *other* custom kwargs (e.g., from Hydra `model_cfg`) to this 'config' object.
+        # 3. Apply any *other* custom kwargs (e.g., from Hydra `model_cfg`) to this `config` object.
         # These are specific parameters for our custom layers/router.
         for key, default_val in [
             ("capacity_gamma", 1.0), ("beta_ce_init", 1.0), ("beta_cu_init", 1.0),
@@ -370,34 +371,35 @@ class DynamicQwenForCausalLM(nn.Module): # Inherit from nn.Module, not Qwen2ForC
             ("token_wise_gating", True), ("moving_average_window_size", 100),
             ("prior_ffn_intermediate_size_factor", 2.0), ("freeze_main_transformer_blocks", False)
         ]:
-            # Pop these custom keys from kwargs before passing kwargs to Qwen2ForCausalLM.from_pretrained
             setattr(config, key, kwargs.pop(key, getattr(config, key, default_val)))
 
-        # 4. Load the *base* Qwen2ForCausalLM model. This instance provides the original
-        # Qwen2DecoderLayers and other components (embed_tokens, norm, lm_head) to copy weights from.
-        # `kwargs` should now be clean of 'config' and our custom parameters, preventing duplicates.
+        # --- START OF FIX: Load base HF model first, THEN initialize custom_model with its components ---
+        # 4. Load the base Qwen2ForCausalLM model. This will instantiate it with its original layers and weights.
+        # This is where the `gradient_checkpointing_enable` functionality comes from.
         base_hf_model = Qwen2ForCausalLM.from_pretrained(
-            pretrained_model_name_or_path, *model_args, **kwargs
+            pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
 
-        # 5. Create an instance of our custom DynamicQwenForCausalLM (the shell).
-        # Its __init__ will set up an empty layers ModuleList.
-        custom_model = cls(config) # Pass the *fully prepared* config object to our __init__
+        # 5. Create an instance of our custom DynamicQwenForCausalLM.
+        # We pass the same config. Its __init__ will set up empty layers.
+        custom_model = cls(config) # This calls our DynamicQwenForCausalLM.__init__
 
-        # 6. Transfer core model components (embeddings, final norm, LM head) from the base HF model.
+        # 6. Transfer core model components (embeddings, final norm, lm_head) from the base HF model
+        # to our custom model. This ensures we have the correct weight values.
         custom_model.model.embed_tokens = base_hf_model.model.embed_tokens
         custom_model.model.norm = base_hf_model.model.norm
         custom_model.lm_head = base_hf_model.lm_head
 
         # 7. Populate custom_model.model.layers with our alternating Decision/Dynamic layers,
         # transferring weights from the original layers of base_hf_model.
+        # Pass the original layers from base_hf_model to _patch_and_populate_layers
         cls._patch_and_populate_layers(custom_model, config, base_hf_model.model.layers)
 
-        # 8. Apply freezing configuration to the newly populated layers.
-        # This is safe now because _apply_main_block_freezing expects populated layers.
+        # 8. Apply freezing configuration.
         custom_model._apply_main_block_freezing()
 
         return custom_model
+        # --- END OF FIX ---
 
 
     @staticmethod
@@ -408,7 +410,6 @@ class DynamicQwenForCausalLM(nn.Module): # Inherit from nn.Module, not Qwen2ForC
         """
         logger.info(f"Patching {len(source_hf_layers)} Qwen model layers into alternating Decision/Dynamic layers.")
         new_layers = nn.ModuleList()
-        # Ensure model_to_patch is on the correct device for layer instantiation
         device = next(model_to_patch.parameters()).device
 
         for i, original_layer in enumerate(source_hf_layers):
