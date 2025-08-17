@@ -1,5 +1,3 @@
-# src/models/decision_qwen_decoder_layer.py
-
 import torch
 from torch import nn
 from transformers.models.qwen2.modeling_qwen2 import (
@@ -8,7 +6,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2RMSNorm,
     Qwen2RotaryEmbedding,
 )
-from src.models.d_qwen_fnn import PriorFeedForward
+from src.models.d_qwen_fnn import PriorFeedForward # Renamed from d_qwen_fnn
 
 import logging
 log = logging.getLogger(__name__)
@@ -45,7 +43,9 @@ class DecisionQwenDecoderLayer(nn.Module):
             log.warning(
                 f"Layer {self.layer_idx}: Qwen2Attention unexpectedly missing or having None rotary_emb. Initializing it manually as a fallback."
             )
-            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(self.config, base=config.rope_theta)
+            # --- START OF FIX ---
+            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(self.config) # Removed 'base=config.rope_theta'
+            # --- END OF FIX ---
 
         if load_from_pretrained and original_layer_state_dict is not None:
             # Filter and load state_dict for original components
