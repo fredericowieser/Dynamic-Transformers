@@ -23,27 +23,39 @@ class DynamicQwenTrainer(pl.LightningModule):
         log.info(f"Loading and configuring model: {self.model_cfg.model_name}")
         config = DynamicQwenConfig.from_pretrained(self.model_cfg.model_name)
 
+        # --- START OF MODIFICATION ---
+        # Define parameters that are meant to be set on the *model's config* (DynamicQwenConfig)
+        # These are the new VPRRouter parameters and general training controls
         required_params_for_model_config = {
             "capacity_gamma": self.model_cfg.capacity_gamma,
             "beta_ce_init": self.model_cfg.beta_ce_init,
             "beta_cu_init": self.model_cfg.beta_cu_init,
             "cu_detection_multiplier_init": self.model_cfg.cu_detection_multiplier_init,
-            "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init, # Now a learnable parameter
+            "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init,
             "token_wise_gating": getattr(self.model_cfg, "token_wise_gating", True),
             "moving_average_window_size": getattr(self.model_cfg, "moving_average_window_size", 100),
             "prior_ffn_intermediate_size_factor": getattr(self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0),
             "freeze_main_transformer_blocks": getattr(self.model_cfg, "freeze_main_transformer_blocks", False),
+            # Explicitly set init_prior_from_mlp to False for Qwen models
+            "init_prior_from_mlp": False, # Qwen models typically don't init from MLP weights directly like Llama
         }
 
+        # Set these parameters on the model's config object
         for param, value in required_params_for_model_config.items():
+            # The 'None' check ensures that if any of these explicitly listed
+            # parameters are found to be None (e.g., if Hydra provides 'null' or it's implicitly None),
+            # an error is raised, unless it's a boolean or an 'init' parameter which can default.
             if value is None and not isinstance(value, bool) and "init" not in param and "factor" not in param:
                 raise ValueError(f"{param} must be provided in the Hydra config for the Qwen model configuration.")
             setattr(config, param, value)
 
-        self.model = DynamicQwenForCausalLM.from_pretrained(self.model_cfg.model_name, config=config) # Pass full config to from_pretrained directly
+        # Instantiate our DynamicQwen model with the fully configured config
+        # We use from_pretrained directly which handles patching layers
+        self.model = DynamicQwenForCausalLM.from_pretrained(self.model_cfg.model_name, config=config)
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
 
+        # tokenizer (pad_token may need fixing)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = (
@@ -52,12 +64,16 @@ class DynamicQwenTrainer(pl.LightningModule):
             )
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
+        # Learning rate and parameter grouping setup
         self._setup_parameter_groups()
 
+        # Gate logging utility
+        # self.model.config.num_hidden_layers contains total number of decoder layers, which are now decision and dynamic alternated
         self.gate_logger = GateLogger(self.model.config.num_hidden_layers)
         self.per_layer_gate_activation_rolling_history = (
             self.gate_logger.per_layer_gate_activation_rolling_history
         )
+        # --- END OF MODIFICATION ---
 
     def forward(self, **inputs):
         if "input_ids" not in inputs:
@@ -78,12 +94,12 @@ class DynamicQwenTrainer(pl.LightningModule):
             gate_vecs_per_layer, # List of (B, T) gate vectors for Dynamic layers
             overall_avg_ce_prop_from_model, # Scalar mean of CE from DynamicQwenForCausalLM
             overall_avg_cu_prop_from_model, # Scalar mean of CU from DynamicQwenForCausalLM
-            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer
-            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer
-            overall_beta_ce, # Scalar
-            overall_beta_cu, # Scalar
-            overall_cu_detection_multiplier, # Scalar
-            overall_ce_criterion_offset, # Scalar
+            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer (from router)
+            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer (from router)
+            overall_beta_ce, # Scalar average of learnable beta_ce across layers
+            overall_beta_cu, # Scalar average of learnable beta_cu across layers
+            overall_cu_detection_multiplier, # Scalar average of learnable cu_detection_multiplier across layers
+            overall_ce_criterion_offset, # Scalar average of learnable ce_criterion_offset across layers
         ) = self.forward(**batch)
 
         shift_logits = logits[..., :-1, :].contiguous()
@@ -93,7 +109,10 @@ class DynamicQwenTrainer(pl.LightningModule):
             shift_labels.view(-1),
             ignore_index=-100,
         )
-        total_loss = lm_loss # Prior loss is only for monitoring, not added to total_loss
+        # --- START OF MODIFICATION ---
+        # Prior loss is now only for monitoring, not added to total_loss
+        total_loss = lm_loss
+        # --- END OF MODIFICATION ---
         perplexity = torch.exp(lm_loss)
 
         # Calculate overall gate activation mean from per-layer gate_vecs_per_layer
@@ -122,8 +141,8 @@ class DynamicQwenTrainer(pl.LightningModule):
             overall_prior_loss, # Now includes the actual prior loss for logging
             perplexity,
             overall_gate_activation_mean,
-            overall_avg_ce_prop_from_model, # Overall average CE proportion
-            overall_avg_cu_prop_from_model, # Overall average CU proportion
+            overall_avg_ce_prop_from_model, # Overall average CE proportion (from model.forward)
+            overall_avg_cu_prop_from_model, # Overall average CU proportion (from model.forward)
             per_layer_gate_stats, # Per-layer mean/std for gate activations
             overall_beta_ce,
             overall_beta_cu,
@@ -138,10 +157,11 @@ class DynamicQwenTrainer(pl.LightningModule):
         on_step: bool,
         on_epoch: bool,
     ):
+        # --- START OF MODIFICATION ---
         (
             total_loss,
             lm_loss,
-            prior_loss, # This is now the actual aggregated prior loss
+            prior_loss, # This is now the actual aggregated prior loss from Decision layers
             perplexity,
             overall_gate_activation_mean,
             overall_avg_ce, # Overall average CE proportion (from model.forward)
@@ -167,7 +187,8 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
             prog_bar=True,
         )
-        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch) # Log the actual prior_loss
+        # Log the actual prior_loss (from Decision layers)
+        self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
         self.log(
             f"{prefix}/perplexity",
             perplexity,
@@ -176,6 +197,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
+        # Log overall CE and CU proportions from the model's forward pass
         self.log(
             f"{prefix}_dynamic_model/overall_avg_ce_proportion",
             overall_avg_ce,
@@ -191,7 +213,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        # Log new learnable parameters from VPRRouter
+        # Log new learnable parameters from VPRRouter (averaged across layers)
         self.log(
             f"{prefix}_dynamic_model/router_beta_ce",
             overall_beta_ce,
@@ -217,7 +239,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
         )
 
-
+        # Gate-related logging delegated out
         GateLogger.log_gate_metrics(
             self,
             prefix,
@@ -226,9 +248,11 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_step,
             on_epoch,
         )
+        # --- END OF MODIFICATION ---
 
     def training_step(self, batch, batch_idx):
         optimizers = self.optimizers()
+        # --- START OF MODIFICATION ---
         for opt in optimizers:
             opt.zero_grad()
 
@@ -239,12 +263,14 @@ class DynamicQwenTrainer(pl.LightningModule):
         for opt in optimizers:
             opt.step()
 
+        # Step all schedulers (assuming get_scheduler returns a list if multiple are configured)
         schedulers = self.lr_schedulers()
         if isinstance(schedulers, list):
             for sch in schedulers:
                 sch.step()
-        else:
+        else: # For single scheduler setup
             schedulers.step()
+        # --- END OF MODIFICATION ---
 
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
 
@@ -268,10 +294,10 @@ class DynamicQwenTrainer(pl.LightningModule):
         log.info(
             "Setting up parameter groups for dynamic components and main block freezing."
         )
-        self.main_block_params = []
-        self.prior_ffn_params = []
-        self.vpr_router_params = []
-        self.other_params = []
+        self.main_block_params = [] # Parameters from Attention, MLP, and their LayerNorms
+        self.prior_ffn_params = []  # Parameters from PriorFeedForward and prior_layernorm
+        self.vpr_router_params = [] # Parameters from VPRRouter
+        self.other_params = []      # Parameters like embed_tokens, lm_head, top-level model.norm
 
         # Iterate through all parameters that require gradients
         for n, p in self.model.named_parameters():
@@ -319,6 +345,7 @@ class DynamicQwenTrainer(pl.LightningModule):
     def configure_optimizers(self):
         optimizer_groups = []
 
+        # Group main_block_params with other_params (embeddings, lm_head, model.norm)
         main_and_other_params = self.main_block_params + self.other_params
         if main_and_other_params:
             optimizer_main = torch.optim.AdamW(
@@ -331,6 +358,7 @@ class DynamicQwenTrainer(pl.LightningModule):
         else:
             log.info("No parameters for Main/Other Params Optimizer (possibly frozen or empty).")
 
+        # Group prior_ffn_params with vpr_router_params
         dynamic_component_params = self.prior_ffn_params + self.vpr_router_params
         if not dynamic_component_params:
             raise ValueError("No trainable parameters found for prior FFN or VPR Router. Check your model configuration and parameter groups.")
@@ -343,33 +371,40 @@ class DynamicQwenTrainer(pl.LightningModule):
         optimizer_groups.append(optimizer_dynamic)
         log.info(f"Prior FFN/VPR Router Optimizer created with LR: {self.training_cfg.optimizer.prior_ffn_lr}")
 
+
+        # --- START OF MODIFICATION ---
         num_training_steps = self.training_cfg.max_iters
-        num_warmup_steps = int(num_training_steps * getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0))
+        # Get warmup_ratio from config, default to 0.0 if not specified
+        warmup_ratio = getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0)
+        num_warmup_steps = int(num_training_steps * warmup_ratio)
 
         schedulers = []
-        if optimizer_main in optimizer_groups: # Check if optimizer_main was actually added
+        # Create and add scheduler for the main_and_other_params group if it exists
+        if optimizer_main in optimizer_groups:
             lr_scheduler_main = get_scheduler(
-                name="cosine",
+                name="cosine", # Using cosine annealing as a common good practice for LLMs
                 optimizer=optimizer_main,
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=num_training_steps,
             )
             schedulers.append({
                 "scheduler": lr_scheduler_main,
-                "interval": "step",
+                "interval": "step", # Update scheduler every step
                 "frequency": 1,
             })
 
+        # Create and add scheduler for the dynamic_component_params group
         lr_scheduler_dynamic = get_scheduler(
-            name="cosine",
+            name="cosine", # Using cosine annealing
             optimizer=optimizer_dynamic,
             num_warmup_steps=num_warmup_steps,
             num_training_steps=num_training_steps,
         )
         schedulers.append({
             "scheduler": lr_scheduler_dynamic,
-            "interval": "step",
+            "interval": "step", # Update scheduler every step
             "frequency": 1,
         })
+        # --- END OF MODIFICATION ---
 
         return optimizer_groups, schedulers

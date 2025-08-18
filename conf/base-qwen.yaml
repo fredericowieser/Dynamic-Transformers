@@ -18,23 +18,25 @@ model:
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
-    # Removed: prior_loss_weight (loss is now just LM loss)
+    # --- START OF MODIFICATION ---
+    # Removed: prior_loss_weight (loss is now just LM loss, prior loss is for monitoring)
 
-    # New Dynamic Gating parameters for VPRRouter
-    capacity_gamma: 0.5                     # float in (0,1], fraction of tokens to compute (like MoD's k)
-    beta_ce_init: 10.0                       # Initial beta for CE sigmoid (controls steepness)
-    beta_cu_init: 10.0                       # Initial beta for CU sigmoid (controls steepness)
-    cu_detection_multiplier_init: 1.0        # Initial multiplier for CU norm (replaces old dynamic_k usage)
-    ce_criterion_offset_init: 0.075          # Initial offset for CE criterion (NOW A LEARNABLE PARAMETER)
+    # New Dynamic Gating parameters for VPRRouter (these are passed to DynamicQwenConfig)
+    capacity_gamma: 0.5                     # float in (0,1], percentile of tokens to compute (like MoD's k)
+    beta_ce_init: 10.0                       # Initial beta for CE sigmoid (controls steepness) - LEARNABLE PARAMETER
+    beta_cu_init: 10.0                       # Initial beta for CU sigmoid (controls steepness) - LEARNABLE PARAMETER
+    cu_detection_multiplier_init: 1.0        # Initial multiplier for CU norm (replaces old dynamic_k usage) - LEARNABLE PARAMETER
+    ce_criterion_offset_init: 0.075          # Initial offset for CE criterion (replaces old ce_bias) - LEARNABLE PARAMETER
 
     token_wise_gating: True                  # Whether to apply gating per-token or per-batch
     moving_average_window_size: 100          # Window size for D_st moving average in CU
 
     # Prior FFN configuration
-    prior_ffn_intermediate_size_factor: 2.0  # Factor to multiply hidden_size by for prior FFN intermediate layer (e.g., 2.0 * hidden_size)
+    prior_ffn_intermediate_size_factor: 0.5  # Factor to multiply hidden_size by for prior FFN intermediate layer (e.g., 2.0 * hidden_size)
 
     # Training control: Freeze main transformer blocks
-    freeze_main_transformer_blocks: False    # If True, only VPR router and Prior FFN params are trained.
+    freeze_main_transformer_blocks: True    # If True, only VPR router and Prior FFN params are trained.
+    # --- END OF MODIFICATION ---
 
 training:
   accumulate_grad_batches: 64
@@ -43,7 +45,7 @@ training:
 
   optimizer:
     base_lr: 1.0e-5       # Max LR for main transformer blocks (if not frozen) and other base model params
-    prior_ffn_lr: 1.0e-4  # Max LR for prior FFN and VPR router parameters
+    prior_ffn_lr: 1.0e-4  # Max LR for prior FFN and VPR router parameters (often higher LR for new params)
     weight_decay: 0.01
     warmup_ratio: 0.01 # New: Warmup ratio for LR schedulers (e.g., 1% of max_iters)
 
@@ -51,7 +53,7 @@ training:
     factor: 0.1
     patience: 10
   
-  # Removed: gate_warmup_iters (this logic is now inside VPRRouter and uses current_iter directly)
+  # Removed: gate_warmup_iters (this logic is now inside VPRRouter and doesn't need to be externally passed here)
 
 logging:
   tensorboard:
