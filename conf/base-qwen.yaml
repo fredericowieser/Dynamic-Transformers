@@ -29,7 +29,7 @@ model:
 
     prior_ffn_intermediate_size_factor: 0.5  # Factor to multiply hidden_size by for prior FFN intermediate layer (e.g., 2.0 * hidden_size)
 
-    freeze_main_transformer_blocks: False    # If True, only VPR router and Prior FFN params are trained.
+    freeze_main_transformer_blocks: True    # If True, only VPR router and Prior FFN params are trained.
 
 training:
   accumulate_grad_batches: 64
