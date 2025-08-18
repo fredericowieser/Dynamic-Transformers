@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from transformers import AutoTokenizer, get_scheduler
-from omegaconf import DictConfig, OmegaConf # Import OmegaConf to handle ListConfig
+from omegaconf import DictConfig, OmegaConf
 from src.models.d_qwen_causal_lm import DynamicQwenForCausalLM
 from src.models.d_qwen_config import DynamicQwenConfig
 from src.trainers.gate_logging import GateLogger
@@ -14,7 +14,6 @@ log = logging.getLogger(__name__)
 class DynamicQwenTrainer(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, training_cfg: DictConfig):
         super().__init__()
-        # Save for logging and checkpointing
         self.save_hyperparameters()
         self.automatic_optimization = False
         self.model_cfg = model_cfg
@@ -23,9 +22,6 @@ class DynamicQwenTrainer(pl.LightningModule):
         log.info(f"Loading and configuring model: {self.model_cfg.model_name}")
         config = DynamicQwenConfig.from_pretrained(self.model_cfg.model_name)
 
-        # --- START OF MODIFICATION ---
-        # Define parameters that are meant to be set on the *model's config* (DynamicQwenConfig)
-        # These are the new VPRRouter parameters and general training controls
         required_params_for_model_config = {
             "capacity_gamma": self.model_cfg.capacity_gamma,
             "beta_ce_init": self.model_cfg.beta_ce_init,
@@ -36,26 +32,18 @@ class DynamicQwenTrainer(pl.LightningModule):
             "moving_average_window_size": getattr(self.model_cfg, "moving_average_window_size", 100),
             "prior_ffn_intermediate_size_factor": getattr(self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0),
             "freeze_main_transformer_blocks": getattr(self.model_cfg, "freeze_main_transformer_blocks", False),
-            # Explicitly set init_prior_from_mlp to False for Qwen models
-            "init_prior_from_mlp": False, # Qwen models typically don't init from MLP weights directly like Llama
+            "init_prior_from_mlp": False,
         }
 
-        # Set these parameters on the model's config object
         for param, value in required_params_for_model_config.items():
-            # The 'None' check ensures that if any of these explicitly listed
-            # parameters are found to be None (e.g., if Hydra provides 'null' or it's implicitly None),
-            # an error is raised, unless it's a boolean or an 'init' parameter which can default.
             if value is None and not isinstance(value, bool) and "init" not in param and "factor" not in param:
                 raise ValueError(f"{param} must be provided in the Hydra config for the Qwen model configuration.")
             setattr(config, param, value)
 
-        # Instantiate our DynamicQwen model with the fully configured config
-        # We use from_pretrained directly which handles patching layers
         self.model = DynamicQwenForCausalLM.from_pretrained(self.model_cfg.model_name, config=config)
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
 
-        # tokenizer (pad_token may need fixing)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = (
@@ -64,16 +52,15 @@ class DynamicQwenTrainer(pl.LightningModule):
             )
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
-        # Learning rate and parameter grouping setup
+        # --- START OF MODIFICATION ---
+        # Setup a single list of all trainable parameters
         self._setup_parameter_groups()
+        # --- END OF MODIFICATION ---
 
-        # Gate logging utility
-        # self.model.config.num_hidden_layers contains total number of decoder layers, which are now decision and dynamic alternated
         self.gate_logger = GateLogger(self.model.config.num_hidden_layers)
         self.per_layer_gate_activation_rolling_history = (
             self.gate_logger.per_layer_gate_activation_rolling_history
         )
-        # --- END OF MODIFICATION ---
 
     def forward(self, **inputs):
         if "input_ids" not in inputs:
@@ -87,19 +74,18 @@ class DynamicQwenTrainer(pl.LightningModule):
         return self.model(**inputs)
 
     def _calculate_loss(self, batch):
-        # Unpack all metrics returned by DynamicQwenForCausalLM.forward
         (
             logits,
-            overall_prior_loss, # Actual aggregated prior loss for monitoring
-            gate_vecs_per_layer, # List of (B, T) gate vectors for Dynamic layers
-            overall_avg_ce_prop_from_model, # Scalar mean of CE from DynamicQwenForCausalLM
-            overall_avg_cu_prop_from_model, # Scalar mean of CU from DynamicQwenForCausalLM
-            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer (from router)
-            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer (from router)
-            overall_beta_ce, # Scalar average of learnable beta_ce across layers
-            overall_beta_cu, # Scalar average of learnable beta_cu across layers
-            overall_cu_detection_multiplier, # Scalar average of learnable cu_detection_multiplier across layers
-            overall_ce_criterion_offset, # Scalar average of learnable ce_criterion_offset across layers
+            overall_prior_loss,
+            gate_vecs_per_layer,
+            overall_avg_ce_prop_from_model,
+            overall_avg_cu_prop_from_model,
+            ce_proportions_per_layer,
+            cu_proportions_per_layer,
+            overall_beta_ce,
+            overall_beta_cu,
+            overall_cu_detection_multiplier,
+            overall_ce_criterion_offset,
         ) = self.forward(**batch)
 
         shift_logits = logits[..., :-1, :].contiguous()
@@ -109,20 +95,15 @@ class DynamicQwenTrainer(pl.LightningModule):
             shift_labels.view(-1),
             ignore_index=-100,
         )
-        # --- START OF MODIFICATION ---
-        # Prior loss is now only for monitoring, not added to total_loss
         total_loss = lm_loss
-        # --- END OF MODIFICATION ---
         perplexity = torch.exp(lm_loss)
 
-        # Calculate overall gate activation mean from per-layer gate_vecs_per_layer
         overall_gate_activation_mean = (
             torch.stack([gv.mean() for gv in gate_vecs_per_layer]).mean()
             if gate_vecs_per_layer
             else torch.tensor(0.0, device=self.device)
         )
 
-        # Calculate per-layer gate statistics (mean and std)
         per_layer_gate_stats = [
             {
                 "mean": gv.mean(),
@@ -138,12 +119,12 @@ class DynamicQwenTrainer(pl.LightningModule):
         return (
             total_loss,
             lm_loss,
-            overall_prior_loss, # Now includes the actual prior loss for logging
+            overall_prior_loss,
             perplexity,
             overall_gate_activation_mean,
-            overall_avg_ce_prop_from_model, # Overall average CE proportion (from model.forward)
-            overall_avg_cu_prop_from_model, # Overall average CU proportion (from model.forward)
-            per_layer_gate_stats, # Per-layer mean/std for gate activations
+            overall_avg_ce_prop_from_model,
+            overall_avg_cu_prop_from_model,
+            per_layer_gate_stats,
             overall_beta_ce,
             overall_beta_cu,
             overall_cu_detection_multiplier,
@@ -157,16 +138,15 @@ class DynamicQwenTrainer(pl.LightningModule):
         on_step: bool,
         on_epoch: bool,
     ):
-        # --- START OF MODIFICATION ---
         (
             total_loss,
             lm_loss,
-            prior_loss, # This is now the actual aggregated prior loss from Decision layers
+            prior_loss,
             perplexity,
             overall_gate_activation_mean,
-            overall_avg_ce, # Overall average CE proportion (from model.forward)
-            overall_avg_cu, # Overall average CU proportion (from model.forward)
-            per_layer_gate_stats, # Per-layer gate stats
+            overall_avg_ce,
+            overall_avg_cu,
+            per_layer_gate_stats,
             overall_beta_ce,
             overall_beta_cu,
             overall_cu_detection_multiplier,
@@ -187,7 +167,6 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
             prog_bar=True,
         )
-        # Log the actual prior_loss (from Decision layers)
         self.log(f"{prefix}/prior_loss", prior_loss, on_step=on_step, on_epoch=on_epoch)
         self.log(
             f"{prefix}/perplexity",
@@ -197,7 +176,6 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        # Log overall CE and CU proportions from the model's forward pass
         self.log(
             f"{prefix}_dynamic_model/overall_avg_ce_proportion",
             overall_avg_ce,
@@ -213,7 +191,6 @@ class DynamicQwenTrainer(pl.LightningModule):
             prog_bar=True,
         )
 
-        # Log new learnable parameters from VPRRouter (averaged across layers)
         self.log(
             f"{prefix}_dynamic_model/router_beta_ce",
             overall_beta_ce,
@@ -239,7 +216,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
         )
 
-        # Gate-related logging delegated out
+
         GateLogger.log_gate_metrics(
             self,
             prefix,
@@ -248,34 +225,25 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_step,
             on_epoch,
         )
-        # --- END OF MODIFICATION ---
 
     def training_step(self, batch, batch_idx):
-        optimizers = self.optimizers()
         # --- START OF MODIFICATION ---
-        for opt in optimizers:
-            opt.zero_grad()
+        optimizer = self.optimizers() # Get the single optimizer
+        optimizer.zero_grad()
 
         outputs = self._calculate_loss(batch)
         total_loss = outputs[0]
         self.manual_backward(total_loss)
 
-        for opt in optimizers:
-            opt.step()
+        optimizer.step()
 
-        # Step all schedulers (assuming get_scheduler returns a list if multiple are configured)
-        schedulers = self.lr_schedulers()
-        if isinstance(schedulers, list):
-            for sch in schedulers:
-                sch.step()
-        else: # For single scheduler setup
-            schedulers.step()
+        scheduler = self.lr_schedulers() # Get the single scheduler
+        scheduler.step()
         # --- END OF MODIFICATION ---
 
         self._log_step_metrics("train", outputs, on_step=True, on_epoch=True)
 
         if self.trainer.global_step > 0:
-            # per_layer_gate_stats are at outputs[7] based on _calculate_loss return
             self.gate_logger.update_rolling_history(outputs[7])
             self.gate_logger.log_rolling_history(
                 self.trainer.global_step,
@@ -294,117 +262,52 @@ class DynamicQwenTrainer(pl.LightningModule):
         log.info(
             "Setting up parameter groups for dynamic components and main block freezing."
         )
-        self.main_block_params = [] # Parameters from Attention, MLP, and their LayerNorms
-        self.prior_ffn_params = []  # Parameters from PriorFeedForward and prior_layernorm
-        self.vpr_router_params = [] # Parameters from VPRRouter
-        self.other_params = []      # Parameters like embed_tokens, lm_head, top-level model.norm
+        # --- START OF MODIFICATION ---
+        self.all_trainable_params = []
 
         # Iterate through all parameters that require gradients
         for n, p in self.model.named_parameters():
-            if not p.requires_grad:
-                # This parameter is frozen (e.g., due to freeze_main_transformer_blocks or from HF base model)
-                log.debug(f"Parameter '{n}' is frozen.")
-                continue
-
-            # Check for specific component names within the parameter name
-            # These names come from the internal structure of DecisionQwenDecoderLayer and DynamicQwenDecoderLayer
-            if "prior_ffn" in n or "prior_layernorm" in n:
-                # Parameters belonging to the Prior FFN or its LayerNorm (in Decision layers)
-                self.prior_ffn_params.append(p)
-            elif "vpr_router" in n:
-                # Parameters belonging to the VPR Router (in Dynamic layers)
-                self.vpr_router_params.append(p)
-            elif "model.layers" in n:
-                # These are parameters of the core Qwen2 attention/MLP/LayerNorms
-                # within either Decision or Dynamic layers.
-                # Their requires_grad status is controlled by model._apply_main_block_freezing.
-                self.main_block_params.append(p)
+            if p.requires_grad:
+                self.all_trainable_params.append(p)
             else:
-                # These are top-level model parameters: embed_tokens, lm_head, model.norm
-                self.other_params.append(p)
+                log.debug(f"Parameter '{n}' is frozen.")
 
-        # Log counts for verification
-        log.info(f"Identified {len(self.main_block_params)} main block parameters (trainable if not frozen).")
-        log.info(f"Identified {len(self.prior_ffn_params)} prior FFN parameters (always trainable).")
-        log.info(f"Identified {len(self.vpr_router_params)} VPR router parameters (always trainable).")
-        log.info(f"Identified {len(self.other_params)} other trainable parameters (e.g., embeddings, LM head).")
-
-        total_trainable_summed = (
-            sum(p.numel() for p in self.main_block_params)
-            + sum(p.numel() for p in self.prior_ffn_params)
-            + sum(p.numel() for p in self.vpr_router_params)
-            + sum(p.numel() for p in self.other_params)
-        )
+        log.info(f"Identified {len(self.all_trainable_params)} total trainable parameters.")
+        total_trainable_summed = sum(p.numel() for p in self.all_trainable_params)
         model_total_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
         if total_trainable_summed != model_total_trainable:
             log.warning(
                 f"Mismatch in trainable parameter count! _setup_parameter_groups found {total_trainable_summed} (numel), model reports {model_total_trainable} (numel). This might indicate a miscategorization or initial freezing."
             )
+        # --- END OF MODIFICATION ---
 
     def configure_optimizers(self):
-        optimizer_groups = []
+        # --- START OF MODIFICATION ---
+        if not self.all_trainable_params:
+            raise ValueError("No trainable parameters found for the model. Check freezing configuration and model setup.")
 
-        # Group main_block_params with other_params (embeddings, lm_head, model.norm)
-        main_and_other_params = self.main_block_params + self.other_params
-        if main_and_other_params:
-            optimizer_main = torch.optim.AdamW(
-                main_and_other_params,
-                lr=self.training_cfg.optimizer.base_lr,
-                weight_decay=self.training_cfg.optimizer.weight_decay,
-            )
-            optimizer_groups.append(optimizer_main)
-            log.info(f"Main/Other Params Optimizer created with LR: {self.training_cfg.optimizer.base_lr}")
-        else:
-            log.info("No parameters for Main/Other Params Optimizer (possibly frozen or empty).")
-
-        # Group prior_ffn_params with vpr_router_params
-        dynamic_component_params = self.prior_ffn_params + self.vpr_router_params
-        if not dynamic_component_params:
-            raise ValueError("No trainable parameters found for prior FFN or VPR Router. Check your model configuration and parameter groups.")
-
-        optimizer_dynamic = torch.optim.AdamW(
-            dynamic_component_params,
-            lr=self.training_cfg.optimizer.prior_ffn_lr,
+        optimizer = torch.optim.AdamW(
+            self.all_trainable_params,
+            lr=self.training_cfg.optimizer.base_lr, # Use base_lr for the single optimizer
             weight_decay=self.training_cfg.optimizer.weight_decay,
         )
-        optimizer_groups.append(optimizer_dynamic)
-        log.info(f"Prior FFN/VPR Router Optimizer created with LR: {self.training_cfg.optimizer.prior_ffn_lr}")
+        log.info(f"Single Optimizer created with LR: {self.training_cfg.optimizer.base_lr}")
 
-
-        # --- START OF MODIFICATION ---
         num_training_steps = self.training_cfg.max_iters
-        # Get warmup_ratio from config, default to 0.0 if not specified
         warmup_ratio = getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0)
         num_warmup_steps = int(num_training_steps * warmup_ratio)
 
-        schedulers = []
-        # Create and add scheduler for the main_and_other_params group if it exists
-        if optimizer_main in optimizer_groups:
-            lr_scheduler_main = get_scheduler(
-                name="cosine", # Using cosine annealing as a common good practice for LLMs
-                optimizer=optimizer_main,
-                num_warmup_steps=num_warmup_steps,
-                num_training_steps=num_training_steps,
-            )
-            schedulers.append({
-                "scheduler": lr_scheduler_main,
-                "interval": "step", # Update scheduler every step
-                "frequency": 1,
-            })
-
-        # Create and add scheduler for the dynamic_component_params group
-        lr_scheduler_dynamic = get_scheduler(
-            name="cosine", # Using cosine annealing
-            optimizer=optimizer_dynamic,
+        lr_scheduler = get_scheduler(
+            name="cosine",
+            optimizer=optimizer,
             num_warmup_steps=num_warmup_steps,
             num_training_steps=num_training_steps,
         )
-        schedulers.append({
-            "scheduler": lr_scheduler_dynamic,
-            "interval": "step", # Update scheduler every step
-            "frequency": 1,
-        })
-        # --- END OF MODIFICATION ---
 
-        return optimizer_groups, schedulers
+        return [optimizer], [{
+            "scheduler": lr_scheduler,
+            "interval": "step",
+            "frequency": 1,
+        }]
+        # --- END OF MODIFICATION ---
