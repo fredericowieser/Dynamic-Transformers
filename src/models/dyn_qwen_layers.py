@@ -19,6 +19,8 @@ class DynamicQwenDecoderLayer(nn.Module):
     It uses a VPRRouter, informed by outputs from the *preceding Decision Layer*,
     to decide which tokens undergo full computation (Attention + MLP) within *this* layer,
     and which tokens bypass for computational savings (identity connection).
+    The routing decision is differentiable via a Straight-Through Estimator (STE)
+    and applies the continuous gating signal to scale the change introduced by the computation.
     """
     def __init__(self, config, layer_idx: int, load_from_pretrained: bool = False, original_layer_state_dict: dict = None):
         super().__init__()
@@ -54,9 +56,9 @@ class DynamicQwenDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor, # Input to *this* Dynamic layer (output from preceding Decision Layer)
         # Signals from the *preceding* Decision Layer (layer_idx - 1)
-        prev_decision_original_input: torch.Tensor, # Z^{n-1} from previous Decision Layer
-        prev_decision_posterior_output: torch.Tensor, # H^{D_n}_{trans} from previous Decision Layer
-        prev_decision_prior_output: torch.Tensor, # H^{D_n}_{prior} from previous Decision Layer
+        prev_decision_original_input: torch.Tensor, # Z^{n-1} from previous Decision Layer (used by router)
+        prev_decision_posterior_output: torch.Tensor, # H^{D_n}_{trans} from previous Decision Layer (used by router)
+        prev_decision_prior_output: torch.Tensor, # H^{D_n}_{prior} from previous Decision Layer (used by router)
         prior_loss_from_decision: torch.Tensor, # ADDED: Prior loss from the *preceding Decision Layer*
 
         attention_mask: torch.Tensor | None = None,
@@ -90,18 +92,22 @@ class DynamicQwenDecoderLayer(nn.Module):
         )
 
         # Prepare for conditional computation with Straight-Through Estimator (STE)
+        # gate_forward is the binary decision for the forward pass, ensuring static compute budget.
+        # gate_backward is the continuous signal for the backward pass, enabling differentiability.
         if self.vpr_router.token_wise_gating:
-            gate_forward = gate_vec_binary.unsqueeze(-1)  # (B, T) -> (B, T, 1) for actual forward decision
-            gate_backward = combined_gating_signal_continuous.unsqueeze(-1) # (B, T) -> (B, T, 1) for gradients
+            # (B, T) -> (B, T, 1) for broadcasting
+            gate_forward = gate_vec_binary.unsqueeze(-1)
+            gate_backward = combined_gating_signal_continuous.unsqueeze(-1)
         else:
-            gate_forward = gate_vec_binary.view(-1, 1, 1)  # (B,) -> (B, 1, 1) for actual forward decision
-            gate_backward = combined_gating_signal_continuous.view(-1, 1, 1) # (B,) -> (B, 1, 1) for gradients
+            # (B,) -> (B, 1, 1) for broadcasting across sequence dimension
+            gate_forward = gate_vec_binary.view(-1, 1, 1)
+            gate_backward = combined_gating_signal_continuous.view(-1, 1, 1)
 
         # STE: In forward, use gate_forward. In backward, gradients flow through gate_backward.
         gate_ste = gate_forward + (gate_backward - gate_forward).detach()
 
         # Store the original input to *this* Dynamic layer for the identity path
-        original_input_to_dynamic_block = hidden_states # This is Z^n from previous Decision Layer
+        original_input_to_dynamic_block = hidden_states # This is the output from the Decision Layer before this Dynamic Layer
 
         # --- Perform this layer's (Dynamic) Transformer computation ---
         # 1. Input LayerNorm + Self-Attention
@@ -127,20 +133,36 @@ class DynamicQwenDecoderLayer(nn.Module):
             layer_idx=self.layer_idx, # Critical for KV caching
             position_embeddings=position_embeddings,
         )
-        attention_output = attn_outputs[0]
+        attention_output = attn_outputs[0] # Output of attention module
+
         present_key_value = attn_outputs[2] if use_cache else None
         attn_weights = attn_outputs[1] if output_attentions else None
 
-        hidden_states_after_attn = original_input_to_dynamic_block + attention_output # Residual connection
+        # Apply residual connection for attention
+        hidden_states_after_attn = original_input_to_dynamic_block + attention_output
 
         # 2. Post-Attention LayerNorm + MLP
         hidden_states_pre_mlp_ln = self.post_attention_layernorm(hidden_states_after_attn)
-        mlp_output = self.mlp(hidden_states_pre_mlp_ln)
-        full_compute_path_output = hidden_states_after_attn + mlp_output # Result of *this* layer's full compute
+        mlp_output = self.mlp(hidden_states_pre_mlp_ln) # Output of MLP module
 
-        # Apply the dynamic gating: gate_ste * full_compute_path + (1 - gate_ste) * identity_path
-        # The identity path is the input to this dynamic block.
-        hidden_states_final = gate_ste * full_compute_path_output + (1.0 - gate_ste) * original_input_to_dynamic_block
+        # --- APPLY NEW GATING LOGIC ---
+        # Original input: X_{in,i} = original_input_to_dynamic_block_i
+        # Full computation without residual: f_{S_n}(X_{\text{out},i}) -> here this is attention_output + mlp_output
+        # This is the 'delta_output' or 'change' that the full computation would add
+        delta_output = attention_output + mlp_output
+
+        # According to the formula: g_i * delta_output + original_input_to_dynamic_block
+        # BUT only for selected tokens. For non-selected, it's just original_input_to_dynamic_block.
+        # This is achieved by using gate_ste (binary in forward) to select where to apply this scaled delta.
+        scaled_delta_output = gate_ste * (combined_gating_signal_continuous.unsqueeze(-1) * delta_output) # (B, T, 1) * (B, T, C)
+        # Note: combined_gating_signal_continuous must be expanded to (B, T, 1) for broadcasting
+        # The .unsqueeze(-1) is applied above when gate_forward/backward are prepared.
+
+        hidden_states_final = original_input_to_dynamic_block + scaled_delta_output
+        # For tokens where gate_ste is 0, scaled_delta_output becomes 0, so hidden_states_final = original_input_to_dynamic_block.
+        # For tokens where gate_ste is 1, scaled_delta_output = combined_gating_signal_continuous * delta_output,
+        # so hidden_states_final = original_input_to_dynamic_block + combined_gating_signal_continuous * delta_output.
+
 
         # Prepare outputs to match expected Hugging Face Transformer layer output signature,
         # followed by our custom metrics.

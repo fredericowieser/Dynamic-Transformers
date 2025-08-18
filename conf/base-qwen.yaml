@@ -38,7 +38,7 @@ training:
 
   optimizer:
     # --- START OF MODIFICATION ---
-    base_lr: 1.0e-5       # Max LR for the *entire* model
+    base_lr: 1.0e-3       # Max LR for the *entire* model
     # Removed prior_ffn_lr as there's now only one optimizer
     # --- END OF MODIFICATION ---
     weight_decay: 0.01
