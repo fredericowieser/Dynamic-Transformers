@@ -1,7 +1,7 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import logging
+from torch import nn # Keep nn imported if you use other nn.Modules like nn.Linear, etc.
 
 log = logging.getLogger(__name__)
 
@@ -23,10 +23,13 @@ class VPRRouter(nn.Module):
         self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
         self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
 
-        # Learnable multiplier for CU norm (replaces old dynamic_k usage)
-        self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+        # --- START OF CHANGE ---
+        # Make cu_detection_multiplier non-learnable
+        # It's now a direct attribute, initialized from config, not an nn.Parameter
+        self.cu_detection_multiplier_val = config.cu_detection_multiplier_init
+        # --- END OF CHANGE ---
 
-        # Learnable offset for CE criterion (replaces old ce_bias concept)
+        # Learnable offset for CE criterion
         self.ce_criterion_offset = nn.Parameter(torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
 
 
@@ -39,9 +42,12 @@ class VPRRouter(nn.Module):
     def current_beta_cu(self):
         return self.beta_cu.item()
 
+    # --- START OF CHANGE ---
+    # Update property to reflect non-learnable nature
     @property
     def current_cu_detection_multiplier(self):
-        return self.cu_detection_multiplier.item()
+        return self.cu_detection_multiplier_val # Directly return the fixed value
+    # --- END OF CHANGE ---
 
     @property
     def current_ce_criterion_offset(self):
@@ -109,7 +115,7 @@ class VPRRouter(nn.Module):
             - combined_gating_signal_continuous (torch.Tensor): Per-token continuous gating signal (B, T).
             - current_beta_ce (float): Current value of learnable beta_ce.
             - current_beta_cu (float): Current value of learnable beta_cu.
-            - current_cu_detection_multiplier (float): Current value of learnable cu_detection_multiplier.
+            - current_cu_detection_multiplier (float): Current value of non-learnable cu_detection_multiplier.
             - current_ce_criterion_offset (float): Current value of learnable ce_criterion_offset.
         """
         # Calculate per-token MSE losses
@@ -124,14 +130,18 @@ class VPRRouter(nn.Module):
             # Per-token calculation
             CE_val = d_st_tok - (d_ch_tok - ce_criterion_offset_val) # (B, T)
             ma_d_st_tok = self._calculate_moving_average(d_st_tok.detach()) # Detach for stable moving average.
-            CU_val = d_st_tok - (self.cu_detection_multiplier * ma_d_st_tok) # (B, T)
+            # --- START OF CHANGE ---
+            CU_val = d_st_tok - (self.cu_detection_multiplier_val * ma_d_st_tok) # Use the fixed value
+            # --- END OF CHANGE ---
         else:
             # Per-batch/sequence calculation (mean over tokens)
             mean_d_st = d_st_tok.mean(dim=-1, keepdim=True) # (B, 1)
             mean_d_ch = d_ch_tok.mean(dim=-1, keepdim=True) # (B, 1)
 
             CE_val = mean_d_st - (mean_d_ch - ce_criterion_offset_val) # (B, 1)
-            CU_val = mean_d_st - (self.cu_detection_multiplier * mean_d_st.detach()) # (B, 1)
+            # --- START OF CHANGE ---
+            CU_val = mean_d_st - (self.cu_detection_multiplier_val * mean_d_st.detach()) # Use the fixed value
+            # --- END OF CHANGE ---
 
         # Sigmoid gating scores
         S_CE = torch.sigmoid(self.beta_ce * CE_val)
@@ -169,6 +179,6 @@ class VPRRouter(nn.Module):
             combined_gating_signal_continuous,
             self.current_beta_ce, # Current value of learnable beta_ce.
             self.current_beta_cu, # Current value of learnable beta_cu.
-            self.current_cu_detection_multiplier, # Current value of learnable cu_detection_multiplier.
+            self.current_cu_detection_multiplier, # Current value of non-learnable cu_detection_multiplier.
             self.current_ce_criterion_offset, # Current value of learnable ce_criterion_offset.
         )

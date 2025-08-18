@@ -214,6 +214,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         router_beta_ces, router_beta_cus, router_cu_detection_multipliers, router_ce_criterion_offsets = [], [], [], []
         # Initialize list for prior_loss from Decision layers
         prior_losses = []
+        all_combined_gating_signals = []
 
         # Initialize for KV cache and attentions. Use None to signify not collected/returned.
         all_past_key_values = [None] * len(self.model.layers) if use_cache else None
@@ -300,7 +301,9 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                         # (output_hidden_states, ..., avg_ce_prop, avg_cu_prop, gate_vec_final, prior_loss_from_decision, router_beta_ce, router_beta_cu, router_cu_detection_multiplier, router_ce_criterion_offset)
                         ce_proportions.append(dynamic_outputs[output_idx_offset])
                         cu_proportions.append(dynamic_outputs[output_idx_offset + 1])
-                        gate_vecs.append(dynamic_outputs[output_idx_offset + 2])
+                        # NEW: Collect combined_gating_signal_continuous
+                        all_combined_gating_signals.append(dynamic_outputs[output_idx_offset + 2])
+                        gate_vecs.append(dynamic_outputs[output_idx_offset + 3]) # Shifted by 1
                         # Prior loss from Decision layer is *already* in prior_losses list
                         router_beta_ces.append(dynamic_outputs[output_idx_offset + 4]) # 3 for prior_loss, +1 for prev 
                         router_beta_cus.append(dynamic_outputs[output_idx_offset + 5])
@@ -331,6 +334,12 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 overall_prior_loss = (
                     torch.stack(prior_losses).mean()
                     if prior_losses
+                    else torch.tensor(0.0, device=logits.device)
+                )
+                # NEW: Overall mean of combined_gating_signal_continuous
+                overall_combined_gating_signal_mean = (
+                    torch.stack([s.mean() for s in all_combined_gating_signals]).mean()
+                    if all_combined_gating_signals
                     else torch.tensor(0.0, device=logits.device)
                 )
                 
@@ -364,6 +373,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                     gate_vecs, # List of gate_vec_for_stats (B,T) or (B,) per Dynamic layer
                     overall_avg_ce_return, # Scalar mean across Dynamic layers
                     overall_avg_cu_return, # Scalar mean across Dynamic layers
+                    overall_combined_gating_signal_mean,
                     ce_proportions, # List of scalar means per Dynamic layer
                     cu_proportions, # List of scalar means per Dynamic layer
                     overall_beta_ce,

@@ -180,6 +180,7 @@ class DynamicQwenDecoderLayer(nn.Module):
         return outputs + (
             avg_ce_proportion,
             avg_cu_proportion,
+            combined_gating_signal_continuous, # This is the continuous gating signal for backward pass
             gate_vec_binary,
             prior_loss_from_decision, # ADDED: Prior loss from Decision Layer
             router_beta_ce, # VPRRouter learnable param

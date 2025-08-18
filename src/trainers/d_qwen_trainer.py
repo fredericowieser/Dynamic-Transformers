@@ -74,19 +74,23 @@ class DynamicQwenTrainer(pl.LightningModule):
         return self.model(**inputs)
 
     def _calculate_loss(self, batch):
+        # --- START OF MODIFICATION ---
+        # Unpack all metrics returned by DynamicQwenForCausalLM.forward
         (
             logits,
-            overall_prior_loss,
-            gate_vecs_per_layer,
-            overall_avg_ce_prop_from_model,
-            overall_avg_cu_prop_from_model,
-            ce_proportions_per_layer,
-            cu_proportions_per_layer,
-            overall_beta_ce,
-            overall_beta_cu,
-            overall_cu_detection_multiplier,
-            overall_ce_criterion_offset,
+            overall_prior_loss, # Actual aggregated prior loss for monitoring
+            gate_vecs_per_layer, # List of (B, T) binary gate vectors for Dynamic layers
+            overall_avg_ce_prop_from_model, # Scalar mean of CE from DynamicQwenForCausalLM
+            overall_avg_cu_prop_from_model, # Scalar mean of CU from DynamicQwenForCausalLM
+            overall_combined_gating_signal_mean, # NEW: Overall mean of continuous signal
+            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer (from router)
+            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer (from router)
+            overall_beta_ce, # Scalar average of learnable beta_ce across layers
+            overall_beta_cu, # Scalar average of learnable beta_cu across layers
+            overall_cu_detection_multiplier, # Scalar average of non-learnable cu_detection_multiplier across layers
+            overall_ce_criterion_offset, # Scalar average of learnable ce_criterion_offset across layers
         ) = self.forward(**batch)
+        # --- END OF MODIFICATION ---
 
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = batch["labels"][..., 1:].contiguous()
@@ -129,6 +133,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             overall_beta_cu,
             overall_cu_detection_multiplier,
             overall_ce_criterion_offset,
+            overall_combined_gating_signal_mean,
         )
 
     def _log_step_metrics(
@@ -151,6 +156,7 @@ class DynamicQwenTrainer(pl.LightningModule):
             overall_beta_cu,
             overall_cu_detection_multiplier,
             overall_ce_criterion_offset,
+            overall_combined_gating_signal_mean,
         ) = outputs
 
         self.log(
@@ -186,6 +192,14 @@ class DynamicQwenTrainer(pl.LightningModule):
         self.log(
             f"{prefix}_dynamic_model/overall_avg_cu_proportion",
             overall_avg_cu,
+            on_step=on_step,
+            on_epoch=on_epoch,
+            prog_bar=True,
+        )
+        # NEW: Log overall mean of the continuous gating signal
+        self.log(
+            f"{prefix}_dynamic_model/overall_combined_gating_signal_mean",
+            overall_combined_gating_signal_mean,
             on_step=on_step,
             on_epoch=on_epoch,
             prog_bar=True,
