@@ -4,12 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class PriorFeedForward(nn.Module):
     """
     A small feed-forward network for prior predictions in DynamicQwen layers.
     It takes an `intermediate_size_factor` to scale the hidden dimension
     for its internal intermediate size, allowing for more flexible bottlenecking.
     """
+
     def __init__(self, config, intermediate_size_factor: float = 2.0):
         super().__init__()
         hidden_size = config.hidden_size

@@ -1,9 +1,11 @@
 import logging
+
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
-from transformers import AutoTokenizer, get_scheduler
 from omegaconf import DictConfig, OmegaConf
+from transformers import AutoTokenizer, get_scheduler
+
 from src.models.d_qwen_causal_lm import DynamicQwenForCausalLM
 from src.models.d_qwen_config import DynamicQwenConfig
 from src.trainers.gate_logging import GateLogger
@@ -29,26 +31,40 @@ class DynamicQwenTrainer(pl.LightningModule):
             "cu_detection_multiplier_init": self.model_cfg.cu_detection_multiplier_init,
             "ce_criterion_offset_init": self.model_cfg.ce_criterion_offset_init,
             "token_wise_gating": getattr(self.model_cfg, "token_wise_gating", True),
-            "moving_average_window_size": getattr(self.model_cfg, "moving_average_window_size", 100),
-            "prior_ffn_intermediate_size_factor": getattr(self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0),
-            "freeze_main_transformer_blocks": getattr(self.model_cfg, "freeze_main_transformer_blocks", False),
+            "moving_average_window_size": getattr(
+                self.model_cfg, "moving_average_window_size", 100
+            ),
+            "prior_ffn_intermediate_size_factor": getattr(
+                self.model_cfg, "prior_ffn_intermediate_size_factor", 2.0
+            ),
+            "freeze_main_transformer_blocks": getattr(
+                self.model_cfg, "freeze_main_transformer_blocks", False
+            ),
             "init_prior_from_mlp": False,
         }
 
         for param, value in required_params_for_model_config.items():
-            if value is None and not isinstance(value, bool) and "init" not in param and "factor" not in param:
-                raise ValueError(f"{param} must be provided in the Hydra config for the Qwen model configuration.")
+            if (
+                value is None
+                and not isinstance(value, bool)
+                and "init" not in param
+                and "factor" not in param
+            ):
+                raise ValueError(
+                    f"{param} must be provided in the Hydra config for the Qwen model configuration."
+                )
             setattr(config, param, value)
 
-        self.model = DynamicQwenForCausalLM.from_pretrained(self.model_cfg.model_name, config=config)
+        self.model = DynamicQwenForCausalLM.from_pretrained(
+            self.model_cfg.model_name, config=config
+        )
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_cfg.model_name)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = (
-                self.model.config.pad_token_id
-                or self.tokenizer.eos_token_id
+                self.model.config.pad_token_id or self.tokenizer.eos_token_id
             )
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
@@ -78,17 +94,17 @@ class DynamicQwenTrainer(pl.LightningModule):
         # Unpack all metrics returned by DynamicQwenForCausalLM.forward
         (
             logits,
-            overall_prior_loss, # Actual aggregated prior loss for monitoring
-            gate_vecs_per_layer, # List of (B, T) binary gate vectors for Dynamic layers
-            overall_avg_ce_prop_from_model, # Scalar mean of CE from DynamicQwenForCausalLM
-            overall_avg_cu_prop_from_model, # Scalar mean of CU from DynamicQwenForCausalLM
-            overall_combined_gating_signal_mean, # NEW: Overall mean of continuous signal
-            ce_proportions_per_layer, # List of scalar CE proportions per Dynamic layer (from router)
-            cu_proportions_per_layer, # List of scalar CU proportions per Dynamic layer (from router)
-            overall_beta_ce, # Scalar average of learnable beta_ce across layers
-            overall_beta_cu, # Scalar average of learnable beta_cu across layers
-            overall_cu_detection_multiplier, # Scalar average of non-learnable cu_detection_multiplier across layers
-            overall_ce_criterion_offset, # Scalar average of learnable ce_criterion_offset across layers
+            overall_prior_loss,  # Actual aggregated prior loss for monitoring
+            gate_vecs_per_layer,  # List of (B, T) binary gate vectors for Dynamic layers
+            overall_avg_ce_prop_from_model,  # Scalar mean of CE from DynamicQwenForCausalLM
+            overall_avg_cu_prop_from_model,  # Scalar mean of CU from DynamicQwenForCausalLM
+            overall_combined_gating_signal_mean,  # NEW: Overall mean of continuous signal
+            ce_proportions_per_layer,  # List of scalar CE proportions per Dynamic layer (from router)
+            cu_proportions_per_layer,  # List of scalar CU proportions per Dynamic layer (from router)
+            overall_beta_ce,  # Scalar average of learnable beta_ce across layers
+            overall_beta_cu,  # Scalar average of learnable beta_cu across layers
+            overall_cu_detection_multiplier,  # Scalar average of non-learnable cu_detection_multiplier across layers
+            overall_ce_criterion_offset,  # Scalar average of learnable ce_criterion_offset across layers
         ) = self.forward(**batch)
         # --- END OF MODIFICATION ---
 
@@ -230,7 +246,6 @@ class DynamicQwenTrainer(pl.LightningModule):
             on_epoch=on_epoch,
         )
 
-
         GateLogger.log_gate_metrics(
             self,
             prefix,
@@ -242,7 +257,7 @@ class DynamicQwenTrainer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         # --- START OF MODIFICATION ---
-        optimizer = self.optimizers() # Get the single optimizer
+        optimizer = self.optimizers()  # Get the single optimizer
         optimizer.zero_grad()
 
         outputs = self._calculate_loss(batch)
@@ -251,7 +266,7 @@ class DynamicQwenTrainer(pl.LightningModule):
 
         optimizer.step()
 
-        scheduler = self.lr_schedulers() # Get the single scheduler
+        scheduler = self.lr_schedulers()  # Get the single scheduler
         scheduler.step()
         # --- END OF MODIFICATION ---
 
@@ -286,9 +301,13 @@ class DynamicQwenTrainer(pl.LightningModule):
             else:
                 log.debug(f"Parameter '{n}' is frozen.")
 
-        log.info(f"Identified {len(self.all_trainable_params)} total trainable parameters.")
+        log.info(
+            f"Identified {len(self.all_trainable_params)} total trainable parameters."
+        )
         total_trainable_summed = sum(p.numel() for p in self.all_trainable_params)
-        model_total_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        model_total_trainable = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
 
         if total_trainable_summed != model_total_trainable:
             log.warning(
@@ -299,14 +318,18 @@ class DynamicQwenTrainer(pl.LightningModule):
     def configure_optimizers(self):
         # --- START OF MODIFICATION ---
         if not self.all_trainable_params:
-            raise ValueError("No trainable parameters found for the model. Check freezing configuration and model setup.")
+            raise ValueError(
+                "No trainable parameters found for the model. Check freezing configuration and model setup."
+            )
 
         optimizer = torch.optim.AdamW(
             self.all_trainable_params,
-            lr=self.training_cfg.optimizer.base_lr, # Use base_lr for the single optimizer
+            lr=self.training_cfg.optimizer.base_lr,  # Use base_lr for the single optimizer
             weight_decay=self.training_cfg.optimizer.weight_decay,
         )
-        log.info(f"Single Optimizer created with LR: {self.training_cfg.optimizer.base_lr}")
+        log.info(
+            f"Single Optimizer created with LR: {self.training_cfg.optimizer.base_lr}"
+        )
 
         num_training_steps = self.training_cfg.max_iters
         warmup_ratio = getattr(self.training_cfg.optimizer, "warmup_ratio", 0.0)
@@ -319,9 +342,11 @@ class DynamicQwenTrainer(pl.LightningModule):
             num_training_steps=num_training_steps,
         )
 
-        return [optimizer], [{
-            "scheduler": lr_scheduler,
-            "interval": "step",
-            "frequency": 1,
-        }]
+        return [optimizer], [
+            {
+                "scheduler": lr_scheduler,
+                "interval": "step",
+                "frequency": 1,
+            }
+        ]
         # --- END OF MODIFICATION ---
