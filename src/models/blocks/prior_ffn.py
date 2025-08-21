@@ -1,13 +1,10 @@
-# src/models/prior_ffn.py
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class PriorFeedForward(nn.Module):
     """
-    A small feed-forward network for prior predictions in DynamicQwen layers.
+    A small feed-forward network for prior predictions in the VPR architecture.
     It takes an `intermediate_size_factor` to scale the hidden dimension
     for its internal intermediate size, allowing for more flexible bottlenecking.
     """
@@ -27,7 +24,6 @@ class PriorFeedForward(nn.Module):
         self.act = nn.SiLU()  # approximate SwiGLU gating
         self.dropout = nn.Dropout(getattr(config, "hidden_dropout", 0.0))
 
-        # init weights
         self._init_weights()
 
     def _init_weights(self):
@@ -36,7 +32,6 @@ class PriorFeedForward(nn.Module):
         """
         for p in self.parameters():
             if p.ndim > 1:
-                # Standard deviation of 0.02 is a common heuristic for transformers
                 nn.init.normal_(p, mean=0.0, std=0.02)
             else:
                 nn.init.zeros_(p)
@@ -44,12 +39,6 @@ class PriorFeedForward(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the PriorFeedForward network.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (batch, seq_len, hidden_size).
-
-        Returns:
-            torch.Tensor: Output tensor with shape (batch, seq_len, hidden_size).
         """
         # SwiGLU-like gating mechanism
         gate = self.act(self.w1(x)) * self.w3(x)

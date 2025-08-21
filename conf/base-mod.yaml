@@ -1,0 +1,15 @@
+defaults:
+  - base-qwen
+
+model:
+  model_cfg:
+    # --- Architecture Control ---
+    dynamic_architecture: "mod"  # Switch to the MoD architecture
+    capacity_gamma: 0.125        # Set token processing capacity to 12.5% as recommended by the MoD paper
+
+    # --- VPR Specific Params (Not used by MoD) ---
+    # These can be removed or set to null for clarity
+    beta_ce_init: null
+    beta_cu_init: null
+    cu_detection_multiplier_init: null
+    ce_criterion_offset_init: null

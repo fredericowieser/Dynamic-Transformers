@@ -1,13 +1,13 @@
 defaults:
   - _self_
-  - data: sft_mix_qwen
+  - data: sft_mix
 
 run:
-  name: "qwen2.5-0.5B-dynamic-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}-fm=${model.model_cfg.freeze_main_transformer_blocks}"
+  name: "qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
-  device: "auto"           # "cpu", "cuda", "mps", etc.
-  precision: "bf16-mixed"  # "32-true", "16-mixed", "bf16-mixed"
+  device: "auto"
+  precision: "bf16-mixed"
   run_final_evaluation: true
 
 data:
@@ -18,18 +18,21 @@ model:
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
-    capacity_gamma: 0.5                     # float in (0,1], percentile of tokens to compute (like MoD's k)
-    beta_ce_init: 0.1                        # SIGNIFICANTLY REDUCED for initial smoothness
-    beta_cu_init: 0.1                        # SIGNIFICANTLY REDUCED for initial smoothness
-    cu_detection_multiplier_init: 1.0        # Initial multiplier for CU norm (LEARNABLE)
-    ce_criterion_offset_init: 0.075          # Initial offset for CE criterion (LEARNABLE)
+    # --- Architecture Control ---
+    dynamic_architecture: "vpr"  # Can be "vpr" or "mod"
+    capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
-    token_wise_gating: True                  # Whether to apply gating per-token or per-batch
-    moving_average_window_size: 100          # Window size for D_st moving average in CU
+    # --- VPR Specific Params ---
+    beta_ce_init: 0.1
+    beta_cu_init: 0.1
+    cu_detection_multiplier_init: 1.0
+    ce_criterion_offset_init: 0.075
+    token_wise_gating: True
+    moving_average_window_size: 100
+    prior_ffn_intermediate_size_factor: 0.5
 
-    prior_ffn_intermediate_size_factor: 0.5  # Factor to multiply hidden_size by for prior FFN intermediate layer (e.g., 2.0 * hidden_size)
-
-    freeze_main_transformer_blocks: True    # If True, only VPR router and Prior FFN params are trained.
+    # --- General Training Params ---
+    freeze_main_transformer_blocks: True
 
 training:
   accumulate_grad_batches: 64
@@ -37,12 +40,9 @@ training:
   eval_interval: 1000
 
   optimizer:
-    # --- START OF MODIFICATION ---
-    base_lr: 1.0e-3       # Max LR for the *entire* model
-    # Removed prior_ffn_lr as there's now only one optimizer
-    # --- END OF MODIFICATION ---
+    base_lr: 1.0e-3 # Max LR for the scheduler
     weight_decay: 0.01
-    warmup_ratio: 0.01 # New: Warmup ratio for LR schedulers (e.g., 1% of max_iters)
+    warmup_ratio: 0.01  
 
   scheduler:
     factor: 0.1
