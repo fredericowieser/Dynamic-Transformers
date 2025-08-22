@@ -52,39 +52,97 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         return_dict: Optional[bool] = None,
         **kwargs,
     ) -> Union[Tuple, DynamicCausalLMOutput]:
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,  # Force return_dict to handle outputs consistently
-            **kwargs,
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        current_iter = kwargs.pop("current_iter", 0)
+        if inputs_embeds is None:
+            inputs_embeds = self.model.embed_tokens(input_ids)
 
-        hidden_states = outputs.last_hidden_state
+        hidden_states = inputs_embeds
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+        all_dynamic_layer_outputs = []
+
+
+        # Manually loop through our custom layers
+        for idx, decoder_layer in enumerate(self.model.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+            
+            layer_args = {
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "past_key_value": past_key_value,
+                "output_attentions": output_attentions,
+                "use_cache": use_cache,
+            }
+
+            if isinstance(decoder_layer, (DecisionLayer, DynamicLayer)):
+                # VPR architecture logic
+                if isinstance(decoder_layer, DecisionLayer):
+                    decision_output = decoder_layer(hidden_states, **layer_args)
+                    hidden_states = decision_output.hidden_states
+                    layer_outputs = (hidden_states, decision_output.present_key_value, decision_output.attention_weights)
+                else: # It's a DynamicLayer
+                    dynamic_output = decoder_layer(hidden_states, decision_output=decision_output, **layer_args)
+                    hidden_states = dynamic_output.hidden_states
+                    layer_outputs = (hidden_states, dynamic_output.present_key_value, dynamic_output.attention_weights)
+                    all_dynamic_layer_outputs.append(dynamic_output)
+            else:
+                # MoD or standard block logic
+                layer_outputs = decoder_layer(hidden_states, **layer_args)
+                hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[1],)
+            if output_attentions:
+                all_self_attns += (layer_outputs[2],)
+
+
+        hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
+        
+        # Aggregate metrics for VPR
+        prior_loss = avg_ce = avg_cu = cs_mean = beta_ce = beta_cu = cu_multi = ce_offset = None
+        ce_per_layer = cu_per_layer = gate_vectors = None
+        if self.config.dynamic_architecture == "vpr":
+            prior_loss = torch.stack([o.prior_loss for o in all_dynamic_layer_outputs]).mean()
+            gate_vectors = [o.gate_vector for o in all_dynamic_layer_outputs]
+            avg_ce = torch.stack([o.avg_ce_proportion for o in all_dynamic_layer_outputs]).mean()
+            avg_cu = torch.stack([o.avg_cu_proportion for o in all_dynamic_layer_outputs]).mean()
+            cs_mean = torch.stack([o.combined_gating_signal.mean() for o in all_dynamic_layer_outputs]).mean()
+            ce_per_layer = [o.avg_ce_proportion for o in all_dynamic_layer_outputs]
+            cu_per_layer = [o.avg_cu_proportion for o in all_dynamic_layer_outputs]
+            beta_ce = torch.tensor([o.router_beta_ce for o in all_dynamic_layer_outputs]).mean()
+            beta_cu = torch.tensor([o.router_beta_cu for o in all_dynamic_layer_outputs]).mean()
+            cu_multi = torch.tensor([o.router_cu_detection_multiplier for o in all_dynamic_layer_outputs]).mean()
+            ce_offset = torch.tensor([o.router_ce_criterion_offset for o in all_dynamic_layer_outputs]).mean()
 
         if not return_dict:
-            # This part is for compatibility if you ever need to return tuples
-            # It will need to be adapted based on which metrics are available
-            return (logits,) + outputs[1:]
+             return (logits,) + (next_decoder_cache, all_hidden_states, all_self_attns)
 
-        # Create a unified output object
-        # Populate with metrics if they exist in the model's output
         return DynamicCausalLMOutput(
             logits=logits,
-            past_key_values=outputs.past_key_values,
-            attentions=outputs.attentions,
-            prior_loss=getattr(outputs, "prior_loss", None),
-            gate_vectors_per_layer=getattr(outputs, "gate_vectors", None),
-            # ... populate all other metrics from the structured output ...
+            past_key_values=next_decoder_cache,
+            attentions=all_self_attns,
+            prior_loss=prior_loss,
+            gate_vectors_per_layer=gate_vectors,
+            avg_ce_proportion=avg_ce,
+            avg_cu_proportion=avg_cu,
+            combined_gating_signal_mean=cs_mean,
+            ce_proportions_per_layer=ce_per_layer,
+            cu_proportions_per_layer=cu_per_layer,
+            avg_beta_ce=beta_ce,
+            avg_beta_cu=beta_cu,
+            avg_cu_detection_multiplier=cu_multi,
+            avg_ce_criterion_offset=ce_offset
         )
 
     @classmethod
