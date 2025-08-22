@@ -22,22 +22,26 @@ class VPRRouter(nn.Module):
         self.moving_average_window_size = getattr(
             config, "moving_average_window_size", 100
         )
-
-        # Learnable parameters for the sigmoid activations and criteria.
         self.beta_ce = nn.Parameter(
             torch.tensor(config.beta_ce_init, dtype=torch.float32)
         )
         self.beta_cu = nn.Parameter(
             torch.tensor(config.beta_cu_init, dtype=torch.float32)
         )
-
-        # Make cu_detection_multiplier non-learnable
-        self.cu_detection_multiplier_val = config.cu_detection_multiplier_init
-
-        # Learnable offset for CE criterion
+        self.cu_detection_multiplier_val = nn.Parameter(
+            torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32),
+        )
         self.ce_criterion_offset = nn.Parameter(
             torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32)
         )
+        self.freeze_router = getattr(config, "freeze_vpr_router", False)
+        if self.freeze_router:
+            log.info(f"Freezing VPRRouter parameters for layer {self.layer_idx}")
+            self.beta_ce.requires_grad = False
+            self.beta_cu.requires_grad = False
+            self.cu_detection_multiplier_val.requires_grad = False
+            self.ce_criterion_offset.requires_grad = False
+
 
     @property
     def current_beta_ce(self):
