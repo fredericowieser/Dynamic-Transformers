@@ -41,7 +41,7 @@ training:
   eval_interval: 1000
 
   optimizer:
-    base_lr: 1.0e-3 # Max LR for the scheduler
+    base_lr: 1.0e-4 # Max LR for the scheduler
     weight_decay: 0.01
     warmup_ratio: 0.01  
 
