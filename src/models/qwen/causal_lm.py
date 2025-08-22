@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 from transformers import Qwen2ForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+
 
 from .config import DynamicQwenConfig
 from .modeling_outputs import DynamicCausalLMOutput
@@ -60,24 +62,33 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         current_iter = kwargs.pop("current_iter", 0)
 
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length = input_ids.shape
+        elif inputs_embeds is not None:
+            batch_size, seq_length, _ = inputs_embeds.shape
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
-
-        hidden_states = inputs_embeds
+        
+        past_key_values_length = 0
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
 
         # Prepare attention mask
         if attention_mask is not None and len(attention_mask.shape) == 2:
-            # 4d mask is passed through the layers
-            attention_mask = self._prepare_decoder_attention_mask(
-                attention_mask, input_ids.shape, inputs_embeds, 0
+            attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
             )
+        
+        hidden_states = inputs_embeds
 
-        # Initialize lists for outputs
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = () if use_cache else None
-        
-        # VPR specific metrics
         all_dynamic_layer_outputs = []
         decision_output = None # To hold the output from the last decision layer
 
