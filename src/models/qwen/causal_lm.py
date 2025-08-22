@@ -59,17 +59,28 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         current_iter = kwargs.pop("current_iter", 0)
+
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
+
+        # Prepare attention mask
+        if attention_mask is not None and len(attention_mask.shape) == 2:
+            # 4d mask is passed through the layers
+            attention_mask = self._prepare_decoder_attention_mask(
+                attention_mask, input_ids.shape, inputs_embeds, 0
+            )
+
+        # Initialize lists for outputs
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = () if use_cache else None
+        
+        # VPR specific metrics
         all_dynamic_layer_outputs = []
+        decision_output = None # To hold the output from the last decision layer
 
-
-        # Manually loop through our custom layers
         for idx, decoder_layer in enumerate(self.model.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -84,26 +95,30 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 "use_cache": use_cache,
             }
 
-            if isinstance(decoder_layer, (DecisionLayer, DynamicLayer)):
-                # VPR architecture logic
+            # --- START OF FIX: Custom layer handling ---
+            if self.config.dynamic_architecture == "vpr":
                 if isinstance(decoder_layer, DecisionLayer):
                     decision_output = decoder_layer(hidden_states, **layer_args)
                     hidden_states = decision_output.hidden_states
                     layer_outputs = (hidden_states, decision_output.present_key_value, decision_output.attention_weights)
-                else: # It's a DynamicLayer
+                elif isinstance(decoder_layer, DynamicLayer):
+                    if decision_output is None:
+                        raise ValueError("DynamicLayer must be preceded by a DecisionLayer.")
                     dynamic_output = decoder_layer(hidden_states, decision_output=decision_output, **layer_args)
                     hidden_states = dynamic_output.hidden_states
                     layer_outputs = (hidden_states, dynamic_output.present_key_value, dynamic_output.attention_weights)
                     all_dynamic_layer_outputs.append(dynamic_output)
-            else:
-                # MoD or standard block logic
+                else:
+                     raise TypeError(f"Unexpected layer type {type(decoder_layer)} in VPR architecture.")
+            else: # MoD or standard block logic
                 layer_outputs = decoder_layer(hidden_states, **layer_args)
                 hidden_states = layer_outputs[0]
+            # --- END OF FIX ---
 
             if use_cache:
                 next_decoder_cache += (layer_outputs[1],)
             if output_attentions:
-                all_self_attns += (layer_outputs[2],)
+                all_self_attns += (layer_outputs[2 if use_cache else 1],)
 
 
         hidden_states = self.model.norm(hidden_states)
