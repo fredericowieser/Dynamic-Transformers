@@ -3,6 +3,7 @@ import os
 
 import hydra
 import pytorch_lightning as pl
+import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
@@ -13,6 +14,7 @@ log = logging.getLogger(__name__)
 def main(cfg: DictConfig) -> None:
     log.info(f"--- Config ---\n{OmegaConf.to_yaml(cfg)}")
     pl.seed_everything(cfg.run.seed, workers=True)
+    torch.set_float32_matmul_precision('medium')
 
     # Instantiate DataModule
     log.info(f"Instantiating DataModule <{cfg.data._target_}>")
