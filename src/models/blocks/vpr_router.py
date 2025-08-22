@@ -22,27 +22,20 @@ class VPRRouter(nn.Module):
         self.moving_average_window_size = getattr(
             config, "moving_average_window_size", 100
         )
-        self.beta_ce = nn.Parameter(
-            torch.tensor(config.beta_ce_init, dtype=torch.float32)
-        )
-        self.beta_cu = nn.Parameter(
-            torch.tensor(config.beta_cu_init, dtype=torch.float32)
-        )
-        self.cu_detection_multiplier = nn.Parameter(
-            torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32),
-        )
-        self.ce_criterion_offset = nn.Parameter(
-            torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32)
-        )
-
         self.freeze_router = getattr(config, "freeze_vpr_router", False)
         if self.freeze_router:
-            log.info(f"Freezing VPRRouter parameters for layer {self.layer_idx}")
-            self.beta_ce.requires_grad = False
-            self.beta_cu.requires_grad = False
-            self.cu_detection_multiplier.requires_grad = False
-            self.ce_criterion_offset.requires_grad = False
-
+            log.info(f"Defining VPRRouter parameters for layer {self.layer_idx} as frozen buffers.")
+            self.register_buffer('beta_ce', torch.tensor(config.beta_ce_init, dtype=torch.float32))
+            self.register_buffer('beta_cu', torch.tensor(config.beta_cu_init, dtype=torch.float32))
+            self.register_buffer('cu_detection_multiplier', torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+            self.register_buffer('ce_criterion_offset', torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
+        else:
+            log.info(f"Defining VPRRouter parameters for layer {self.layer_idx} as learnable nn.Parameters.")
+            self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
+            self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
+            self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+            self.ce_criterion_offset = nn.Parameter(torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
+    
     @property
     def current_beta_ce(self):
         return self.beta_ce.item()
