@@ -4,7 +4,6 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2MLP,
     Qwen2RMSNorm,
-    Qwen2RotaryEmbedding,
 )
 
 class Qwen2Block(nn.Module):

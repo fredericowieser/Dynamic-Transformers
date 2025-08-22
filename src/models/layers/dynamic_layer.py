@@ -63,7 +63,10 @@ class DynamicLayer(nn.Module):
         )
 
         # 3. The block processes the full sequence, but non-selected tokens are zero vectors.
-        block_output, present_key_value, attn_weights = self.block(selected_hidden_states, **kwargs)
+        block_outputs = self.block(selected_hidden_states, **kwargs)
+        block_output = block_outputs[0]
+        present_key_value = block_outputs[1]
+        attn_weights = block_outputs[2] if len(block_outputs) > 2 else None
         
         # 4. Calculate the change (delta) introduced by the block relative to the original input.
         delta_output = block_output - hidden_states

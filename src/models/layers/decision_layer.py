@@ -42,9 +42,10 @@ class DecisionLayer(nn.Module):
 
         # --- Standard Qwen2 Decoder Layer Logic ---
         # The complex logic is now encapsulated in the reusable block
-        posterior_full_path_output, present_key_value, attn_weights = self.block(
-            hidden_states, **kwargs
-        )
+        block_outputs = self.block(hidden_states, **kwargs)
+        posterior_full_path_output = block_outputs[0]
+        present_key_value = block_outputs[1]
+        attn_weights = block_outputs[2] if len(block_outputs) > 2 else None
 
         # --- Prior FFN Logic ---
         prior_input_ln = self.prior_layernorm(vpr_signal_original_input)
