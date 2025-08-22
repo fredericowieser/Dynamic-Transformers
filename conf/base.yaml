@@ -23,8 +23,8 @@ model:
     capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
     # --- VPR Specific Params ---
-    beta_ce_init: 0.1
-    beta_cu_init: 0.1
+    beta_ce_init: 0.01
+    beta_cu_init: 0.01
     cu_detection_multiplier_init: 1.0
     ce_criterion_offset_init: 0.075
     token_wise_gating: True
@@ -32,7 +32,7 @@ model:
     prior_ffn_intermediate_size_factor: 0.5
 
     # --- General Training Params ---
-    freeze_main_transformer_blocks: True
+    freeze_main_transformer_blocks: False
 
 training:
   accumulate_grad_batches: 64
