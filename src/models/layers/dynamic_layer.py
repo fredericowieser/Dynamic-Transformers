@@ -1,3 +1,5 @@
+# Filename: dynamic_layer.py
+
 import torch
 import torch.nn as nn
 
@@ -8,10 +10,14 @@ from ..qwen.modeling_outputs import DecisionLayerOutput, DynamicLayerOutput
 
 class DynamicLayer(nn.Module):
     """
-    Implements the 'Dynamic Sub-Layer' for the VPR architecture.
+    Implements the 'Dynamic Layer' for the VPR architecture, mimicking the
+    Mixture-of-Depths (MoD) structural logic.
 
-    This layer uses a VPRRouter, informed by outputs from the preceding
-    DecisionLayer, to decide which tokens undergo full computation.
+    This layer uses a VPRRouter to select a top-k capacity of tokens.
+    Only these selected tokens are processed by the transformer block; all
+    others are passed through via a residual connection. The continuous
+    gating signal from the router is used to scale the block's update,
+    analogous to the router weights in a standard MoD layer.
     """
 
     def __init__(self, config, layer_idx: int):
@@ -45,22 +51,33 @@ class DynamicLayer(nn.Module):
             is_training=self.training,
         )
 
-        # Straight-Through Estimator (STE) for differentiable routing
-        gate_forward = gate_vec_binary.unsqueeze(-1)
-        gate_backward = combined_gating_signal.unsqueeze(-1)
-        gate_ste = gate_forward + (gate_backward - gate_forward).detach()
+        # --- REFACTORED MoD-style FORWARD PASS ---
 
-        # Perform the block's computation on all tokens
-        # The gating is applied to the *output* of the block
-        block_output, present_key_value, attn_weights = self.block(hidden_states, **kwargs)
+        # 1. Create a boolean mask for selected tokens.
+        is_selected = gate_vec_binary.unsqueeze(-1).bool()
+
+        # 2. To maintain a static graph, create a tensor of selected tokens
+        #    and zero out the rest before passing to the block.
+        selected_hidden_states = torch.where(
+            is_selected, hidden_states, torch.zeros_like(hidden_states)
+        )
+
+        # 3. The block processes the full sequence, but non-selected tokens are zero vectors.
+        block_output, present_key_value, attn_weights = self.block(selected_hidden_states, **kwargs)
         
-        # Calculate the change (delta) introduced by the block
+        # 4. Calculate the change (delta) introduced by the block relative to the original input.
         delta_output = block_output - hidden_states
 
-        # Apply the gate to the delta and add it back to the original input
-        # For tokens where gate_ste is 0, this adds nothing.
-        # For tokens where gate_ste is 1, it adds the scaled change.
-        final_hidden_states = hidden_states + (gate_ste * delta_output)
+        # 5. Scale the delta by the continuous VPR gating signal. This is analogous
+        #    to scaling by router_weights in the MoDLayer.
+        scaled_delta = delta_output * combined_gating_signal.unsqueeze(-1)
+
+        # 6. Apply the scaled update only to the tokens selected by the binary gate.
+        final_hidden_states = hidden_states + torch.where(
+            is_selected,
+            scaled_delta,
+            torch.zeros_like(scaled_delta),
+        )
 
         return DynamicLayerOutput(
             hidden_states=final_hidden_states,

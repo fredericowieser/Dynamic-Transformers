@@ -53,14 +53,24 @@ class MoDLayer(nn.Module):
 
         # The block processes the full sequence, but non-selected tokens are zero vectors
         block_output, *rest = self.block(selected_hidden_states, **kwargs)
+        
+        # --- CORRECTED UPDATE LOGIC ---
+        
+        # 1. Calculate the change (delta) introduced by the block.
+        #    For non-selected tokens, block_output is the result of processing zeros.
+        #    We only care about the delta for the selected tokens, which is the difference
+        #    between the block's output and the original hidden state.
+        block_delta = block_output - hidden_states
 
-        # For selected tokens, the output is the result of the block's computation.
-        # For non-selected tokens, the output is the original hidden_state (residual connection).
-        # We also scale the output of the processed tokens by their router weights as in the paper.
-        final_hidden_states = torch.where(
+        # 2. Scale *only the delta* by the router weights.
+        scaled_delta = block_delta * router_weights.unsqueeze(-1).to(block_delta.dtype)
+
+        # 3. Apply the scaled update to the original hidden_states for selected tokens.
+        #    Non-selected tokens get an update of zero, effectively passing them through.
+        final_hidden_states = hidden_states + torch.where(
             is_selected,
-            block_output * router_weights.unsqueeze(-1).to(block_output.dtype),
-            hidden_states,
+            scaled_delta,
+            torch.zeros_like(scaled_delta),
         )
 
         return (final_hidden_states,) + tuple(rest)
