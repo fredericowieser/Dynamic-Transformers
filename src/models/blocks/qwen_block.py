@@ -4,6 +4,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2MLP,
     Qwen2RMSNorm,
+    Qwen2RotaryEmbedding,
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -23,6 +24,12 @@ class Qwen2Block(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.mlp = Qwen2MLP(config)
+        if not hasattr(self.self_attn, "rotary_emb"):
+            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
+                self.config.hidden_size // self.config.num_attention_heads,
+                max_position_embeddings=self.config.max_position_embeddings,
+                base=self.config.rope_theta,
+            )
 
     def forward(
         self,
