@@ -6,7 +6,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2RMSNorm,
 )
 
-from ..qwen.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 class Qwen2Block(nn.Module):
     """
