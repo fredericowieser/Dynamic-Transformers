@@ -38,6 +38,16 @@ def main(cfg: DictConfig) -> None:
                 name=cfg.run.name,
             )
         )
+    
+    # Log the full Hydra config to WandB for reproducibility
+    for logger in loggers:
+        if isinstance(logger, WandbLogger):
+            # Convert the OmegaConf object to a standard Python dictionary
+            config_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+            # Log the configuration
+            logger.experiment.config.update(config_dict)
+            log.info("Logged Hydra config to Weights & Biases.")
+            break
 
     # Callbacks
     checkpoint_callback = pl.callbacks.ModelCheckpoint(

@@ -26,7 +26,7 @@ model:
     freeze_vpr_router: false
     beta_ce_init: 0.01
     beta_cu_init: 0.01
-    cu_detection_multiplier_init: 1.0
+    cu_detection_multiplier_init: 0.95
     ce_criterion_offset_init: 0.075
     token_wise_gating: True
     moving_average_window_size: 100
