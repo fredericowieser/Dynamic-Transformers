@@ -24,10 +24,9 @@ class Qwen2Block(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.mlp = Qwen2MLP(config)
-        if not hasattr(self.self_attn, "rotary_emb"):
+        if not hasattr(self.self_attn, "rotary_emb") or self.self_attn.rotary_emb is None:
             self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
-                self.config.hidden_size // self.config.num_attention_heads,
-                max_position_embeddings=self.config.max_position_embeddings,
+                dim=self.config.hidden_size // self.config.num_attention_heads,
                 base=self.config.rope_theta,
             )
 
