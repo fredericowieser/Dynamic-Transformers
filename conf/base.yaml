@@ -23,7 +23,7 @@ model:
     capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
     # --- VPR Specific Params ---
-    freeze_vpr_router: false
+    freeze_vpr_router: True
     beta_ce_init: 0.01
     beta_cu_init: 0.01
     cu_detection_multiplier_init: 0.95
