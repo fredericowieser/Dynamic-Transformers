@@ -18,6 +18,7 @@ class DynamicQwenConfig(Qwen2Config):
         self.capacity_gamma = kwargs.pop("capacity_gamma", 1.0)
 
         # --- VPR Specific Params ---
+        self.freeze_vpr_router = kwargs.pop("freeze_vpr_router", False)
         self.beta_ce_init = kwargs.pop("beta_ce_init", 1.0)
         self.beta_cu_init = kwargs.pop("beta_cu_init", 1.0)
         self.cu_detection_multiplier_init = kwargs.pop("cu_detection_multiplier_init", 1.0)
