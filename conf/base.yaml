@@ -14,7 +14,7 @@ data:
   name: ${hydra:runtime.choices.data}
 
 model:
-  _target_: src.trainers.d_qwen_trainer.DynamicQwenTrainer
+  _target_: src.trainers.qwen_trainer.DynamicQwenTrainer
   model_cfg:
     model_name: "Qwen/Qwen2.5-0.5B-Instruct"
 
