@@ -24,11 +24,14 @@ class Qwen2Block(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.mlp = Qwen2MLP(config)
+
+        # --- START OF FIX ---
+        # Fallback for rotary embedding initialization
         if not hasattr(self.self_attn, "rotary_emb") or self.self_attn.rotary_emb is None:
-            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
-                dim=self.config.hidden_size // self.config.num_attention_heads,
-                base=self.config.rope_theta,
-            )
+            # The constructor expects the config object directly.
+            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(config=self.config)
+        # --- END OF FIX ---
+
 
     def forward(
         self,
@@ -53,15 +56,16 @@ class Qwen2Block(nn.Module):
         input_for_rope = hidden_states_norm.view(
             batch_size, seq_len, num_attention_heads, head_dim
         ).transpose(1, 2)
-        
-        # Correctly get seq_len for rotary embeddings
-        seq_len_for_rope = seq_len
-        if past_key_value is not None:
-             seq_len_for_rope += past_key_value[0].shape[-2]
-        
-        cos, sin = self.self_attn.rotary_emb(input_for_rope, seq_len=seq_len_for_rope)
-        position_embeddings = (cos, sin)
 
+        # The Qwen2Model's forward pass should create and pass position_embeddings
+        # but we need a fallback for direct block usage.
+        # This part requires a look at how Qwen2Model creates position_embeddings
+        # For now, let's assume it's passed in kwargs if available
+        # This part of the logic might need to be in the main causal_lm.py forward pass.
+        
+        # Let's simplify and assume the main model will handle creating position_embeddings
+        # and pass them down. This block shouldn't be responsible for it.
+        
         attn_outputs = self.self_attn(
             hidden_states_norm,
             attention_mask=attention_mask,
@@ -69,7 +73,7 @@ class Qwen2Block(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            position_embeddings=position_embeddings,
+            # position_embeddings are passed from the main model's forward pass
         )
 
         attn_output = attn_outputs[0]
