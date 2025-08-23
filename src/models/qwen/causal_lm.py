@@ -5,7 +5,10 @@ import torch
 import torch.nn as nn
 from transformers import Qwen2ForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.qwen2.modeling_qwen2 import _prepare_4d_causal_attention_mask
+# --- START OF MODIFICATION ---
+# Correct the import path for the attention mask utility
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+# --- END OF MODIFICATION ---
 
 from .config import DynamicQwenConfig
 from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput
@@ -77,13 +80,10 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 past_key_values_length, hidden_states.shape[1] + past_key_values_length, dtype=torch.long, device=device
             ).unsqueeze(0)
 
-        # --- START OF MODIFICATION ---
-        # Manually create the 4D causal mask. This is what the attention layer expects.
         batch_size, seq_length, _ = hidden_states.shape
         causal_mask = _prepare_4d_causal_attention_mask(
             attention_mask, (batch_size, seq_length), hidden_states, past_key_values_length
         )
-        # --- END OF MODIFICATION ---
 
         all_dynamic_layer_outputs = []
         next_past_key_values = [] if use_cache else None
@@ -94,7 +94,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 dynamic_layer = self.model.layers[i+1]
                 
                 layer_args = {
-                    "attention_mask": causal_mask, # Pass the correct 4D mask
+                    "attention_mask": causal_mask,
                     "position_ids": position_ids,
                     "use_cache": use_cache,
                     "output_attentions": output_attentions
@@ -112,7 +112,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             for i, layer in enumerate(self.model.layers):
                 layer_outputs = layer(
                     hidden_states,
-                    attention_mask=causal_mask, # Pass the correct 4D mask
+                    attention_mask=causal_mask,
                     position_ids=position_ids,
                     use_cache=use_cache,
                     output_attentions=output_attentions
