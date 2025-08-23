@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
+import logging
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2MLP,
     Qwen2RMSNorm,
+    Qwen2RotaryEmbedding,
 )
 
+log = logging.getLogger(__name__)
 
 class Qwen2Block(nn.Module):
     """
@@ -15,13 +18,29 @@ class Qwen2Block(nn.Module):
     """
     def __init__(self, config, layer_idx: int):
         super().__init__()
+        self.config = config
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.self_attn = Qwen2Attention(config, layer_idx=layer_idx)
         self.post_attention_layernorm = Qwen2RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.mlp = Qwen2MLP(config)
-        self.config = config # Store config for easy access
+        
+        # --- START OF MODIFICATION: Add fallback for rotary_emb ---
+        # This mirrors the safety check from your original code. It ensures that
+        # even if Qwen2Attention fails to initialize rotary_emb for some reason,
+        # our block will create it, preventing crashes.
+        if not hasattr(self.self_attn, "rotary_emb") or self.self_attn.rotary_emb is None:
+            log.warning(
+                f"Layer {layer_idx}: Qwen2Attention unexpectedly missing rotary_emb. "
+                "Initializing it manually as a fallback."
+            )
+            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
+                self.config.hidden_size // self.config.num_attention_heads,
+                max_position_embeddings=self.config.max_position_embeddings,
+                base=self.config.rope_theta,
+            )
+        # --- END OF MODIFICATION ---
 
     def forward(
         self,
@@ -32,29 +51,18 @@ class Qwen2Block(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, ...]:
-        """
-        Forward pass for a standard Qwen2 transformer block.
-        """
+        
         residual = hidden_states
         hidden_states_norm = self.input_layernorm(hidden_states)
 
-        # --- START OF MODIFICATION: Create Rotary Embeddings ---
-        # This logic is critical for Qwen2Attention and was missing.
-        if not hasattr(self.self_attn, "rotary_emb"):
-             raise AttributeError("The Qwen2Attention layer is missing the `rotary_emb` attribute.")
-
-        # Determine the sequence length to use for rotary embeddings
-        # This handles cases where we process a subset of tokens (like in MoD/Dynamic layers)
-        # but need the full context length for position calculations.
+        # The rotary embedding is now guaranteed to exist.
         kv_seq_len = hidden_states_norm.shape[1]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         
-        # The rotary embedding module might need to be re-initialized if the sequence length exceeds its cache
         cos, sin = self.self_attn.rotary_emb(hidden_states_norm, seq_len=kv_seq_len)
         position_embeddings = (cos, sin)
-        # --- END OF MODIFICATION ---
-
+        
         # Self Attention
         attn_outputs = self.self_attn(
             hidden_states_norm,
@@ -63,7 +71,7 @@ class Qwen2Block(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            position_embeddings=position_embeddings, # Pass the created embeddings
+            position_embeddings=position_embeddings,
         )
         attn_output = attn_outputs[0]
         hidden_states = residual + attn_output
