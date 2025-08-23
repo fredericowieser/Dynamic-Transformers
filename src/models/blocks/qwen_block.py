@@ -26,21 +26,18 @@ class Qwen2Block(nn.Module):
         )
         self.mlp = Qwen2MLP(config)
         
-        # --- START OF MODIFICATION: Add fallback for rotary_emb ---
-        # This mirrors the safety check from your original code. It ensures that
-        # even if Qwen2Attention fails to initialize rotary_emb for some reason,
-        # our block will create it, preventing crashes.
         if not hasattr(self.self_attn, "rotary_emb") or self.self_attn.rotary_emb is None:
             log.warning(
                 f"Layer {layer_idx}: Qwen2Attention unexpectedly missing rotary_emb. "
                 "Initializing it manually as a fallback."
             )
+            # --- START OF MODIFICATION ---
+            # Removed the unexpected 'max_position_embeddings' keyword argument.
             self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
-                self.config.hidden_size // self.config.num_attention_heads,
-                max_position_embeddings=self.config.max_position_embeddings,
+                dim=self.config.hidden_size // self.config.num_attention_heads,
                 base=self.config.rope_theta,
             )
-        # --- END OF MODIFICATION ---
+            # --- END OF MODIFICATION ---
 
     def forward(
         self,
@@ -55,7 +52,6 @@ class Qwen2Block(nn.Module):
         residual = hidden_states
         hidden_states_norm = self.input_layernorm(hidden_states)
 
-        # The rotary embedding is now guaranteed to exist.
         kv_seq_len = hidden_states_norm.shape[1]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
@@ -63,7 +59,6 @@ class Qwen2Block(nn.Module):
         cos, sin = self.self_attn.rotary_emb(hidden_states_norm, seq_len=kv_seq_len)
         position_embeddings = (cos, sin)
         
-        # Self Attention
         attn_outputs = self.self_attn(
             hidden_states_norm,
             attention_mask=attention_mask,
@@ -76,7 +71,6 @@ class Qwen2Block(nn.Module):
         attn_output = attn_outputs[0]
         hidden_states = residual + attn_output
 
-        # Fully Connected
         residual = hidden_states
         hidden_states_norm = self.post_attention_layernorm(hidden_states)
         mlp_output = self.mlp(hidden_states_norm)
