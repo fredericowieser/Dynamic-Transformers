@@ -32,11 +32,8 @@ class Qwen2Block(nn.Module):
                 "Initializing it manually as a fallback."
             )
             # --- START OF MODIFICATION ---
-            # Removed the unexpected 'max_position_embeddings' keyword argument.
-            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(
-                dim=self.config.hidden_size // self.config.num_attention_heads,
-                base=self.config.rope_theta,
-            )
+            # Corrected the constructor call to pass the config object directly.
+            self.self_attn.rotary_emb = Qwen2RotaryEmbedding(config=self.config)
             # --- END OF MODIFICATION ---
 
     def forward(
@@ -56,7 +53,8 @@ class Qwen2Block(nn.Module):
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         
-        cos, sin = self.self_attn.rotary_emb(hidden_states_norm, seq_len=kv_seq_len)
+        # The rotary_emb forward pass in the modular implementation expects `position_ids`
+        cos, sin = self.self_attn.rotary_emb(hidden_states_norm, position_ids=position_ids)
         position_embeddings = (cos, sin)
         
         attn_outputs = self.self_attn(
