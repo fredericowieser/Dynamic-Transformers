@@ -15,17 +15,12 @@ log = logging.getLogger(__name__)
 class DecisionLayer(nn.Module):
     """
     Implements the 'Decision Sub-Layer' for the VPR architecture.
-
-    This layer wraps a standard Qwen2 transformer block and adds a
-    PriorFeedForward network to generate predictive signals for the
-    VPR router in the subsequent Dynamic Layer.
     """
 
     def __init__(self, config, layer_idx: int):
         super().__init__()
         self.block = Qwen2Block(config, layer_idx=layer_idx)
 
-        # New Prior FFN components
         prior_ffn_factor = getattr(config, "prior_ffn_intermediate_size_factor", 2.0)
         self.prior_ffn = PriorFeedForward(
             config, intermediate_size_factor=prior_ffn_factor
@@ -40,19 +35,20 @@ class DecisionLayer(nn.Module):
         
         vpr_signal_original_input = hidden_states
 
-        # --- Standard Qwen2 Decoder Layer Logic ---
-        # The complex logic is now encapsulated in the reusable block
+        # --- START OF MODIFICATION: Simplified block call ---
+        # All necessary arguments like position_ids are now passed via **kwargs
+        # The block itself now handles the rotary embedding creation.
         block_outputs = self.block(hidden_states, **kwargs)
         posterior_full_path_output = block_outputs[0]
-        present_key_value = block_outputs[1]
+        present_key_value = block_outputs[1] if len(block_outputs) > 1 else None
         attn_weights = block_outputs[2] if len(block_outputs) > 2 else None
+        # --- END OF MODIFICATION ---
 
-        # --- Prior FFN Logic ---
+        # Prior FFN Logic
         prior_input_ln = self.prior_layernorm(vpr_signal_original_input)
         prior_ffn_output = self.prior_ffn(prior_input_ln)
         vpr_signal_prior_hidden_states = vpr_signal_original_input + prior_ffn_output
 
-        # Calculate prior loss for monitoring
         prior_loss = F.mse_loss(
             vpr_signal_prior_hidden_states, posterior_full_path_output.detach()
         )
