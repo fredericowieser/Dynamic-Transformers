@@ -72,7 +72,6 @@ def main(cfg: DictConfig) -> None:
         logger=loggers,
         callbacks=[checkpoint_callback, lr_monitor],
         precision=cfg.run.precision,
-        gradient_clip_val=cfg.training.gradient_clip_val,
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
     )
 
