@@ -131,6 +131,13 @@ class DynamicQwenTrainer(pl.LightningModule):
         total_loss = outputs[0]
         
         self.manual_backward(total_loss)
+        
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=self.training_cfg.gradient_clip_val,
+            gradient_clip_algorithm="norm" # Or "value"
+        )
+        
         optimizer.step()
         
         scheduler = self.lr_schedulers()
