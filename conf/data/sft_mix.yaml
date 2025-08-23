@@ -1,54 +1,43 @@
-# This file defines a master mix for Supervised Fine-Tuning (SFT).
-# The goal is to create a versatile, robust, and safe instruction-following model.
-# It combines datasets specializing in reasoning, coding, general instructions, and safety.
-#
-# To use this mix, run:
-# python main.py data=sft_mix
-
-_target_: src.data.mixed_datamodule.MixedDataModule  # Updated: New path to MixedDataModule
+_target_: src.data.mixed_datamodule.MixedData  # Updated: New path to MixedDataModule
 _recursive_: false   # <- DO NOT instantiate children automatically
 _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
-# --- Overall parameters for the SFT mix ---
 batch_size: 8 # The final, combined batch size that must fit on the GPU.
 tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
 block_size: 1024 # Use a larger block size for complex reasoning and code.
 validation_split_percentage: 2 # A small percentage is sufficient for these large datasets.
 
-# --- List of dataset configurations to mix ---
-# Each dataset is chosen to contribute a specific skill. The subset ratios
-# are balanced to create a well-rounded final training set.
 dataset_configs:
   
-  # 1. For High-Quality General Instructions (The Foundation)
+  # High-Quality General Instructions (The Foundation)
   - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "HuggingFaceH4/ultrafeedback_binarized"
     text_column: "chosen" # Contains the highest-rated response.
     # This dataset is huge and diverse. 20% is a very large, high-quality sample.
     train_subset_ratio: 0.20
 
-  # 2. For Mathematical and Logical Reasoning
+  # Mathematical and Logical Reasoning
   - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "meta-math/MetaMathQA"
     text_column: "messages" # Formatted as a chat.
     # MetaMath is smaller but crucial for reasoning. We use a larger portion.
     train_subset_ratio: 0.50
 
-  # 3. For Coding and Programming Instructions
+  # Coding and Programming Instructions
   - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "WizardLMTeam/WizardLM_evol_instruct_70k"
     text_column: "conversations" # High-quality, complex code instructions.
     # Use the entire dataset to maximize coding ability.
     train_subset_ratio: 1.0
 
-  # 4. For High-Quality Human-Generated Dialogue
+  # High-Quality Human-Generated Dialogue
   - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "HuggingFaceH4/no_robots"
     text_column: "prompt_response" # 10k high-quality human demonstrations.
     # Use all of it to improve the model's natural style.
     train_subset_ratio: 1.0
 
-  # 5. For Safety and Helpfulness (Alignment)
+  # Safety and Helpfulness (Alignment)
   - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
     dataset_name: "Anthropic/hh-rlhf"
     text_column: "chosen" # The "helpful and harmless" response.
