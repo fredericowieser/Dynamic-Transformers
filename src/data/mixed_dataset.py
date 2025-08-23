@@ -22,6 +22,7 @@ class MixedDataset:
         block_size: int,
         batch_size: int, # Kept for Hydra instantiation compatibility, but not used here
         validation_split_percentage: int = 5,
+        **kwargs,
     ):
         self.dataset_configs = dataset_configs
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -64,4 +65,3 @@ class MixedDataset:
 
         log.info(f"Total mixed training samples: {len(self.train_dataset):,}")
         log.info(f"Total mixed validation samples: {len(self.val_dataset):,}")
-
