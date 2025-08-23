@@ -3,7 +3,7 @@ defaults:
   - data: sft_mix
 
 run:
-  name: "qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
+  name: "qwen2.5-0.5B-${model.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
@@ -14,10 +14,10 @@ data:
   name: ${hydra:runtime.choices.data}
 
 model:
-  _target_: src.trainers.qwen_trainer.DynamicQwenTrainer
-  model_cfg:
-    model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
+  pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B-Instruct"
 
+  model_cfg:
     # --- Architecture Control ---
     dynamic_architecture: "vpr"  # Can be "vpr" or "mod"
     capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
@@ -37,22 +37,16 @@ model:
 
 training:
   accumulate_grad_batches: 64
-  epochs: 2
-  gradient_clip_val: 1.0
+  num_epochs: 1
   eval_interval: 1000
+  gradient_clip_val: 1.0
 
   optimizer:
     base_lr: 1.0e-5 # Max LR for the scheduler
     weight_decay: 0.01
     warmup_ratio: 0.01  
 
-  scheduler:
-    factor: 0.1
-    patience: 10
-
 logging:
-  tensorboard:
-    enabled: true
   wandb:
     enabled: true
     project: "Dynamic-Transformers"
