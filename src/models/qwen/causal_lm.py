@@ -176,4 +176,4 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         custom_model._apply_main_block_freezing()
 
         del base_hf_model
-        return custom_modeljjjjjjjjjjj
+        return custom_model
