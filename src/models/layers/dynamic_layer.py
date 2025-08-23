@@ -1,5 +1,3 @@
-# Filename: dynamic_layer.py
-
 import torch
 import torch.nn as nn
 
@@ -10,14 +8,8 @@ from ..qwen.modeling_outputs import DecisionLayerOutput, DynamicLayerOutput
 
 class DynamicLayer(nn.Module):
     """
-    Implements the 'Dynamic Layer' for the VPR architecture, mimicking the
-    Mixture-of-Depths (MoD) structural logic.
-
-    This layer uses a VPRRouter to select a top-k capacity of tokens.
-    Only these selected tokens are processed by the transformer block; all
-    others are passed through via a residual connection. The continuous
-    gating signal from the router is used to scale the block's update,
-    analogous to the router weights in a standard MoD layer.
+    Implements the 'Dynamic Sub-Layer' for the VPR architecture using a
+    numerically stable, batch-iterative approach.
     """
 
     def __init__(self, config, layer_idx: int):
@@ -30,19 +22,20 @@ class DynamicLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         decision_output: DecisionLayerOutput,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        use_cache: bool = False,
         **kwargs,
     ) -> DynamicLayerOutput:
         
+        batch_size, seq_len, _ = hidden_states.shape
+        
         (
             gate_vec_binary,
-            avg_ce_proportion,
-            avg_cu_proportion,
-            _, _,
+            avg_ce, avg_cu, _, _,
             combined_gating_signal,
-            router_beta_ce,
-            router_beta_cu,
-            router_cu_multiplier,
-            router_ce_offset,
+            beta_ce, beta_cu,
+            cu_multiplier, ce_offset,
         ) = self.vpr_router(
             original_input_to_block=decision_output.vpr_signal_original_input,
             posterior_full_path_output=decision_output.vpr_signal_posterior_output,
@@ -50,49 +43,67 @@ class DynamicLayer(nn.Module):
             capacity_gamma=self.config.capacity_gamma,
             is_training=self.training,
         )
-
-        # --- REFACTORED MoD-style FORWARD PASS ---
-
-        # 1. Create a boolean mask for selected tokens.
-        is_selected = gate_vec_binary.unsqueeze(-1).bool()
-
-        # 2. To maintain a static graph, create a tensor of selected tokens
-        #    and zero out the rest before passing to the block.
-        selected_hidden_states = torch.where(
-            is_selected, hidden_states, torch.zeros_like(hidden_states)
-        )
-
-        # 3. The block processes the full sequence, but non-selected tokens are zero vectors.
-        block_outputs = self.block(selected_hidden_states, **kwargs)
-        block_output = block_outputs[0]
-        present_key_value = block_outputs[1]
-        attn_weights = block_outputs[2] if len(block_outputs) > 2 else None
         
-        # 4. Calculate the change (delta) introduced by the block relative to the original input.
-        delta_output = block_output - hidden_states
+        # Initialize the output as a copy for the residual path
+        final_hidden_states = hidden_states.clone()
+        present_key_value = None
 
-        # 5. Scale the delta by the continuous VPR gating signal. This is analogous
-        #    to scaling by router_weights in the MoDLayer.
-        scaled_delta = delta_output * combined_gating_signal.unsqueeze(-1)
+        # Process each sequence in the batch individually for stability
+        for i in range(batch_size):
+            selected_indices = gate_vec_binary[i].nonzero().squeeze(-1)
 
-        # 6. Apply the scaled update only to the tokens selected by the binary gate.
-        final_hidden_states = hidden_states + torch.where(
-            is_selected,
-            scaled_delta,
-            torch.zeros_like(scaled_delta),
-        )
+            if selected_indices.numel() == 0:
+                continue
+
+            # Gather inputs for the selected tokens
+            selected_tokens = hidden_states[i, selected_indices]
+            selected_pos_ids = position_ids[i, selected_indices].unsqueeze(0) if position_ids is not None else None
+            
+            current_attention_mask = None
+            if attention_mask is not None:
+                if attention_mask.dim() == 4:
+                    selected_attn_mask = attention_mask[i, :, selected_indices][:, :, selected_indices]
+                    current_attention_mask = selected_attn_mask.unsqueeze(0)
+                else:
+                    current_attention_mask = attention_mask[i, selected_indices].unsqueeze(0)
+
+            # Compute the block output only for the selected tokens
+            block_outputs = self.block(
+                hidden_states=selected_tokens.unsqueeze(0),
+                attention_mask=current_attention_mask,
+                position_ids=selected_pos_ids,
+                use_cache=use_cache,
+                **kwargs,
+            )
+            processed_tokens = block_outputs[0].squeeze(0)
+
+            # The "delta" is the change introduced by the block
+            delta_output = processed_tokens - selected_tokens
+            
+            # Straight-Through-Estimator logic applied only to the selected tokens
+            # For gradients, use the continuous signal; for forward pass, use binary gate (implicitly 1 here)
+            continuous_signal_selected = combined_gating_signal[i, selected_indices].unsqueeze(-1)
+            
+            # Re-scale delta by the continuous signal for backpropagation
+            scaled_delta = delta_output * continuous_signal_selected
+            
+            # Apply the change back to the original input positions
+            final_hidden_states[i, selected_indices] = selected_tokens + scaled_delta
+
+            if use_cache and len(block_outputs) > 1:
+                present_key_value = block_outputs[1]
 
         return DynamicLayerOutput(
             hidden_states=final_hidden_states,
             present_key_value=present_key_value,
-            attention_weights=attn_weights,
-            avg_ce_proportion=avg_ce_proportion,
-            avg_cu_proportion=avg_cu_proportion,
+            attention_weights=None,  # Not currently captured in this implementation
+            avg_ce_proportion=avg_ce,
+            avg_cu_proportion=avg_cu,
             combined_gating_signal=combined_gating_signal,
             gate_vector=gate_vec_binary,
             prior_loss=decision_output.prior_loss,
-            router_beta_ce=router_beta_ce,
-            router_beta_cu=router_beta_cu,
-            router_cu_detection_multiplier=router_cu_multiplier,
-            router_ce_criterion_offset=router_ce_offset,
+            router_beta_ce=beta_ce,
+            router_beta_cu=beta_cu,
+            router_cu_detection_multiplier=cu_multiplier,
+            router_ce_criterion_offset=ce_offset,
         )
