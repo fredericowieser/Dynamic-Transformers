@@ -28,12 +28,11 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
     def _apply_main_block_freezing(self):
         """Applies or removes gradient requirements for main transformer blocks."""
-        # This logic needs to be adapted to the new layer structure
         for layer in self.model.layers:
             block_to_freeze = None
-            if hasattr(layer, 'block'): # For DecisionLayer, DynamicLayer, MoDLayer
+            if hasattr(layer, 'block'):
                 block_to_freeze = layer.block
-            elif isinstance(layer, Qwen2Block): # For standard layers in MoD
+            elif isinstance(layer, Qwen2Block):
                 block_to_freeze = layer
 
             if block_to_freeze:
@@ -68,7 +67,12 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
         hidden_states = inputs_embeds
         
-        # Create position_ids if they are not provided
+        # --- START OF MODIFICATION ---
+        # Ensure attention_mask has the correct dtype to match hidden_states
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(hidden_states.dtype)
+        # --- END OF MODIFICATION ---
+
         if position_ids is None:
             past_key_values_length = 0
             if past_key_values is not None:
@@ -79,11 +83,9 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 past_key_values_length, hidden_states.shape[1] + past_key_values_length, dtype=torch.long, device=device
             ).unsqueeze(0)
 
-        # Layer loop
         all_dynamic_layer_outputs = []
         next_past_key_values = [] if use_cache else None
 
-        # VPR architecture alternates between Decision and Dynamic layers
         if self.config.dynamic_architecture == "vpr":
             for i in range(0, len(self.model.layers), 2):
                 decision_layer = self.model.layers[i]
@@ -104,7 +106,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 if use_cache:
                     next_past_key_values.extend([decision_output.present_key_value, dynamic_output.present_key_value])
 
-        # MoD architecture alternates between standard and MoD layers
         elif self.config.dynamic_architecture == "mod":
             for i, layer in enumerate(self.model.layers):
                 layer_outputs = layer(
@@ -124,9 +125,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         if not return_dict:
             return (logits,)
 
-        # Aggregate metrics for the trainer
-        # This part should be adapted to handle both VPR and MoD outputs gracefully
-        # For now, focusing on fixing the VPR path
         if self.config.dynamic_architecture == "vpr":
              return DynamicCausalLMOutput(
                 logits=logits,
@@ -150,30 +148,16 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        # Pop custom config from kwargs
         model_cfg = kwargs.pop("model_cfg", {})
-        
-        # Create the correct config object
         config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path, **model_cfg)
-
-        # Load the base HF model with the potentially modified config
         base_hf_model = Qwen2ForCausalLM.from_pretrained(
             pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
-
-        # Create an instance of our custom model
         custom_model = cls(config)
-
-        # Transfer core components
         custom_model.model.embed_tokens = base_hf_model.model.embed_tokens
         custom_model.model.norm = base_hf_model.model.norm
         custom_model.lm_head = base_hf_model.lm_head
-
-        # Let the utility function handle layer patching
         patch_and_populate_layers(custom_model, config, base_hf_model.model.layers)
-
-        # Apply freezing configuration
         custom_model._apply_main_block_freezing()
-
         del base_hf_model
         return custom_model
