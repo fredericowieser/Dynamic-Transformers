@@ -41,11 +41,10 @@ class MixedDataset:
         all_train_datasets, all_val_datasets = [], []
 
         for cfg in self.dataset_configs:
-            # We pass the shared tokenizer to each individual dataset handler
             single_dataset_handler = HuggingFaceDataset(
                 tokenizer=self.tokenizer,
-                dataset_name=cfg.dataset_name,
-                text_column=cfg.text_column,
+                dataset_name=cfg["dataset_name"],
+                text_column=cfg["text_column"],
                 block_size=self.block_size,
                 dataset_config=cfg.get("dataset_config"),
                 validation_split_percentage=self.validation_split_percentage,
