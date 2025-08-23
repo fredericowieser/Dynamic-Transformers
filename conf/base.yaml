@@ -7,7 +7,7 @@ run:
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
-  precision: "bf16-mixed"
+  precision: "bf16"
   run_final_evaluation: true
 
 data:
