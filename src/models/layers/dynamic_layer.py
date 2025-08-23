@@ -85,7 +85,7 @@ class DynamicLayer(nn.Module):
             continuous_signal_selected = combined_gating_signal[i, selected_indices].unsqueeze(-1)
             
             # Re-scale delta by the continuous signal for backpropagation
-            scaled_delta = delta_output.detach() * continuous_signal_selected
+            scaled_delta = delta_output.detach() * continuous_signal_selected + delta_output - delta_output.detach()
             
             # Apply the change back to the original input positions
             final_hidden_states[i, selected_indices] = selected_tokens + scaled_delta
