@@ -1,4 +1,4 @@
-_target_: src.data.mixed_datamodule.MixedData  # Updated: New path to MixedDataModule
+_target_: src.data.mixed_datamodule.MixedDataset
 _recursive_: false   # <- DO NOT instantiate children automatically
 _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
