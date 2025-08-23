@@ -37,11 +37,12 @@ model:
 
 training:
   accumulate_grad_batches: 64
-  max_iters: 100000
+  epochs: 2
+  gradient_clip_val: 1.0
   eval_interval: 1000
 
   optimizer:
-    base_lr: 1.0e-4 # Max LR for the scheduler
+    base_lr: 1.0e-5 # Max LR for the scheduler
     weight_decay: 0.01
     warmup_ratio: 0.01  
 

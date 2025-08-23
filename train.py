@@ -65,13 +65,15 @@ def main(cfg: DictConfig) -> None:
         default_root_dir=cfg.run.output_dir,
         accelerator=cfg.run.device,
         devices="auto",
-        max_steps=cfg.training.max_iters,
+        max_epochs=cfg.training.epochs,
         val_check_interval=cfg.training.eval_interval,
         check_val_every_n_epoch=None,
         log_every_n_steps=10,
         logger=loggers,
         callbacks=[checkpoint_callback, lr_monitor],
         precision=cfg.run.precision,
+        gradient_clip_val=cfg.training.gradient_clip_val,
+        accumulate_grad_batches=cfg.training.accumulate_grad_batches,
     )
 
     # Train
