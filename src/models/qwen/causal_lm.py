@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from transformers import Qwen2ForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.models.qwen2.modeling_qwen2 import _prepare_4d_causal_attention_mask
 
 from .config import DynamicQwenConfig
 from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput
@@ -27,7 +28,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         )
 
     def _apply_main_block_freezing(self):
-        """Applies or removes gradient requirements for main transformer blocks."""
         for layer in self.model.layers:
             block_to_freeze = None
             if hasattr(layer, 'block'):
@@ -67,21 +67,23 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
         hidden_states = inputs_embeds
         
-        # --- START OF MODIFICATION ---
-        # Ensure attention_mask has the correct dtype to match hidden_states
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(hidden_states.dtype)
-        # --- END OF MODIFICATION ---
+        past_key_values_length = 0
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
 
         if position_ids is None:
-            past_key_values_length = 0
-            if past_key_values is not None:
-                past_key_values_length = past_key_values[0][0].shape[2]
-            
             device = input_ids.device if input_ids is not None else inputs_embeds.device
             position_ids = torch.arange(
                 past_key_values_length, hidden_states.shape[1] + past_key_values_length, dtype=torch.long, device=device
             ).unsqueeze(0)
+
+        # --- START OF MODIFICATION ---
+        # Manually create the 4D causal mask. This is what the attention layer expects.
+        batch_size, seq_length, _ = hidden_states.shape
+        causal_mask = _prepare_4d_causal_attention_mask(
+            attention_mask, (batch_size, seq_length), hidden_states, past_key_values_length
+        )
+        # --- END OF MODIFICATION ---
 
         all_dynamic_layer_outputs = []
         next_past_key_values = [] if use_cache else None
@@ -92,7 +94,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 dynamic_layer = self.model.layers[i+1]
                 
                 layer_args = {
-                    "attention_mask": attention_mask,
+                    "attention_mask": causal_mask, # Pass the correct 4D mask
                     "position_ids": position_ids,
                     "use_cache": use_cache,
                     "output_attentions": output_attentions
@@ -110,7 +112,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             for i, layer in enumerate(self.model.layers):
                 layer_outputs = layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=causal_mask, # Pass the correct 4D mask
                     position_ids=position_ids,
                     use_cache=use_cache,
                     output_attentions=output_attentions
