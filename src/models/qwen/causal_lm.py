@@ -5,10 +5,7 @@ import torch
 import torch.nn as nn
 from transformers import Qwen2ForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
-# --- START OF MODIFICATION ---
-# Correct the import path for the attention mask utility
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
-# --- END OF MODIFICATION ---
 
 from .config import DynamicQwenConfig
 from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput
@@ -69,6 +66,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             inputs_embeds = self.model.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
+        batch_size, seq_length, _ = hidden_states.shape
         
         past_key_values_length = 0
         if past_key_values is not None:
@@ -77,10 +75,15 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
             position_ids = torch.arange(
-                past_key_values_length, hidden_states.shape[1] + past_key_values_length, dtype=torch.long, device=device
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
             ).unsqueeze(0)
+        
+        # --- START OF MODIFICATION ---
+        # Ensure position_ids are expanded to match the batch size
+        if position_ids.shape[0] != batch_size:
+            position_ids = position_ids.expand(batch_size, -1)
+        # --- END OF MODIFICATION ---
 
-        batch_size, seq_length, _ = hidden_states.shape
         causal_mask = _prepare_4d_causal_attention_mask(
             attention_mask, (batch_size, seq_length), hidden_states, past_key_values_length
         )
