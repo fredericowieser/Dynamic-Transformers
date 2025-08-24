@@ -49,7 +49,7 @@ def main(cfg: DictConfig) -> None:
         num_workers=4,
     )
 
-    log.info(f"Instantiating Model <{cfg.model.model_cfg.model_name}>")
+    log.info(f"Instantiating Model <{cfg.model.pretrained_model_name_or_path}>")
     model = DynamicQwenForCausalLM.from_pretrained(
         cfg.model.pretrained_model_name_or_path,
         model_cfg=OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
