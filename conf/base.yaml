@@ -42,7 +42,7 @@ training:
   gradient_clip_val: 1.0
 
   optimizer:
-    base_lr: 1.0e-3
+    base_lr: 1.0e-5
     weight_decay: 0.01
     warmup_ratio: 0.01  
 
