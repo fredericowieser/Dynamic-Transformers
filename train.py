@@ -105,7 +105,8 @@ def main(cfg: DictConfig) -> None:
                 accelerator.backward(total_loss)
                 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(trainable_params, cfg.training.gradient_clip_val)
+                    if cfg.training.use_gradient_clipping:
+                        accelerator.clip_grad_norm_(trainable_params, cfg.training.gradient_clip_val)
                 
                 optimizer.step()
                 lr_scheduler.step()
