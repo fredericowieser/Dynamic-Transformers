@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from typing import Any
-import os # <-- Import the os module
+import os
 
 import torch
 from datasets import Dataset, DatasetDict, load_dataset
@@ -22,7 +22,7 @@ def _dict_list_to_chat(tokenizer, conv: list[dict[str, Any]]) -> dict[str, str]:
             role = "assistant"
         norm.append({"role": role, "content": turn.get("content") or turn.get("value") or ""})
 
-    norm = [t for t in norm if t["content"].strip()]
+    norm = [t for t in norm if t["content"] and t["content"].strip()]
     if not norm:
         return None
 
@@ -86,10 +86,14 @@ class HuggingFaceDataset:
             blocks = re.split(r"###\s*|\n(?=\s*(Human|Assistant|User):)", raw.strip())
             conv = []
             for blk in blocks:
+                if not isinstance(blk, str):
+                    continue
                 m = re.match(r"\s*(Human|Assistant|User)\s*:\s*(.*)", blk, flags=re.S)
                 if m:
                     role = "user" if m.group(1) in {"Human", "User"} else "assistant"
-                    conv.append({"role": role, "content": m.group(2).strip()})
+                    content = m.group(2).strip()
+                    if content:
+                        conv.append({"role": role, "content": content})
             if conv:
                 return _dict_list_to_chat(self.tokenizer, conv) or {"text": ""}
 
@@ -119,7 +123,6 @@ class HuggingFaceDataset:
             log.warning(f"No 'train' split found. Using '{first_key}' as the training split.")
             raw_datasets["train"] = raw_datasets.pop(first_key)
 
-        # Use all available CPU cores for mapping operations
         num_proc = os.cpu_count()
         log.info(f"Using {num_proc} cores for data processing.")
 
