@@ -10,9 +10,9 @@ from omegaconf import DictConfig, OmegaConf
 import wandb
 
 from accelerate import Accelerator
-from transformers import get_scheduler, AutoTokenizer
+from transformers import get_scheduler, AutoTokenizer, DataCollatorForLanguageModeling
+from torch.utils.data import DataLoader
 
-# Assuming your project structure allows this import path
 from src.data.gate_logging import GateLogger
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.utils.training import set_seed, calculate_metrics
@@ -33,20 +33,31 @@ def main(cfg: DictConfig) -> None:
 
     datamodule = hydra.utils.instantiate(cfg.data, _convert_="partial")
     datamodule.setup()
-    train_dataloader = datamodule.train_dataloader()
-    val_dataloader = datamodule.val_dataloader()
+    
+    data_collator = DataCollatorForLanguageModeling(tokenizer=datamodule.tokenizer, mlm=False)
+    train_dataloader = DataLoader(
+        datamodule.train_dataset,
+        shuffle=True,
+        collate_fn=data_collator,
+        batch_size=cfg.data.batch_size,
+        num_workers=4,
+    )
+    val_dataloader = DataLoader(
+        datamodule.val_dataset,
+        collate_fn=data_collator,
+        batch_size=cfg.data.batch_size,
+        num_workers=4,
+    )
 
     log.info(f"Instantiating Model <{cfg.model.model_cfg.model_name}>")
     model = DynamicQwenForCausalLM.from_pretrained(
-        cfg.model.model_cfg.model_name,
+        cfg.model.pretrained_model_name_or_path,
         model_cfg=OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
     )
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
     
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.model_cfg.model_name)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = datamodule.tokenizer # Use tokenizer from datamodule
     model.config.pad_token_id = tokenizer.pad_token_id
 
     gate_logger = GateLogger(model.config.num_hidden_layers)
