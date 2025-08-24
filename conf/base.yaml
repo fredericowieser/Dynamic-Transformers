@@ -3,7 +3,7 @@ defaults:
   - data: sft_mix
 
 run:
-  name: "qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.capacity_gamma}"
+  name: "qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
