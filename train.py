@@ -84,8 +84,6 @@ def main(cfg: DictConfig) -> None:
     )
     
     if accelerator.is_main_process and cfg.logging.wandb.enabled:
-        if not cfg.logging.wandb.entity:
-            raise ValueError("WandB entity not set.")
         wandb.init(
             project=cfg.logging.wandb.project,
             entity=cfg.logging.wandb.entity,

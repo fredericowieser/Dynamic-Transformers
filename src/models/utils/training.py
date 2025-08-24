@@ -9,8 +9,7 @@ def set_seed(seed):
 
 def calculate_metrics(model, batch, global_step):
     """
-    A helper function to calculate all relevant losses and metrics,
-    mirroring the logic from the original DynamicQwenTrainer.
+    A helper function to calculate all relevant losses and metrics.
     """
     model_output = model(
         **batch,
@@ -34,7 +33,6 @@ def calculate_metrics(model, batch, global_step):
 
     perplexity = torch.exp(lm_loss)
 
-    # --- Gate and VPR Metrics ---
     metrics = {
         "total_loss": total_loss,
         "lm_loss": lm_loss,
@@ -53,7 +51,6 @@ def calculate_metrics(model, batch, global_step):
         metrics["overall_gate_activation_mean"] = torch.tensor(0.0)
         metrics["per_layer_gate_stats"] = []
 
-    # VPR specific metrics from the model output dataclass
     vpr_metrics = [
         "avg_ce_proportion", "avg_cu_proportion", "avg_beta_ce", "avg_beta_cu",
         "avg_cu_detection_multiplier", "avg_ce_criterion_offset", "combined_gating_signal_mean"
