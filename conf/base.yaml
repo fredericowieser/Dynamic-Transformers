@@ -23,11 +23,18 @@ model:
     capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
     # --- VPR Specific Params ---
-    freeze_vpr_router: True
+    prior_loss_weight: 0.05
+
+    learn_beta_ce: True
+    learn_beta_cu: True
+    learn_cu_multiplier: False
+    learn_ce_offset: True
+
     beta_ce_init: 0.01
     beta_cu_init: 0.01
     cu_detection_multiplier_init: 0.95
     ce_criterion_offset_init: 0.075
+
     token_wise_gating: True
     moving_average_window_size: 100
     prior_ffn_intermediate_size_factor: 0.125

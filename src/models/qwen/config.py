@@ -18,11 +18,18 @@ class DynamicQwenConfig(Qwen2Config):
         self.capacity_gamma = kwargs.pop("capacity_gamma", 1.0)
 
         # --- VPR Specific Params ---
-        self.freeze_vpr_router = kwargs.pop("freeze_vpr_router", False)
+        self.prior_loss_weight = kwargs.pop("prior_loss_weight", 0.0)
+
+        self.learn_beta_ce = kwargs.pop("learn_beta_ce", False)
+        self.learn_beta_cu = kwargs.pop("learn_beta_cu", False)
+        self.learn_cu_multiplier = kwargs.pop("learn_cu_multiplier", False)
+        self.learn_ce_offset = kwargs.pop("learn_ce_offset", False)
+        
         self.beta_ce_init = kwargs.pop("beta_ce_init", 1.0)
         self.beta_cu_init = kwargs.pop("beta_cu_init", 1.0)
         self.cu_detection_multiplier_init = kwargs.pop("cu_detection_multiplier_init", 1.0)
         self.ce_criterion_offset_init = kwargs.pop("ce_criterion_offset_init", 0.0)
+        
         self.token_wise_gating = kwargs.pop("token_wise_gating", True)
         self.moving_average_window_size = kwargs.pop("moving_average_window_size", 100)
         self.prior_ffn_intermediate_size_factor = kwargs.pop(

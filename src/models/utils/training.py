@@ -29,7 +29,8 @@ def calculate_metrics(model, batch, global_step):
     
     prior_loss = model_output.prior_loss
     if prior_loss is not None:
-        total_loss += prior_loss
+        prior_loss_weight = model.module.config.prior_loss_weight if hasattr(model, 'module') else model.config.prior_loss_weight
+        total_loss += prior_loss * prior_loss_weight
 
     perplexity = torch.exp(lm_loss)
 

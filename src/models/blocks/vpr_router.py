@@ -22,19 +22,35 @@ class VPRRouter(nn.Module):
         self.moving_average_window_size = getattr(
             config, "moving_average_window_size", 100
         )
-        self.freeze_router = getattr(config, "freeze_vpr_router", False)
-        if self.freeze_router:
-            log.info(f"Defining VPRRouter parameters for layer {self.layer_idx} as frozen buffers.")
-            self.register_buffer('beta_ce', torch.tensor(config.beta_ce_init, dtype=torch.float32))
-            self.register_buffer('beta_cu', torch.tensor(config.beta_cu_init, dtype=torch.float32))
-            self.register_buffer('cu_detection_multiplier', torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
-            self.register_buffer('ce_criterion_offset', torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
-        else:
-            log.info(f"Defining VPRRouter parameters for layer {self.layer_idx} as learnable nn.Parameters.")
+        # beta_ce
+        if getattr(config, "learn_beta_ce", False):
             self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
+        else:
+            self.register_buffer('beta_ce', torch.tensor(config.beta_ce_init, dtype=torch.float32))
+
+        # beta_cu
+        if getattr(config, "learn_beta_cu", False):
             self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
+        else:
+            self.register_buffer('beta_cu', torch.tensor(config.beta_cu_init, dtype=torch.float32))
+
+        # cu_detection_multiplier
+        if getattr(config, "learn_cu_multiplier", False):
             self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+        else:
+            self.register_buffer('cu_detection_multiplier', torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
+
+        # ce_criterion_offset
+        if getattr(config, "learn_ce_offset", False):
             self.ce_criterion_offset = nn.Parameter(torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
+        else:
+            self.register_buffer('ce_criterion_offset', torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
+            
+        log.info(f"VPRRouter Layer {self.layer_idx} Parameter Trainability:")
+        log.info(f"  - learn_beta_ce: {getattr(config, 'learn_beta_ce', False)}")
+        log.info(f"  - learn_beta_cu: {getattr(config, 'learn_beta_cu', False)}")
+        log.info(f"  - learn_cu_multiplier: {getattr(config, 'learn_cu_multiplier', False)}")
+        log.info(f"  - learn_ce_offset: {getattr(config, 'learn_ce_offset', False)}")
     
     @property
     def current_beta_ce(self):
