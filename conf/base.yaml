@@ -36,7 +36,7 @@ model:
     freeze_main_transformer_blocks: False
 
 training:
-  accumulate_grad_batches: 64
+  accumulate_grad_batches: 8
   num_epochs: 1
   eval_interval: 1000
   gradient_clip_val: 1.0
