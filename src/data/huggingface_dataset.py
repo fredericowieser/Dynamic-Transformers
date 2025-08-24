@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from typing import Any
+import os # <-- Import the os module
 
 import torch
 from datasets import Dataset, DatasetDict, load_dataset
@@ -118,16 +119,21 @@ class HuggingFaceDataset:
             log.warning(f"No 'train' split found. Using '{first_key}' as the training split.")
             raw_datasets["train"] = raw_datasets.pop(first_key)
 
-        formatted_datasets = raw_datasets.map(self._format_text, batched=False)
-        formatted_datasets = formatted_datasets.filter(lambda x: x.get("text") and len(x["text"]) > 10)
+        # Use all available CPU cores for mapping operations
+        num_proc = os.cpu_count()
+        log.info(f"Using {num_proc} cores for data processing.")
+
+        formatted_datasets = raw_datasets.map(self._format_text, batched=False, num_proc=num_proc)
+        formatted_datasets = formatted_datasets.filter(lambda x: x.get("text") and len(x["text"]) > 10, num_proc=num_proc)
         
         tokenized_datasets = formatted_datasets.map(
             lambda e: self.tokenizer(e["text"]),
             batched=True,
             remove_columns=formatted_datasets["train"].column_names,
+            num_proc=num_proc
         )
         
-        lm_datasets = tokenized_datasets.map(self._group_texts, batched=True)
+        lm_datasets = tokenized_datasets.map(self._group_texts, batched=True, num_proc=num_proc)
         full_dataset = lm_datasets["train"]
 
         if self.train_subset_ratio and 0.0 < self.train_subset_ratio < 1.0:
