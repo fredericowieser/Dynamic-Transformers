@@ -12,9 +12,13 @@ run:
 
 data:
   name: ${hydra:runtime.choices.data}
+  batch_size: 12
+  tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  block_size: 1024
+  validation_split_percentage: 2
 
 peft:
-  enabled: true
+  enabled: false
   config:
     _target_: peft.LoraConfig
     r: 16
