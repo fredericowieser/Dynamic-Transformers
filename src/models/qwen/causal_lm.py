@@ -153,7 +153,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 s_ce_stats=s_ce_stats_agg,          # <- Updated
                 s_cu_stats=s_cu_stats_agg,          # <- Updated
                 g_cont_stats=g_cont_stats_agg,      # <- Updated
-                combined_gating_signal_mean=torch.stack([o.combined_gating_signal.mean() for o in all_dynamic_layer_outputs]).mean(),
                 avg_beta_ce=torch.tensor([o.router_beta_ce for o in all_dynamic_layer_outputs]).mean(),
                 avg_beta_cu=torch.tensor([o.router_beta_cu for o in all_dynamic_layer_outputs]).mean(),
                 avg_cu_detection_multiplier=torch.tensor([o.router_cu_detection_multiplier for o in all_dynamic_layer_outputs]).mean(),
