@@ -2,7 +2,7 @@ _target_: src.data.mixed_dataset.MixedDataset
 _recursive_: false   # <- DO NOT instantiate children automatically
 _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
-batch_size: 8 # The final, combined batch size that must fit on the GPU.
+batch_size: 16 # The final, combined batch size that must fit on the GPU.
 tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
 block_size: 1024 # Use a larger block size for complex reasoning and code.
 validation_split_percentage: 2 # A small percentage is sufficient for these large datasets.
