@@ -108,13 +108,13 @@ class VPRRouter(nn.Module):
         ce_criterion_offset_val = self.ce_criterion_offset
 
         if self.token_wise_gating:
-            CE_val = d_st_tok - (d_ch_tok - ce_criterion_offset_val)
+            CE_val = d_st_tok - (d_ch_tok - torch.log(ce_criterion_offset_val + 1e-10))
             ma_d_st_tok = self._calculate_moving_average(d_st_tok.detach())
             CU_val = d_st_tok - (self.cu_detection_multiplier * ma_d_st_tok)
         else:
             mean_d_st = d_st_tok.mean(dim=-1, keepdim=True)
             mean_d_ch = d_ch_tok.mean(dim=-1, keepdim=True)
-            CE_val = mean_d_st - (mean_d_ch - ce_criterion_offset_val)
+            CE_val = mean_d_st - (mean_d_ch - torch.log(ce_criterion_offset_val + 1e-10))
             CU_val = mean_d_st - (self.cu_detection_multiplier * mean_d_st.detach())
 
         S_CE = torch.sigmoid(self.beta_ce * CE_val)

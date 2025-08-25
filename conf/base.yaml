@@ -12,7 +12,7 @@ run:
 
 data:
   name: ${hydra:runtime.choices.data}
-  batch_size: 8
+  batch_size: 6
   tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
   block_size: 1024
   validation_split_percentage: 2
@@ -55,11 +55,11 @@ model:
     beta_ce_init: 2.0
     beta_cu_init: 2.0
     cu_detection_multiplier_init: 0.95
-    ce_criterion_offset_init: 0.075
+    ce_criterion_offset_init: 1.025
 
     token_wise_gating: True
     moving_average_window_size: 100
-    prior_ffn_intermediate_size_factor: 0.125
+    prior_ffn_intermediate_size_factor: 0.0625  # 1/16th of the main FFN size
 
     # --- General Training Params ---
     freeze_main_transformer_blocks: False
