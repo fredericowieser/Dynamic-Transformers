@@ -149,7 +149,7 @@ def main(cfg: DictConfig) -> None:
                         val_metrics_dict = calculate_metrics(model, val_batch, progress_bar.n)
                     val_losses.append(accelerator.gather(val_metrics_dict["total_loss"]))
                 
-                val_loss = torch.cat(val_losses).mean().item()
+                val_loss = torch.stack(val_losses).mean().item()
                 
                 if accelerator.is_main_process:
                     log.info(f"Epoch {epoch}, Step {progress_bar.n}: Validation Loss = {val_loss:.4f}")
