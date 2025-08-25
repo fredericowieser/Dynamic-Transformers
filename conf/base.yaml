@@ -52,10 +52,10 @@ model:
     learn_cu_multiplier: False
     learn_ce_offset: True
 
-    beta_ce_init: 2.0
-    beta_cu_init: 2.0
+    beta_ce_init: 0.001
+    beta_cu_init: 0.095
     cu_detection_multiplier_init: 0.95
-    ce_criterion_offset_init: 1.025
+    ce_criterion_offset_init: 1.825
 
     token_wise_gating: True
     moving_average_window_size: 100
