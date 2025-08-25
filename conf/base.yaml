@@ -12,7 +12,7 @@ run:
 
 data:
   name: ${hydra:runtime.choices.data}
-  batch_size: 10
+  batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
   block_size: 1024
   validation_split_percentage: 2
@@ -45,7 +45,7 @@ model:
     capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
     # --- VPR Specific Params ---
-    prior_loss_weight: 0.05
+    prior_loss_weight: 0.125
 
     learn_beta_ce: True
     learn_beta_cu: True
