@@ -47,13 +47,13 @@ model:
     # --- VPR Specific Params ---
     prior_loss_weight: 0.125
 
-    learn_beta_ce: True
-    learn_beta_cu: True
+    learn_beta_ce: False
+    learn_beta_cu: False
     learn_cu_multiplier: False
     learn_ce_offset: True
 
     beta_ce_init: 0.001
-    beta_cu_init: 0.095
+    beta_cu_init: 0.001
     cu_detection_multiplier_init: 0.95
     ce_criterion_offset_init: 1.825
 
@@ -65,7 +65,7 @@ model:
     freeze_main_transformer_blocks: False
 
 training:
-  accumulate_grad_batches: 8
+  accumulate_grad_batches: 64
   num_epochs: 2
   eval_interval: 1000
 
