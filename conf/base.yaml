@@ -8,7 +8,7 @@ run:
   seed: 42
   device: "auto"
   precision: "bf16"
-  run_final_evaluation: true
+  run_final_evaluation: True
 
 data:
   name: ${hydra:runtime.choices.data}
@@ -18,7 +18,7 @@ data:
   validation_split_percentage: 2
 
 peft:
-  enabled: false
+  enabled: False
   config:
     _target_: peft.LoraConfig
     r: 16
