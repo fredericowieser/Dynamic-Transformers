@@ -8,7 +8,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
 from .config import DynamicQwenConfig
-from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput
+from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput, VPRCausalLMOutput
 from ..layers.decision_layer import DecisionLayer
 from ..layers.dynamic_layer import DynamicLayer
 from ..layers.mod_layer import MoDLayer
@@ -136,27 +136,42 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 'min': torch.stack([s['min'] for s in stats]).mean(),
                 'max': torch.stack([s['max'] for s in stats]).mean(),
             }
-
         s_ce_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_ce_stats')
         s_cu_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_cu_stats')
         g_cont_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 'g_cont_stats')
+        def aggregate_router_param_stats(outputs_list, param_name):
+            # Gathers a scalar parameter from each layer and computes its mean and std
+            values = torch.tensor([o.__getattribute__(param_name) for o in outputs_list], device=outputs_list[0].hidden_states.device)
+            return {
+                'mean': values.mean(),
+                'std': values.std()
+            }
+        beta_ce_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_ce')
+        beta_cu_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_cu')
+        cu_multiplier_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_cu_detection_multiplier')
+        ce_offset_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_ce_criterion_offset')
 
         if not return_dict:
             return (logits,)
 
         if self.config.dynamic_architecture == "vpr":
-             return DynamicCausalLMOutput(
+            vpr_metrics_dict = {
+                "prior_loss": torch.stack([o.prior_loss for o in all_dynamic_layer_outputs]).mean(),
+                "gate_vectors_per_layer": [o.gate_vector for o in all_dynamic_layer_outputs],
+                "s_ce_stats": s_ce_stats_agg,
+                "s_cu_stats": s_cu_stats_agg,
+                "g_cont_stats": g_cont_stats_agg,
+                "router_beta_ce_stats": beta_ce_stats_agg,
+                "router_beta_cu_stats": beta_cu_stats_agg,
+                "router_cu_multiplier_stats": cu_multiplier_stats_agg,
+                "router_ce_offset_stats": ce_offset_stats_agg,
+            }
+
+            return VPRCausalLMOutput(
                 logits=logits,
                 past_key_values=tuple(next_past_key_values) if use_cache else None,
-                prior_loss=torch.stack([o.prior_loss for o in all_dynamic_layer_outputs]).mean(),
-                gate_vectors_per_layer=[o.gate_vector for o in all_dynamic_layer_outputs],
-                s_ce_stats=s_ce_stats_agg,          # <- Updated
-                s_cu_stats=s_cu_stats_agg,          # <- Updated
-                g_cont_stats=g_cont_stats_agg,      # <- Updated
-                avg_beta_ce=torch.tensor([o.router_beta_ce for o in all_dynamic_layer_outputs]).mean(),
-                avg_beta_cu=torch.tensor([o.router_beta_cu for o in all_dynamic_layer_outputs]).mean(),
-                avg_cu_detection_multiplier=torch.tensor([o.router_cu_detection_multiplier for o in all_dynamic_layer_outputs]).mean(),
-                avg_ce_criterion_offset=torch.tensor([o.router_ce_criterion_offset for o in all_dynamic_layer_outputs]).mean(),
+                loss=None,  # Loss is calculated in the training script
+                vpr_metrics=vpr_metrics_dict,
             )
         else:
             return DynamicCausalLMOutput(
