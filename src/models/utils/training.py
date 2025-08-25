@@ -26,23 +26,33 @@ def calculate_metrics(model, batch, global_step):
         ignore_index=-100,
     )
     total_loss = lm_loss
-    
-    prior_loss = model_output.prior_loss
-    if prior_loss is not None:
-        prior_loss_weight = model.module.config.prior_loss_weight if hasattr(model, 'module') else model.config.prior_loss_weight
-        total_loss += prior_loss * prior_loss_weight
 
     perplexity = torch.exp(lm_loss)
 
     metrics = {
         "total_loss": total_loss,
         "lm_loss": lm_loss,
-        "prior_loss": prior_loss,
         "perplexity": perplexity,
     }
 
-    if hasattr(model_output, 'gate_vectors_per_layer') and model_output.gate_vectors_per_layer:
-        gate_vectors = model_output.gate_vectors_per_layer
+    # --- START: NEW METRIC EXTRACTION ---
+    if hasattr(model_output, 'vpr_metrics') and model_output.vpr_metrics is not None:
+        vpr_metrics = model_output.vpr_metrics
+        prior_loss = vpr_metrics.pop("prior_loss") # Pop to handle it separately
+        
+        if prior_loss is not None:
+            prior_loss_weight = model.module.config.prior_loss_weight if hasattr(model, 'module') else model.config.prior_loss_weight
+            total_loss += prior_loss * prior_loss_weight
+        
+        # Update metrics dict with the rest of the VPR stats
+        metrics["prior_loss"] = prior_loss
+        metrics.update(vpr_metrics) 
+
+    # Update total_loss in the metrics dict after potentially adding prior_loss
+    metrics["total_loss"] = total_loss
+
+    if hasattr(model_output, 'vpr_metrics') and model_output.vpr_metrics.get("gate_vectors_per_layer"):
+        gate_vectors = model_output.vpr_metrics["gate_vectors_per_layer"]
         metrics["overall_gate_activation_mean"] = torch.stack([gv.mean() for gv in gate_vectors]).mean()
         metrics["per_layer_gate_stats"] = [
             {"mean": gv.mean(), "std": gv.std() if gv.numel() > 1 else torch.tensor(0.0)}

@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import torch
-from transformers.modeling_outputs import ModelOutput
+from transformers.modeling_outputs import ModelOutput, CausalLMOutputWithPast
 
 
 @dataclass
@@ -40,26 +40,19 @@ class DynamicLayerOutput:
 
 
 @dataclass
+class VPRCausalLMOutput(CausalLMOutputWithPast):
+    """
+    Custom output for the VPR architecture that inherits from the standard
+    CausalLMOutputWithPast to be compatible with PEFT wrappers.
+    All custom VPR metrics are bundled into a single dictionary.
+    """
+    vpr_metrics: Optional[Dict[str, torch.Tensor]] = None
+
+@dataclass
 class DynamicCausalLMOutput(ModelOutput):
     """
-    Structured output for the DynamicQwenForCausalLM model,
-    unifying outputs for both VPR and MoD architectures.
+    A general output class, now primarily for the MoD architecture.
     """
     logits: torch.Tensor
     past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None
     attentions: Optional[Tuple[torch.Tensor]] = None
-
-    # --- VPR Specific Metrics ---
-    prior_loss: Optional[torch.Tensor] = None
-    s_ce_stats: Optional[dict] = None
-    s_cu_stats: Optional[dict] = None
-    g_cont_stats: Optional[dict] = None
-    ce_proportions_per_layer: Optional[List[torch.Tensor]] = None
-    cu_proportions_per_layer: Optional[List[torch.Tensor]] = None
-    avg_beta_ce: Optional[torch.Tensor] = None
-    avg_beta_cu: Optional[torch.Tensor] = None
-    avg_cu_detection_multiplier: Optional[torch.Tensor] = None
-    avg_ce_criterion_offset: Optional[torch.Tensor] = None
-
-    # --- Shared Metrics ---
-    gate_vectors_per_layer: Optional[List[torch.Tensor]] = None

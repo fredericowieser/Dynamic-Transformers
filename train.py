@@ -127,10 +127,14 @@ def main(cfg: DictConfig) -> None:
                         log_signal_stats("S_CE", metrics["s_ce_stats"])
                         log_signal_stats("S_CU", metrics["s_cu_stats"])
                         log_signal_stats("G_cont", metrics["g_cont_stats"])
-                        log_metrics["train_vpr_router/beta_ce"] = metrics["avg_beta_ce"].item()
-                        log_metrics["train_vpr_router/beta_cu"] = metrics["avg_beta_cu"].item()
-                        log_metrics["train_vpr_router/cu_multiplier"] = metrics["avg_cu_detection_multiplier"].item()
-                        log_metrics["train_vpr_router/ce_offset"] = metrics["avg_ce_criterion_offset"].item()
+                        def log_router_param_stats(param_name, stats_dict):
+                            if stats_dict:
+                                log_metrics[f"train_vpr_router/{param_name}_mean"] = stats_dict["mean"].item()
+                                log_metrics[f"train_vpr_router/{param_name}_std"] = stats_dict["std"].item()
+                        log_router_param_stats("beta_ce", metrics.get("router_beta_ce_stats"))
+                        log_router_param_stats("beta_cu", metrics.get("router_beta_cu_stats"))
+                        log_router_param_stats("cu_multiplier", metrics.get("router_cu_multiplier_stats"))
+                        log_router_param_stats("ce_offset", metrics.get("router_ce_offset_stats"))
                     if cfg.logging.wandb.enabled:
                         wandb.log(log_metrics, step=progress_bar.n)
 
