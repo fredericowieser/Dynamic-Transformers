@@ -32,7 +32,10 @@ class DynamicLayer(nn.Module):
         
         (
             gate_vec_binary,
-            avg_ce, avg_cu, _, _,
+            s_ce_stats,
+            s_cu_stats,
+            g_cont_stats,
+            _, _,
             combined_gating_signal,
             beta_ce, beta_cu,
             cu_multiplier, ce_offset,
@@ -97,8 +100,9 @@ class DynamicLayer(nn.Module):
             hidden_states=final_hidden_states,
             present_key_value=present_key_value,
             attention_weights=None,  # Not currently captured in this implementation
-            avg_ce_proportion=avg_ce,
-            avg_cu_proportion=avg_cu,
+            s_ce_stats=s_ce_stats,
+            s_cu_stats=s_cu_stats,
+            g_cont_stats=g_cont_stats,
             combined_gating_signal=combined_gating_signal,
             gate_vector=gate_vec_binary,
             prior_loss=decision_output.prior_loss,

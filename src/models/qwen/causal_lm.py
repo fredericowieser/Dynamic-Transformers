@@ -127,6 +127,20 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
+        def aggregate_stats(outputs_list, key_name):
+            # Gathers stats from each layer and computes the mean of each stat across layers
+            stats = [o.__getattribute__(key_name) for o in outputs_list]
+            return {
+                'mean': torch.stack([s['mean'] for s in stats]).mean(),
+                'std': torch.stack([s['std'] for s in stats]).mean(),
+                'min': torch.stack([s['min'] for s in stats]).mean(),
+                'max': torch.stack([s['max'] for s in stats]).mean(),
+            }
+
+        s_ce_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_ce_stats')
+        s_cu_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_cu_stats')
+        g_cont_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 'g_cont_stats')
+
         if not return_dict:
             return (logits,)
 
@@ -136,8 +150,9 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 past_key_values=tuple(next_past_key_values) if use_cache else None,
                 prior_loss=torch.stack([o.prior_loss for o in all_dynamic_layer_outputs]).mean(),
                 gate_vectors_per_layer=[o.gate_vector for o in all_dynamic_layer_outputs],
-                avg_ce_proportion=torch.stack([o.avg_ce_proportion for o in all_dynamic_layer_outputs]).mean(),
-                avg_cu_proportion=torch.stack([o.avg_cu_proportion for o in all_dynamic_layer_outputs]).mean(),
+                s_ce_stats=s_ce_stats_agg,          # <- Updated
+                s_cu_stats=s_cu_stats_agg,          # <- Updated
+                g_cont_stats=g_cont_stats_agg,      # <- Updated
                 combined_gating_signal_mean=torch.stack([o.combined_gating_signal.mean() for o in all_dynamic_layer_outputs]).mean(),
                 avg_beta_ce=torch.tensor([o.router_beta_ce for o in all_dynamic_layer_outputs]).mean(),
                 avg_beta_cu=torch.tensor([o.router_beta_cu for o in all_dynamic_layer_outputs]).mean(),

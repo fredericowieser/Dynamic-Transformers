@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
-import math  # <-- ADD THIS IMPORT
-import logging # <-- ADD THIS IMPORT
+import math
+import logging
 
-log = logging.getLogger(__name__) # <-- ADD THIS LINE
+log = logging.getLogger(__name__)
 
 class PriorFeedForward(nn.Module):
     """

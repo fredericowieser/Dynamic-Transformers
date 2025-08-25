@@ -13,6 +13,24 @@ run:
 data:
   name: ${hydra:runtime.choices.data}
 
+peft:
+  enabled: true
+  config:
+    _target_: peft.LoraConfig
+    r: 16
+    lora_alpha: 32
+    target_modules:
+      - "q_proj"      # Attention: Query projection
+      - "k_proj"      # Attention: Key projection
+      - "v_proj"      # Attention: Value projection
+      - "o_proj"      # Attention: Output projection
+      - "gate_proj"   # MLP: Gate projection for SwiGLU
+      - "up_proj"     # MLP: Up projection for SwiGLU
+      - "down_proj"   # MLP: Down projection
+    lora_dropout: 0.05
+    bias: "none"
+    task_type: "CAUSAL_LM"
+
 model:
   _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
   pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B-Instruct"

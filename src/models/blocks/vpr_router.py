@@ -122,6 +122,18 @@ class VPRRouter(nn.Module):
 
         combined_gating_signal_continuous = S_CE + S_CU - (S_CE * S_CU)
 
+        def get_stats(tensor):
+            return {
+                "mean": tensor.mean(),
+                "std": tensor.std(),
+                "min": tensor.min(),
+                "max": tensor.max(),
+            }
+
+        s_ce_stats = get_stats(S_CE)
+        s_cu_stats = get_stats(S_CU)
+        g_cont_stats = get_stats(combined_gating_signal_continuous)
+
         if capacity_gamma >= 1.0:
             threshold = -torch.finfo(combined_gating_signal_continuous.dtype).max
         else:
@@ -140,10 +152,11 @@ class VPRRouter(nn.Module):
 
         return (
             gate_vec_binary,
-            avg_ce_proportion,
-            avg_cu_proportion,
-            d_st_tok,
-            d_ch_tok,
+            s_ce_stats,
+            s_cu_stats,
+            g_cont_stats,
+            d_st_tok, # TODO: Remove if not needed
+            d_ch_tok, # TODO: Remove if not needed
             combined_gating_signal_continuous,
             self.current_beta_ce,
             self.current_beta_cu,

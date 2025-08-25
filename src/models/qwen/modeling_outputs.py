@@ -27,8 +27,9 @@ class DynamicLayerOutput:
     hidden_states: torch.Tensor
     present_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]]
     attention_weights: Optional[torch.Tensor]
-    avg_ce_proportion: torch.Tensor
-    avg_cu_proportion: torch.Tensor
+    s_ce_stats: dict
+    s_cu_stats: dict
+    g_cont_stats: dict
     combined_gating_signal: torch.Tensor
     gate_vector: torch.Tensor
     prior_loss: torch.Tensor
@@ -50,9 +51,9 @@ class DynamicCausalLMOutput(ModelOutput):
 
     # --- VPR Specific Metrics ---
     prior_loss: Optional[torch.Tensor] = None
-    avg_ce_proportion: Optional[torch.Tensor] = None
-    avg_cu_proportion: Optional[torch.Tensor] = None
-    combined_gating_signal_mean: Optional[torch.Tensor] = None
+    s_ce_stats: Optional[dict] = None
+    s_cu_stats: Optional[dict] = None
+    g_cont_stats: Optional[dict] = None
     ce_proportions_per_layer: Optional[List[torch.Tensor]] = None
     cu_proportions_per_layer: Optional[List[torch.Tensor]] = None
     avg_beta_ce: Optional[torch.Tensor] = None

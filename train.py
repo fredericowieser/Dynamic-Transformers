@@ -12,6 +12,7 @@ import wandb
 from accelerate import Accelerator
 from transformers import get_scheduler, AutoTokenizer, DataCollatorForLanguageModeling
 from torch.utils.data import DataLoader
+from peft import LoraConfig, get_peft_model
 
 from src.data.gate_logging import GateLogger
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
@@ -24,16 +25,13 @@ log = logging.getLogger(__name__)
 def main(cfg: DictConfig) -> None:
     log.info(f"--- Config ---\n{OmegaConf.to_yaml(cfg)}")
     set_seed(cfg.run.seed)
-
     accelerator = Accelerator(
         mixed_precision=cfg.run.precision,
         gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
     )
     log.info(f"Using device: {accelerator.device}")
-
     datamodule = hydra.utils.instantiate(cfg.data, _convert_="partial")
     datamodule.setup()
-    
     data_collator = DataCollatorForLanguageModeling(tokenizer=datamodule.tokenizer, mlm=False)
     train_dataloader = DataLoader(
         datamodule.train_dataset,
@@ -54,35 +52,35 @@ def main(cfg: DictConfig) -> None:
         cfg.model.pretrained_model_name_or_path,
         model_cfg=OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
     )
+    if cfg.peft.enabled:
+        log.info("Applying PEFT (LoRA) configuration to the model...")
+        peft_config = hydra.utils.instantiate(cfg.peft.config)
+        model = get_peft_model(model, peft_config)
+        log.info("Trainable parameters after applying LoRA:")
+        model.print_trainable_parameters()
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
-    
     tokenizer = datamodule.tokenizer # Use tokenizer from datamodule
     model.config.pad_token_id = tokenizer.pad_token_id
 
     gate_logger = GateLogger(model.config.num_hidden_layers)
-
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=cfg.training.optimizer.base_lr,
         weight_decay=cfg.training.optimizer.weight_decay,
     )
-
     num_training_steps = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches) * cfg.training.num_epochs
     num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
-
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
         num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps,
     )
-
     model, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader, lr_scheduler
     )
-    
     if accelerator.is_main_process and cfg.logging.wandb.enabled:
         wandb.init(
             project=cfg.logging.wandb.project,
@@ -94,31 +92,25 @@ def main(cfg: DictConfig) -> None:
     log.info("--- Starting Training ---")
     progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_main_process)
     best_val_loss = float('inf')
-    
     for epoch in range(cfg.training.num_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(model):
                 metrics = calculate_metrics(model, batch, progress_bar.n)
                 total_loss = metrics["total_loss"]
-                
                 accelerator.backward(total_loss)
-                
                 if accelerator.sync_gradients:
                     if cfg.training.use_gradient_clipping:
                         accelerator.clip_grad_norm_(trainable_params, cfg.training.gradient_clip_val)
-                
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
             if accelerator.sync_gradients:
                 progress_bar.update(1)
-                
                 if metrics.get("per_layer_gate_stats"):
                     gate_logger.update_rolling_history(metrics["per_layer_gate_stats"])
                     gate_logger.log_rolling_history(progress_bar.n, log_interval=100)
-
                 if accelerator.is_main_process:
                     log_metrics = {
                         "train/loss": metrics["total_loss"].item(),
@@ -128,16 +120,17 @@ def main(cfg: DictConfig) -> None:
                     }
                     if metrics["prior_loss"] is not None:
                         log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
-                    
-                    if metrics.get("avg_ce_proportion") is not None:
-                         log_metrics["train_vpr/avg_ce_proportion"] = metrics["avg_ce_proportion"].item()
-                         log_metrics["train_vpr/avg_cu_proportion"] = metrics["avg_cu_proportion"].item()
-                         log_metrics["train_vpr/gating_signal_mean"] = metrics["combined_gating_signal_mean"].item()
-                         log_metrics["train_vpr/router_beta_ce"] = metrics["avg_beta_ce"].item()
-                         log_metrics["train_vpr/router_beta_cu"] = metrics["avg_beta_cu"].item()
-                         log_metrics["train_vpr/router_cu_multiplier"] = metrics["avg_cu_detection_multiplier"].item()
-                         log_metrics["train_vpr/router_ce_offset"] = metrics["avg_ce_criterion_offset"].item()
-                    
+                    if metrics.get("s_ce_stats") is not None:
+                        def log_signal_stats(signal_name, stats_dict):
+                            for key, value in stats_dict.items():
+                                log_metrics[f"train_vpr_signals/{signal_name}_{key}"] = value.item()
+                        log_signal_stats("S_CE", metrics["s_ce_stats"])
+                        log_signal_stats("S_CU", metrics["s_cu_stats"])
+                        log_signal_stats("G_cont", metrics["g_cont_stats"])
+                        log_metrics["train_vpr_router/beta_ce"] = metrics["avg_beta_ce"].item()
+                        log_metrics["train_vpr_router/beta_cu"] = metrics["avg_beta_cu"].item()
+                        log_metrics["train_vpr_router/cu_multiplier"] = metrics["avg_cu_detection_multiplier"].item()
+                        log_metrics["train_vpr_router/ce_offset"] = metrics["avg_ce_criterion_offset"].item()
                     if cfg.logging.wandb.enabled:
                         wandb.log(log_metrics, step=progress_bar.n)
 
@@ -148,18 +141,15 @@ def main(cfg: DictConfig) -> None:
                     with torch.no_grad():
                         val_metrics_dict = calculate_metrics(model, val_batch, progress_bar.n)
                     val_losses.append(accelerator.gather(val_metrics_dict["total_loss"]))
-                
                 val_loss = torch.stack(val_losses).mean().item()
                 
                 if accelerator.is_main_process:
                     log.info(f"Epoch {epoch}, Step {progress_bar.n}: Validation Loss = {val_loss:.4f}")
                     if cfg.logging.wandb.enabled:
                         wandb.log({"val/loss": val_loss}, step=progress_bar.n)
-
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         log.info(f"New best validation loss: {best_val_loss:.4f}. Saving model...")
-                        
                         unwrapped_model = accelerator.unwrap_model(model)
                         save_path = os.path.join(cfg.run.output_dir, "best_model")
                         unwrapped_model.save_pretrained(save_path, safe_serialization=True)
