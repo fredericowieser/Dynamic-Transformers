@@ -48,9 +48,16 @@ def main(cfg: DictConfig) -> None:
     )
 
     log.info(f"Instantiating Model <{cfg.model.pretrained_model_name_or_path}>")
+    model_load_kwargs = {
+        "model_cfg": OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
+    }
+    if getattr(cfg.model, "use_flash_attention_2", False):
+        log.info("Flash Attention 2 is enabled in the config. Applying to model loading.")
+        model_load_kwargs["attn_implementation"] = "flash_attention_2"
+        model_load_kwargs["torch_dtype"] = torch.bfloat16
     model = DynamicQwenForCausalLM.from_pretrained(
         cfg.model.pretrained_model_name_or_path,
-        model_cfg=OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
+        **model_load_kwargs
     )
     if cfg.peft.enabled:
         log.info("Applying PEFT (LoRA) configuration to the model...")

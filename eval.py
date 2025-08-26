@@ -4,7 +4,7 @@ import logging
 import os
 from lm_eval import simple_evaluate
 
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.qwen.config import DynamicQwenConfig
 
@@ -65,11 +65,30 @@ def main():
     task_names = sorted(list(set(task_names)))
     log.info(f"Running evaluation on the following tasks: {task_names}")
 
-    # The harness will use AutoModelForCausalLM, which will correctly load
-    # your custom model thanks to the imports at the top of the script.
+    log.info(f"Loading configuration from {args.model_path}...")
+    try:
+        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+        use_flash_attention = getattr(model_config, "use_flash_attention_2", False)
+    except Exception as e:
+        log.warning(f"Could not read 'use_flash_attention_2' from config: {e}. Defaulting to False.")
+        use_flash_attention = False
+
+    # Conditionally build the model_args string for lm-evaluation-harness
+    model_args_list = [
+        f"pretrained={args.model_path}",
+        "trust_remote_code=True"
+    ]
+    if use_flash_attention:
+        log.info("Found 'use_flash_attention_2=True' in model config. Enabling for evaluation.")
+        model_args_list.append("attn_implementation='flash_attention_2'")
+        model_args_list.append("torch_dtype='bfloat16'") # Match dtype for consistency
+
+    model_args_str = ",".join(model_args_list)
+    log.info(f"Using model_args for lm-eval: '{model_args_str}'")
+
     results = simple_evaluate(
         model="hf",
-        model_args=f"pretrained={args.model_path},trust_remote_code=True",
+        model_args=model_args_str,
         tasks=task_names,
         batch_size=args.batch_size,
         device="cuda:0",

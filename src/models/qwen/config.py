@@ -13,7 +13,7 @@ class DynamicQwenConfig(Qwen2Config):
     def __init__(self, **kwargs):
         # --- Architecture Control ---
         self.dynamic_architecture = kwargs.pop("dynamic_architecture", "vpr")
-
+        self.use_flash_attention_2 = kwargs.pop("use_flash_attention_2", False)
         # --- Shared Dynamic Compute Params ---
         self.capacity_gamma = kwargs.pop("capacity_gamma", 1.0)
 

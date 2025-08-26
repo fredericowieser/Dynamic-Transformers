@@ -38,6 +38,7 @@ peft:
 model:
   _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
   pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B-Instruct"
+  use_flash_attention_2: true
 
   model_cfg:
     # --- Architecture Control ---
