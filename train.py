@@ -151,26 +151,26 @@ def main(cfg: DictConfig) -> None:
                     if cfg.logging.wandb.enabled:
                         wandb.log(log_metrics, step=progress_bar.n)
 
-            if (progress_bar.n + 1) % cfg.training.eval_interval == 0:
-                model.eval()
-                val_losses = []
-                for val_batch in val_dataloader:
-                    with torch.no_grad():
-                        val_metrics_dict = calculate_metrics(model, val_batch, progress_bar.n)
-                    val_losses.append(accelerator.gather(val_metrics_dict["total_loss"]))
-                val_loss = torch.stack(val_losses).mean().item()
-                
-                if accelerator.is_main_process:
-                    log.info(f"Epoch {epoch}, Step {progress_bar.n}: Validation Loss = {val_loss:.4f}")
-                    if cfg.logging.wandb.enabled:
-                        wandb.log({"val/loss": val_loss}, step=progress_bar.n)
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        log.info(f"New best validation loss: {best_val_loss:.4f}. Saving model...")
-                        unwrapped_model = accelerator.unwrap_model(model)
-                        save_path = os.path.join(cfg.run.output_dir, "best_model")
-                        unwrapped_model.save_pretrained(save_path, safe_serialization=True)
-                        tokenizer.save_pretrained(save_path)
+                if (progress_bar.n + 1) % cfg.training.eval_interval == 0:
+                    model.eval()
+                    val_losses = []
+                    for val_batch in val_dataloader:
+                        with torch.no_grad():
+                            val_metrics_dict = calculate_metrics(model, val_batch, progress_bar.n)
+                        val_losses.append(accelerator.gather(val_metrics_dict["total_loss"]))
+                    val_loss = torch.stack(val_losses).mean().item()
+                    
+                    if accelerator.is_main_process:
+                        log.info(f"Epoch {epoch}, Step {progress_bar.n}: Validation Loss = {val_loss:.4f}")
+                        if cfg.logging.wandb.enabled:
+                            wandb.log({"val/loss": val_loss}, step=progress_bar.n)
+                        if val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            log.info(f"New best validation loss: {best_val_loss:.4f}. Saving model...")
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            save_path = os.path.join(cfg.run.output_dir, "best_model")
+                            unwrapped_model.save_pretrained(save_path, safe_serialization=True)
+                            tokenizer.save_pretrained(save_path)
 
                 model.train()
 

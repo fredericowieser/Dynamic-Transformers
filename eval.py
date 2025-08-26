@@ -4,14 +4,18 @@ import logging
 import os
 from lm_eval import simple_evaluate
 
-# This is crucial: it imports your custom classes so the Hugging Face
-# Auto-classes can find them when loading from the saved directory.
+from transformers import AutoConfig, AutoModelForCausalLM
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.qwen.config import DynamicQwenConfig
 
-
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# Explicitly register the custom model and config with the Auto classes.
+# This allows lm-evaluation-harness to find and use your custom architecture.
+log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
+AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
+AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
 
 # Define task groups for easy evaluation
 TASK_SUITES = {
