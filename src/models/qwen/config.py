@@ -18,7 +18,7 @@ class DynamicQwenConfig(Qwen2Config):
         self.capacity_gamma = kwargs.pop("capacity_gamma", 1.0)
 
         # --- VPR Specific Params ---
-        self.prior_loss_weight = kwargs.pop("prior_loss_weight", 0.0)
+        self.prior_loss_schedule = kwargs.pop("prior_loss_schedule", None)
 
         self.learn_beta_ce = kwargs.pop("learn_beta_ce", False)
         self.learn_beta_cu = kwargs.pop("learn_beta_cu", False)
