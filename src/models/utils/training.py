@@ -41,8 +41,8 @@ def calculate_metrics(model, batch, global_step):
 
     if hasattr(model_output, 'vpr_metrics') and model_output.vpr_metrics is not None:
         vpr_metrics = model_output.vpr_metrics
-        prior_loss = vpr_metrics.pop("prior_loss")
-        
+        prior_loss = vpr_metrics.get("prior_loss")
+
         if prior_loss is not None:
             # Get the model config, handling the accelerator wrapper
             config = model.module.config if hasattr(model, 'module') else model.config
@@ -54,7 +54,6 @@ def calculate_metrics(model, batch, global_step):
             decay_steps = schedule_cfg['decay_steps']
 
             if global_step < decay_steps:
-                # Linearly anneal from initial_w to final_w
                 progress = global_step / decay_steps
                 current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
             else:
