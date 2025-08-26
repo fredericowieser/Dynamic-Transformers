@@ -12,7 +12,7 @@ run:
 
 data:
   name: ${hydra:runtime.choices.data}
-  batch_size: 6
+  batch_size: 64
   tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
   block_size: 1024
   validation_split_percentage: 2
@@ -50,8 +50,8 @@ model:
       final_weight: 0.05   # Decay to a stable final weight
       decay_steps: 0   # Number of steps over which to perform the decay
 
-    learn_beta_ce: False
-    learn_beta_cu: False
+    learn_beta_ce: True
+    learn_beta_cu: True
     learn_cu_multiplier: False
     learn_ce_offset: True
 
@@ -77,7 +77,7 @@ training:
 
   optimizer:
     base_model_lr: 1.0e-5 # Low LR for fine-tuning the base Qwen2Block parameters
-    dynamic_lr: 1.0e-3 # High LR for all new components (VPR Router + Prior FFN)
+    dynamic_lr: 1.0e-4 # High LR for all new components (VPR Router + Prior FFN)
     weight_decay: 0.01
     warmup_ratio: 0.01
 

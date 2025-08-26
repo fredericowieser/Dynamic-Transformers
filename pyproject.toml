@@ -26,8 +26,6 @@ classifiers = [
 dependencies = [
     # Main ML Frameworks
     "torch>=2.2.0",
-    "pytorch-lightning>=2.2.0",
-    "lightning-utilities>=0.11.0",
     "accelerate>=0.27.0",
     # Hugging Face Ecosystem
     "transformers>=4.54.1,<4.55.0",
@@ -56,6 +54,7 @@ dependencies = [
     "pillow>=10.0.0",
     "tensorboard>=2.19.0",
     "lm-eval[code-eval,hf,peft,torch]>=0.4.9.1",
+    "wandb>=0.20.1",
 ]
 
 [project.urls]

@@ -389,6 +389,7 @@ dependencies = [
     { name = "transformers" },
     { name = "typing-extensions" },
     { name = "urllib3" },
+    { name = "wandb" },
 ]
 
 [package.optional-dependencies]
@@ -442,6 +443,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.54.1,<4.55.0" },
     { name = "typing-extensions", specifier = ">=4.8.0" },
     { name = "urllib3", specifier = ">=2.2.0" },
+    { name = "wandb", specifier = ">=0.20.1" },
     { name = "wandb", marker = "extra == 'logging'", specifier = ">=0.16.0" },
     { name = "zstandard", marker = "extra == 'dev'", specifier = ">=0.23.0" },
 ]
