@@ -35,18 +35,34 @@ def calculate_metrics(model, batch, global_step):
         "perplexity": perplexity,
     }
 
-    # --- START: NEW METRIC EXTRACTION ---
+    # --- START: MODIFICATION for dynamic prior_loss_weight ---
+    prior_loss = None
+    current_prior_loss_weight = 0.0
+
     if hasattr(model_output, 'vpr_metrics') and model_output.vpr_metrics is not None:
         vpr_metrics = model_output.vpr_metrics
-        prior_loss = vpr_metrics.pop("prior_loss") # Pop to handle it separately
+        prior_loss = vpr_metrics.pop("prior_loss")
         
         if prior_loss is not None:
-            prior_loss_weight = model.module.config.prior_loss_weight if hasattr(model, 'module') else model.config.prior_loss_weight
-            total_loss += prior_loss * prior_loss_weight
+            # Get the model config, handling the accelerator wrapper
+            config = model.module.config if hasattr(model, 'module') else model.config
+            
+            # Calculate the current weight based on the schedule
+            schedule_cfg = config.prior_loss_schedule
+            initial_w = schedule_cfg['initial_weight']
+            final_w = schedule_cfg['final_weight']
+            decay_steps = schedule_cfg['decay_steps']
+
+            if global_step < decay_steps:
+                # Linearly anneal from initial_w to final_w
+                progress = global_step / decay_steps
+                current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
+            else:
+                current_prior_loss_weight = final_w
+            
+            total_loss += prior_loss * current_prior_loss_weight
         
-        # Update metrics dict with the rest of the VPR stats
-        metrics["prior_loss"] = prior_loss
-        metrics.update(vpr_metrics) 
+        metrics.update(vpr_metrics)
 
     # Update total_loss in the metrics dict after potentially adding prior_loss
     metrics["total_loss"] = total_loss
@@ -69,5 +85,7 @@ def calculate_metrics(model, batch, global_step):
     for key in vpr_metrics:
         if hasattr(model_output, key):
             metrics[key] = getattr(model_output, key)
+
+    metrics["current_prior_loss_weight"] = current_prior_loss_weight
 
     return metrics

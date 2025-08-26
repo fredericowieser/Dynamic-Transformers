@@ -120,6 +120,7 @@ def main(cfg: DictConfig) -> None:
                     }
                     if metrics["prior_loss"] is not None:
                         log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
+                        log_metrics["train/prior_loss_weight"] = metrics["current_prior_loss_weight"]
                     if metrics.get("s_ce_stats") is not None:
                         def log_signal_stats(signal_name, stats_dict):
                             for key, value in stats_dict.items():
