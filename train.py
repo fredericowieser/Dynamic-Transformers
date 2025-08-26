@@ -62,14 +62,26 @@ def main(cfg: DictConfig) -> None:
     model.enable_input_require_grads()
     tokenizer = datamodule.tokenizer # Use tokenizer from datamodule
     model.config.pad_token_id = tokenizer.pad_token_id
-
-    gate_logger = GateLogger(model.config.num_hidden_layers)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    log.info("Setting up optimizer with 2 distinct parameter groups...")
+    base_model_params = []
+    dynamic_params = []
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            if "prior_" in n or "vpr_router" in n:
+                dynamic_params.append(p)
+            else:
+                base_model_params.append(p)
+    param_groups = [
+        {"params": base_model_params, "lr": cfg.training.optimizer.base_model_lr},
+        {"params": dynamic_params, "lr": cfg.training.optimizer.dynamic_lr},
+    ]
+    log.info(f"  - Base Model parameters: {sum(p.numel() for p in base_model_params):,}")
+    log.info(f"  - Dynamic Component parameters: {sum(p.numel() for p in dynamic_params):,}")
     optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=cfg.training.optimizer.base_lr,
+        param_groups,
         weight_decay=cfg.training.optimizer.weight_decay,
     )
+    gate_logger = GateLogger(model.config.num_hidden_layers)
     num_training_steps = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches) * cfg.training.num_epochs
     num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
     lr_scheduler = get_scheduler(
