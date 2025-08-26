@@ -46,9 +46,9 @@ model:
 
     # --- VPR Specific Params ---
     prior_loss_schedule:
-      initial_weight: 5.0 # Start with a high weight for aggressive initial training
+      initial_weight: 10.0 # Start with a high weight for aggressive initial training
       final_weight: 0.1   # Decay to a stable final weight
-      decay_steps: 500   # Number of steps over which to perform the decay
+      decay_steps: 50   # Number of steps over which to perform the decay
 
     learn_beta_ce: False
     learn_beta_cu: False
