@@ -184,6 +184,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         model_cfg = kwargs.pop("model_cfg", {})
         config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path, **model_cfg)
+        kwargs.pop('config', None)
         base_hf_model = Qwen2ForCausalLM.from_pretrained(
             pretrained_model_name_or_path, config=config, *model_args, **kwargs
         )
