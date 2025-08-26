@@ -118,10 +118,10 @@ def main(cfg: DictConfig) -> None:
                         "train/perplexity": metrics["perplexity"].item(),
                         "lr": lr_scheduler.get_last_lr()[0]
                     }
-                    if metrics["prior_loss"] is not None:
-                        log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
-                        log_metrics["train/prior_loss_weight"] = metrics["current_prior_loss_weight"]
-                    if metrics.get("s_ce_stats") is not None:
+                    if "s_ce_stats" in metrics: # Check for any representative VPR metric
+                        if metrics.get("prior_loss") is not None:
+                            log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
+                            log_metrics["train/prior_loss_weight"] = metrics["current_prior_loss_weight"]
                         def log_signal_stats(signal_name, stats_dict):
                             for key, value in stats_dict.items():
                                 log_metrics[f"train_vpr_signals/{signal_name}_{key}"] = value.item()
