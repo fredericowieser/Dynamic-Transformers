@@ -33,8 +33,8 @@ dataset_configs:
     train_subset_ratio: 1.0
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "iam-groot/code-clippy-dev" # A smaller, multi-language code collection.
-    text_column: "text"
+    dataset_name: "bigcode/the-stack-smol"
+    text_column: "content" # The text column for this dataset is 'content'.
     train_subset_ratio: 1.0
 
   # === Category 3: Mathematical & Scientific Reasoning (~20%) ===
