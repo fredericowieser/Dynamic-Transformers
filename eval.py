@@ -2,6 +2,8 @@ import argparse
 import json
 import logging
 import os
+import torch
+import numpy as np
 import wandb
 from lm_eval import simple_evaluate
 
@@ -25,6 +27,25 @@ TASK_SUITES = {
     "quick_test": ["arc_challenge", "hellaswag"]
 }
 
+def _make_json_serializable(obj):
+    """
+    Recursively traverses a dictionary or list to convert non-serializable
+    types (like torch.dtype, torch.Tensor, numpy types) to JSON-friendly formats.
+    """
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_make_json_serializable(elem) for elem in obj]
+    elif isinstance(obj, torch.dtype):
+        return str(obj)  # Convert dtype to string, e.g., "torch.bfloat16"
+    elif isinstance(obj, torch.Tensor):
+        return obj.tolist() # Convert tensor to list
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist() # Convert numpy array to list
+    elif isinstance(obj, (np.float32, np.float64, np.int32, np.int64)):
+        return obj.item() # Convert numpy numbers to standard Python numbers
+    return obj
+
 def get_wandb_run_dir(model_path: str) -> str | None:
     """
     Tries to find the wandb run directory by reading wandb_info.json,
@@ -34,10 +55,8 @@ def get_wandb_run_dir(model_path: str) -> str | None:
     if not os.path.exists(wandb_info_path):
         log.warning("wandb_info.json not found. Results will be saved locally in --output_dir.")
         return None
-    
     with open(wandb_info_path, "r") as f:
         wandb_info = json.load(f)
-    
     try:
         # Resume the run to get access to its properties and filesystem
         run = wandb.init(
@@ -84,9 +103,8 @@ def main():
         model="hf", model_args=model_args_str, tasks=task_names,
         batch_size=args.batch_size, device="cuda:0"
     )
+    serializable_results = _make_json_serializable(results)
 
-    # --- SAVE RESULTS ---
-    # Determine the output directory (wandb run dir or local fallback)
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
         output_dir = args.output_dir
@@ -97,16 +115,16 @@ def main():
     output_path = os.path.join(output_dir, output_filename)
 
     with open(output_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(serializable_results, f, indent=2)
 
     log.info("--- Evaluation Results ---")
-    print(json.dumps(results, indent=2))
+    print(json.dumps(serializable_results, indent=2))
     log.info(f"Results saved to {output_path}")
 
     # If in a resumed wandb run, upload the results and finish
     if wandb.run is not None:
         log.info("Uploading results to wandb as an artifact...")
-        wandb.save(output_path) # Uploads the file to the run
+        wandb.save(output_path)
         wandb.finish()
 
 if __name__ == "__main__":
