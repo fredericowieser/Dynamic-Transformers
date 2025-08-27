@@ -82,8 +82,9 @@ training:
   gradient_clip_val: 1.0
 
   optimizer:
-    base_model_lr: 1.0e-5 # Low LR for fine-tuning the base Qwen2Block parameters
-    dynamic_lr: 5.0e-4 # High LR for all new components (VPR Router + Prior FFN)
+    base_model_lr: 5.0e-6       # base Qwen2Block parameters
+    prior_lr: 5.0e-4
+    vpr_router_lr: 5.0e-2
     weight_decay: 0.01
     warmup_ratio: 0.01
 

@@ -72,20 +72,24 @@ def main(cfg: DictConfig) -> None:
     tokenizer = datamodule.tokenizer
     model.config.pad_token_id = tokenizer.pad_token_id
     
-    log.info("Setting up optimizer with 2 distinct parameter groups...")
-    base_model_params, dynamic_params = [], []
+    log.info("Setting up optimizer with distinct parameter groups...")
+    base_model_params, prior_params, vpr_router_params = [], [], []
     for n, p in model.named_parameters():
         if p.requires_grad:
-            if "prior_" in n or "vpr_router" in n:
-                dynamic_params.append(p)
+            if "vpr_router" in n:
+                vpr_router_params.append(p)
+            elif "prior_ffn" in n:
+                prior_params.append(p)
             else:
                 base_model_params.append(p)
     param_groups = [
         {"params": base_model_params, "lr": cfg.training.optimizer.base_model_lr},
-        {"params": dynamic_params, "lr": cfg.training.optimizer.dynamic_lr},
+        {"params": prior_params, "lr": cfg.training.optimizer.prior_lr},
+        {"params": vpr_router_params, "lr": cfg.training.optimizer.vpr_router_lr},
     ]
     log.info(f"  - Base Model parameters: {sum(p.numel() for p in base_model_params):,}")
-    log.info(f"  - Dynamic Component parameters: {sum(p.numel() for p in dynamic_params):,}")
+    log.info(f"  - Dynamic Component (Prior FFN) parameters: {sum(p.numel() for p in prior_params):,}")
+    log.info(f"  - VPR Router parameters: {sum(p.numel() for p in vpr_router_params):,}")
     optimizer = torch.optim.AdamW(
         param_groups,
         weight_decay=cfg.training.optimizer.weight_decay,
