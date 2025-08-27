@@ -1,62 +1,94 @@
 defaults:
   - _self_
-  - data: sft_mix
+  - data: pretrain_mix
 
 run:
-  name: "llama3.2-1b-dynamic-finetune-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-dynamic_k=${model.model_cfg.dynamic_k}-ce_bias=${model.model_cfg.ce_bias}-lora_main=${model.model_cfg.lora.enable_lora_main_path}-lora_prior=${model.model_cfg.lora.enable_lora_prior_ffn}"
+  name: "PRETRAIN-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
-  device: "auto" # "cpu", "cuda", "mps", etc.
-  precision: "bf16-mixed" # "32-true", "16-mixed", "bf16-mixed"
-  run_final_evaluation: true
+  device: "auto"
+  precision: "bf16"
+  run_final_evaluation: True
 
 data:
   name: ${hydra:runtime.choices.data}
+  batch_size: 16
+  tokenizer_name: "Qwen/Qwen2.5-0.5B"
+  block_size: 1024
+  validation_split_percentage: 2
+
+peft:
+  enabled: False
+  config:
+    _target_: peft.LoraConfig
+    r: 16
+    lora_alpha: 32
+    target_modules:
+      - "q_proj"      # Attention: Query projection
+      - "k_proj"      # Attention: Key projection
+      - "v_proj"      # Attention: Value projection
+      - "o_proj"      # Attention: Output projection
+      - "gate_proj"   # MLP: Gate projection for SwiGLU
+      - "up_proj"     # MLP: Up projection for SwiGLU
+      - "down_proj"   # MLP: Down projection
+    lora_dropout: 0.05
+    bias: "none"
+    task_type: "CAUSAL_LM"
 
 model:
-  _target_: src.trainers.d_llama_trainer.DynamicLlamaTrainer
+  _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
+  pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B"
+  use_flash_attention_2: true
+
   model_cfg:
-    model_name: "meta-llama/Llama-3.2-1B-instruct"
-    prior_loss_weight: 0.1
-    # CU = D_st > dynamic_k * D_st.detach().mean() # (B,) bool
-    dynamic_k: 0.95
-    token_wise: true # Use token-wise dynamic gating
-    # CE = D_st > D_ch - ce_bias # (B,) bool
-    ce_bias: 0.05
+    # --- Architecture Control ---
+    dynamic_architecture: "vpr"  # Can be "vpr" or "mod"
+    capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
 
-    init_prior_from_mlp: true 
+    # --- VPR Specific Params ---
+    prior_loss_schedule:
+      initial_weight: 0.05 # Start with a high weight for aggressive initial training
+      final_weight: 0.05   # Decay to a stable final weight
+      decay_steps: 0   # Number of steps over which to perform the decay
 
-    lora:
-      enable_lora_main_path: true
-      enable_lora_prior_ffn: true
-      r: 8                    # LoRA attention dimension
-      lora_alpha: 16          # LoRA scaling factor
-      lora_dropout: 0.05      # Dropout probability for LoRA layers
-      bias: "none"            # Type of bias to add ("none", "all", "lora_only")
-      # Target modules for the main decoder path (LlamaAttention, LlamaMLP)
-      lora_target_modules_main: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-      # Target modules for the prior FFN (FeedForward class)
-      lora_target_modules_prior_ffn: ["w1", "w2", "w3"]
+    learn_beta_ce: True
+    learn_beta_cu: True
+    learn_cu_multiplier: True
+    learn_ce_offset: True
+
+    beta_ce_init: -0.3
+    beta_cu_init: -0.6
+    cu_detection_multiplier_init: 1.1
+    ce_criterion_offset_init: 1.025
+
+    token_wise_gating: True
+    moving_average_window_size: 100
+    prior_ffn_intermediate_size_factor: 0.0625  # 1/16th of the main FFN size
+
+    # --- General Training Params ---
+    freeze_main_transformer_blocks: False
 
 training:
-  accumulate_grad_batches: 64
-  max_iters: 100000
-  eval_interval: 200
-  
+  # --- Training Duration Control ---
+  # Specify EITHER num_epochs OR max_steps.
+  # If max_steps is set to a positive number, it will take precedence.
+  num_epochs: 3
+  max_steps: 500
+
+  accumulate_grad_batches: 16
+  eval_interval: 100
+
+  use_gradient_clipping: False
+  gradient_clip_val: 1.0
+
   optimizer:
-    base_lr: 1.0e-4       # Max LR for base model
-    prior_ffn_lr: 1.0e-2  # Max LR for prior FFN
+    base_model_lr: 1.0e-5       # base Qwen2Block parameters
+    prior_lr: 1.0e-3
+    vpr_router_lr: 1.0e-2
     weight_decay: 0.01
-
-  scheduler:
-    factor: 0.1           
-    patience: 10
-
-  gate_warmup_iters: 100
+    warmup_ratio: 0.01
 
 logging:
-  tensorboard:
-    enabled: true
   wandb:
     enabled: true
     project: "Dynamic-Transformers"

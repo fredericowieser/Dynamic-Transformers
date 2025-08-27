@@ -1,157 +1,132 @@
-#!/usr/bin/env python3
 import argparse
 import json
 import logging
 import os
-import sys
-
 import torch
-from transformers import pipeline
+import numpy as np
+import wandb
+from lm_eval import simple_evaluate
 
-# Add the parent directory of 'src' to the Python path
-# This assumes 'evaluate.py' is in the project root alongside 'src' and 'eval'.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from transformers import AutoConfig, AutoModelForCausalLM
+from src.models.qwen.causal_lm import DynamicQwenForCausalLM
+from src.models.qwen.config import DynamicQwenConfig
 
-# Now import from the new modular structure
-from eval.benchmarks import BENCHMARKS
-from eval.dynamic_llama_utils import load_dynamic_llama_model_and_tokenizer
-from eval.runners import run_mmlu_benchmark  # NEW: Dedicated MMLU runner
-from eval.runners import (
-    run_generative_benchmark,
-    run_humaneval_benchmark,
-    run_multiple_choice_benchmark,
-    run_perplexity_benchmark,
-)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Register custom architecture with transformers
+log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
+AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
+AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
+
+# Define task groups for easy evaluation
+TASK_SUITES = {
+    "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
+    "math": ["gsm8k", "math_qa"],
+    "code": ["humaneval", "mbpp"],
+    "quick_test": ["arc_challenge", "hellaswag"]
+}
+
+def _make_json_serializable(obj):
+    """
+    Recursively traverses a dictionary or list to convert non-serializable
+    types (like torch.dtype, torch.Tensor, numpy types) to JSON-friendly formats.
+    """
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_make_json_serializable(elem) for elem in obj]
+    elif isinstance(obj, torch.dtype):
+        return str(obj)  # Convert dtype to string, e.g., "torch.bfloat16"
+    elif isinstance(obj, torch.Tensor):
+        return obj.tolist() # Convert tensor to list
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist() # Convert numpy array to list
+    elif isinstance(obj, (np.float32, np.float64, np.int32, np.int64)):
+        return obj.item() # Convert numpy numbers to standard Python numbers
+    return obj
+
+def get_wandb_run_dir(model_path: str) -> str | None:
+    """
+    Tries to find the wandb run directory by reading wandb_info.json,
+    resuming the run, and getting its local directory.
+    """
+    wandb_info_path = os.path.join(model_path, "wandb_info.json")
+    if not os.path.exists(wandb_info_path):
+        log.warning("wandb_info.json not found. Results will be saved locally in --output_dir.")
+        return None
+    with open(wandb_info_path, "r") as f:
+        wandb_info = json.load(f)
+    try:
+        # Resume the run to get access to its properties and filesystem
+        run = wandb.init(
+            project=wandb_info["project"],
+            entity=wandb_info["entity"],
+            id=wandb_info["run_id"],
+            resume="must"
+        )
+        log.info(f"Successfully resumed wandb run '{run.name}' (ID: {run.id}).")
+        return run.dir
+    except Exception as e:
+        log.error(f"Failed to resume wandb run. Error: {e}")
+        return None
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate DynamicLlama models on various benchmarks."
-    )
-    parser.add_argument(
-        "--model_path", required=True, help="Path or HF ID of your trained model"
-    )
-    parser.add_argument(
-        "--device", default="cuda", help="Device to use (e.g., 'cpu', 'cuda')"
-    )
-    parser.add_argument(
-        "--max_eval_samples", type=int, default=512, help="Samples per benchmark"
-    )
-    parser.add_argument(
-        "--is_instruct", action="store_true", help="Model is instruct-tuned"
-    )
-    parser.add_argument(
-        "--output_file", default="results.json", help="Output JSON file"
-    )
-    # DynamicLlama specific parameters (will override config values if provided)
-    parser.add_argument(
-        "--dynamic_k",
-        type=float,
-        default=None,
-        help="Override config.dynamic_k for dynamic layers",
-    )
-    parser.add_argument(
-        "--ce_bias",
-        type=float,
-        default=None,
-        help="Override config.ce_bias for dynamic layers",
-    )
-    parser.add_argument(
-        "--gate_warmup_iters",
-        type=int,
-        default=None,
-        help="Override config.gate_warmup_iters for dynamic layers",
-    )
-    parser.add_argument(
-        "--token_wise",
-        type=bool,
-        default=None,
-        help="Override config.token_wise for dynamic layers (True/False)",
-    )
-
+    parser = argparse.ArgumentParser(description="Run benchmarks on a custom Qwen model.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
+    parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
+    parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
     args = parser.parse_args()
 
-    device = args.device
-    num_samples = args.max_eval_samples
+    # Expand task suites
+    task_names = sorted(list(set(
+        task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
+    )))
+    log.info(f"Running evaluation on tasks: {task_names}")
 
-    log.info(f"Loading model and tokenizer from {args.model_path} on {device}...")
+    # Conditionally enable Flash Attention
     try:
-        model, tokenizer = load_dynamic_llama_model_and_tokenizer(
-            model_path=args.model_path,
-            device=device,
-            is_instruct=args.is_instruct,
-            dynamic_k=args.dynamic_k,
-            ce_bias=args.ce_bias,
-            gate_warmup_iters=args.gate_warmup_iters,
-            token_wise=args.token_wise,
-        )
-        log.info("Model and tokenizer loaded successfully.")
-    except Exception as e:
-        log.error(f"Failed to load model and tokenizer: {e}")
-        sys.exit(1)
+        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+        use_flash_attention = getattr(model_config, "use_flash_attention_2", False)
+    except Exception:
+        use_flash_attention = False
 
-    # Initialize a text generation pipeline for generative tasks once
-    # Ensure device is handled correctly for the pipeline (e.g., device=model.device.index if CUDA)
-    pipe_device = -1  # Default to CPU
-    if str(model.device).startswith("cuda"):
-        pipe_device = model.device.index if model.device.index is not None else 0
+    model_args_list = [f"pretrained={args.model_path}", "trust_remote_code=True"]
+    if use_flash_attention:
+        log.info("Enabling Flash Attention 2 for evaluation based on model config.")
+        model_args_list.extend(["attn_implementation='flash_attention_2'", "torch_dtype='bfloat16'"])
+    model_args_str = ",".join(model_args_list)
 
-    gen_pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=256,
-        temperature=0.0,
-        do_sample=False,
-        device=pipe_device,
+    # Run evaluation
+    results = simple_evaluate(
+        model="hf", model_args=model_args_str, tasks=task_names,
+        batch_size=args.batch_size, device="cuda:0"
     )
+    final_results = results.get("results", {})
+    serializable_results = _make_json_serializable(final_results)
 
-    results = {}
+    output_dir = get_wandb_run_dir(args.model_path)
+    if output_dir is None:
+        output_dir = args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+    
+    model_name = os.path.basename(args.model_path.rstrip('/'))
+    output_filename = f"{model_name}_eval_results.json"
+    output_path = os.path.join(output_dir, output_filename)
 
-    for benchmark_name, config in BENCHMARKS.items():
-        log.info(f"\n--- Running {benchmark_name} ({config['type']} benchmark) ---")
-        try:
-            if config["type"] == "ppl":
-                score = run_perplexity_benchmark(
-                    model, tokenizer, config, num_samples, device
-                )
-                results[benchmark_name] = score
-            elif config["type"] == "mc":
-                score = run_multiple_choice_benchmark(
-                    model, tokenizer, config, num_samples, device, args.is_instruct
-                )
-                results[benchmark_name] = score
-            elif config["type"] == "mc_multi_subject":  # New type for MMLU
-                score = run_mmlu_benchmark(
-                    model, tokenizer, config, num_samples, device, args.is_instruct
-                )
-                results[benchmark_name] = score
-            elif config["type"] == "generative":
-                score = run_generative_benchmark(gen_pipe, model, config, num_samples)
-                results[benchmark_name] = score
-            elif config["type"] == "humaneval":
-                score = run_humaneval_benchmark(model, tokenizer, config, device)
-                results[benchmark_name] = score
-            else:
-                log.warning(
-                    f"Unknown benchmark type: {config['type']} for {benchmark_name}. Skipping."
-                )
+    with open(output_path, "w") as f:
+        json.dump(serializable_results, f, indent=2)
 
-        except Exception as e:
-            log.error(f"Error running {benchmark_name}: {type(e).__name__}: {e}")
-            results[benchmark_name] = f"ERROR: {type(e).__name__}: {e}"
+    log.info("--- Evaluation Results ---")
+    print(json.dumps(serializable_results, indent=2))
+    log.info(f"Results saved to {output_path}")
 
-    # Save final results
-    with open(args.output_file, "w") as f:
-        json.dump(results, f, indent=2)
-    log.info(f"\nEvaluation complete. Results saved to {args.output_file}")
-
+    # If in a resumed wandb run, upload the results and finish
+    if wandb.run is not None:
+        log.info("Uploading results to wandb as an artifact...")
+        wandb.save(output_path)
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

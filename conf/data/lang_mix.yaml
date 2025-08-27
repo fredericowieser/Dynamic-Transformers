@@ -1,56 +1,62 @@
-# This file defines a master mix for continued pre-training.
-# The goal is to enrich the model's core knowledge with a diverse diet of
-# high-quality text, including web data, books, code, and academic papers.
-#
-# To use this mix, run:
-# python main.py data=lang_mix
-
-_target_: src.data.mixed_datamodule.MixedDataModule  # Updated: New path to MixedDataModule
+_target_: src.data.mixed_dataset.MixedDataset
 _recursive_: false   # <- DO NOT instantiate children automatically
 _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
-# --- Overall parameters for the language mix ---
-batch_size: 4
-tokenizer_name: "meta-llama/Llama-3.2-1B-instruct"
-block_size: 2048
-validation_split_percentage: 1 # 1% is plenty for validation on these huge datasets.
-
-# --- List of dataset configurations to mix ---
-# We use different subsets of the RedPajama-Data-1T dataset, which is a
-# high-quality reproduction of the original LLaMA training data.
-# The subset ratios are small because the absolute size of these datasets is enormous.
 dataset_configs:
-  # 1. General Web Text (Foundation)
-  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path to HuggingFaceDataModule
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "common_crawl"
-    text_column: "text"
-    train_subset_ratio: 0.01 # 1% of Common Crawl is still millions of documents.
 
-  # 2. Long-form Coherence and Narrative
-  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "book"
-    text_column: "text"
-    train_subset_ratio: 0.05 # 5% of the books data.
+  # === Category 1: Core Knowledge & Coherence (~45%) ===
+  # A solid foundation of high-quality English text.
 
-  # 3. Foundational Code Understanding
-  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "github"
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "wikitext"
+    dataset_config: "wikitext-103-raw-v1" # A clean, standard benchmark dataset.
     text_column: "text"
-    train_subset_ratio: 0.05 # 5% of the GitHub data.
+    train_subset_ratio: 1.0 # Use all of it.
 
-  # 4. Technical and Academic Language
-  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "arxiv"
-    text_column: "text"
-    train_subset_ratio: 0.10 # 10% of ArXiv papers.
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article" # Use the full articles for long-form text.
+    train_subset_ratio: 0.2 # 20% provides a large volume of high-quality news text.
 
-  # 5. Conversational and Q&A Style
-  - _target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "stackexchange"
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "roneneldan/TinyStories" # Excellent for learning narrative and causal links.
     text_column: "text"
-    train_subset_ratio: 0.10 # 10% of StackExchange.
+    train_subset_ratio: 1.0
+
+  # === Category 2: Code & Technical Acumen (~25%) ===
+  # Focused, high-quality code to excel on HumanEval and MBPP.
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "codeparrot/codeparrot-clean-valid" # A high-quality, validated Python dataset.
+    text_column: "content"
+    train_subset_ratio: 1.0
+
+  # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+  #   dataset_name: "bigcode/the-stack-smol"
+  #   text_column: "content" # The text column for this dataset is 'content'.
+  #   train_subset_ratio: 0.2
+
+  # === Category 3: Mathematical & Scientific Reasoning (~20%) ===
+  # To directly target MATH, GSM8K, and science-based benchmarks.
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "gsm8k"
+    dataset_config: "main"
+    text_column: "question" # Using the question text for pre-training.
+    train_subset_ratio: 1.0 # Use the full dataset as it is small.
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "sciq" # Science questions to improve reasoning and knowledge.
+    text_column: "support" # Use the supporting evidence as high-quality text.
+    train_subset_ratio: 1.0
+
+  # === Category 4: Multilingual Capabilities (~10%) ===
+  # A targeted dataset for multilingual understanding and translation tasks.
+
+  # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+  #   # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.
+  #   dataset_name: "un_pc"
+  #   dataset_config: "en-fr" # English-French parallel text.
+  #   text_column: "translation" # Contains a dictionary with 'en' and 'fr' keys.
+  #   train_subset_ratio: 0.2 # Take a 20% slice to keep it fast.
