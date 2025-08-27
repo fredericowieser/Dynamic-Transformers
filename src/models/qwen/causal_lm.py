@@ -88,6 +88,9 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if self.config.dynamic_architecture == "mod":
+            use_cache = False
+
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
 
