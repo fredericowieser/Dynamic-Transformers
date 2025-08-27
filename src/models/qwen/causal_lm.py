@@ -3,17 +3,17 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from transformers import Qwen2ForCausalLM
+from transformers import Qwen2ForCausalLM, Qwen2Model
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
 from .config import DynamicQwenConfig
-from .modeling_outputs import DynamicCausalLMOutput, DecisionLayerOutput, VPRCausalLMOutput
+from .modeling_outputs import DynamicCausalLMOutput, VPRCausalLMOutput
 from ..layers.decision_layer import DecisionLayer
 from ..layers.dynamic_layer import DynamicLayer
 from ..layers.mod_layer import MoDLayer
 from ..blocks.qwen_block import Qwen2Block
-from ..utils.patching import patch_and_populate_layers
+from ..utils.patching import populate_weights_from_source_layers
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,36 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
     config_class = DynamicQwenConfig
 
     def __init__(self, config: DynamicQwenConfig):
-        super().__init__(config)
-        self._freeze_main_transformer_blocks = getattr(
-            config, "freeze_main_transformer_blocks", False
-        )
+        # We override __init__ completely to build the correct layer structure
+        super(Qwen2ForCausalLM, self).__init__(config)
+
+        # Build the model with dynamic layers from the start
+        self.model = Qwen2Model(config) # This creates embed_tokens and norm
+        
+        # Replace the standard layers with our dynamic layer structure
+        dynamic_layers = nn.ModuleList()
+        for i in range(config.num_hidden_layers):
+            if config.dynamic_architecture == "vpr":
+                if i % 2 == 0:
+                    dynamic_layers.append(DecisionLayer(config, layer_idx=i))
+                else:
+                    dynamic_layers.append(DynamicLayer(config, layer_idx=i))
+            elif config.dynamic_architecture == "mod":
+                if (i + 1) % 2 == 0:
+                    dynamic_layers.append(MoDLayer(config, layer_idx=i))
+                else:
+                    dynamic_layers.append(Qwen2Block(config, layer_idx=i))
+            else:
+                raise ValueError(f"Unknown dynamic_architecture: '{config.dynamic_architecture}'")
+        self.model.layers = dynamic_layers
+
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self._freeze_main_transformer_blocks = getattr(config, "freeze_main_transformer_blocks", False)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+        # This needs to be called after post_init, which initializes all weights
+        self._apply_main_block_freezing()
 
     def _apply_main_block_freezing(self):
         for layer in self.model.layers:
@@ -181,18 +207,31 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+    def from_vanilla_checkpoint(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """
+        Factory method to CONVERT a vanilla HF checkpoint into a dynamic one.
+        This should only be called once at the beginning of training.
+        """
+        logger.info(f"Converting vanilla checkpoint '{pretrained_model_name_or_path}' to dynamic architecture.")
         model_cfg = kwargs.pop("model_cfg", {})
         config = DynamicQwenConfig.from_pretrained(pretrained_model_name_or_path, **model_cfg)
-        kwargs.pop('config', None)
-        base_hf_model = Qwen2ForCausalLM.from_pretrained(
-            pretrained_model_name_or_path, config=config, *model_args, **kwargs
-        )
+        
+        # 1. Create our custom model. Its __init__ method builds the correct layer structure.
         custom_model = cls(config)
-        custom_model.model.embed_tokens = base_hf_model.model.embed_tokens
-        custom_model.model.norm = base_hf_model.model.norm
-        custom_model.lm_head = base_hf_model.lm_head
-        patch_and_populate_layers(custom_model, config, base_hf_model.model.layers)
-        custom_model._apply_main_block_freezing()
-        del base_hf_model
+
+        # 2. Load the vanilla pre-trained model to get its weights.
+        kwargs.pop('config', None)
+        vanilla_model = Qwen2ForCausalLM.from_pretrained(
+            pretrained_model_name_or_path, *model_args, **kwargs
+        )
+        
+        # 3. Copy weights from the vanilla model to our custom model.
+        custom_model.model.embed_tokens.load_state_dict(vanilla_model.model.embed_tokens.state_dict())
+        custom_model.model.norm.load_state_dict(vanilla_model.model.norm.state_dict())
+        custom_model.lm_head.load_state_dict(vanilla_model.lm_head.state_dict())
+        
+        # Use the utility to populate weights for the transformer layers.
+        populate_weights_from_source_layers(custom_model, vanilla_model.model.layers)
+        
+        del vanilla_model
         return custom_model

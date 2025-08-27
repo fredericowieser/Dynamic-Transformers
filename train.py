@@ -56,7 +56,7 @@ def main(cfg: DictConfig) -> None:
         log.info("Flash Attention 2 is enabled in the config. Applying to model loading.")
         model_load_kwargs["attn_implementation"] = "flash_attention_2"
         model_load_kwargs["torch_dtype"] = torch.bfloat16
-    model = DynamicQwenForCausalLM.from_pretrained(
+    model = DynamicQwenForCausalLM.from_vanilla_checkpoint(
         cfg.model.pretrained_model_name_or_path,
         **model_load_kwargs
     )
