@@ -41,8 +41,8 @@ dataset_configs:
   # To directly target MATH, GSM8K, and science-based benchmarks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "camel-ai/math"
-    text_column: "message_2" # The solution part of the chat.
+    dataset_name: "open-web-math/open-web-math"
+    text_column: "text"
     train_subset_ratio: 1.0
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
