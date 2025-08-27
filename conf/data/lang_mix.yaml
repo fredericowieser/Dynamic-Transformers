@@ -55,7 +55,8 @@ dataset_configs:
   # A targeted dataset for multilingual understanding and translation tasks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "tatoeba"
-    dataset_config: "deu-eng"
-    text_column: "translation" # This column contains a dictionary with 'de' and 'en' keys.
-    train_subset_ratio: 1.0 # Use the full dataset as it is very small.
+    # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.
+    dataset_name: "un_pc"
+    dataset_config: "en-fr" # English-French parallel text.
+    text_column: "translation" # Contains a dictionary with 'en' and 'fr' keys.
+    train_subset_ratio: 0.2 # Take a 20% slice to keep it fast.
