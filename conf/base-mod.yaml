@@ -8,7 +8,11 @@ model:
     capacity_gamma: 0.5
 
     # --- VPR Specific Params (Not used by MoD) ---
-    # These can be removed or set to null for clarity
+    prior_loss_schedule: null
+    learn_beta_ce: False
+    learn_beta_cu: False
+    learn_cu_multiplier: False
+    learn_ce_offset: False
     beta_ce_init: null
     beta_cu_init: null
     cu_detection_multiplier_init: null

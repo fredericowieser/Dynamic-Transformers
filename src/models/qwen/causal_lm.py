@@ -156,29 +156,30 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
-        def aggregate_stats(outputs_list, key_name):
-            # Gathers stats from each layer and computes the mean of each stat across layers
-            stats = [o.__getattribute__(key_name) for o in outputs_list]
-            return {
-                'mean': torch.stack([s['mean'] for s in stats]).mean(),
-                'std': torch.stack([s['std'] for s in stats]).mean(),
-                'min': torch.stack([s['min'] for s in stats]).mean(),
-                'max': torch.stack([s['max'] for s in stats]).mean(),
-            }
-        s_ce_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_ce_stats')
-        s_cu_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_cu_stats')
-        g_cont_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 'g_cont_stats')
-        def aggregate_router_param_stats(outputs_list, param_name):
-            # Gathers a scalar parameter from each layer and computes its mean and std
-            values = torch.tensor([o.__getattribute__(param_name) for o in outputs_list], device=outputs_list[0].hidden_states.device)
-            return {
-                'mean': values.mean(),
-                'std': values.std()
-            }
-        beta_ce_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_ce')
-        beta_cu_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_cu')
-        cu_multiplier_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_cu_detection_multiplier')
-        ce_offset_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_ce_criterion_offset')
+        if self.config.dynamic_architecture == "vpr" and all_dynamic_layer_outputs:
+            def aggregate_stats(outputs_list, key_name):
+                # Gathers stats from each layer and computes the mean of each stat across layers
+                stats = [o.__getattribute__(key_name) for o in outputs_list]
+                return {
+                    'mean': torch.stack([s['mean'] for s in stats]).mean(),
+                    'std': torch.stack([s['std'] for s in stats]).mean(),
+                    'min': torch.stack([s['min'] for s in stats]).mean(),
+                    'max': torch.stack([s['max'] for s in stats]).mean(),
+                }
+            s_ce_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_ce_stats')
+            s_cu_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_cu_stats')
+            g_cont_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 'g_cont_stats')
+            def aggregate_router_param_stats(outputs_list, param_name):
+                # Gathers a scalar parameter from each layer and computes its mean and std
+                values = torch.tensor([o.__getattribute__(param_name) for o in outputs_list], device=outputs_list[0].hidden_states.device)
+                return {
+                    'mean': values.mean(),
+                    'std': values.std()
+                }
+            beta_ce_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_ce')
+            beta_cu_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_beta_cu')
+            cu_multiplier_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_cu_detection_multiplier')
+            ce_offset_stats_agg = aggregate_router_param_stats(all_dynamic_layer_outputs, 'router_ce_criterion_offset')
 
         if not return_dict:
             return (logits,)
