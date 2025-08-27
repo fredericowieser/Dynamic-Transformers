@@ -1,0 +1,38 @@
+_target_: src.data.mixed_dataset.MixedDataset
+_recursive_: false
+_convert_: partial
+
+dataset_configs:
+
+  # === Core Pre-training Corpora ===
+  # A mix of high-quality, long-form text to improve the model's
+  # general knowledge, fluency, and long-range coherence.
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "wikitext"
+    dataset_config: "wikitext-103-raw-v1"
+    text_column: "text"
+    train_subset_ratio: 1.0 # Use all of wikitext
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "bookcorpus"
+    text_column: "text"
+    # Bookcorpus is great for learning narrative and dialogue structure.
+    train_subset_ratio: 0.5
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article" # Use the full articles, not summaries.
+    # A 20% subset provides a large volume of high-quality news text.
+    train_subset_ratio: 0.2
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "sciq"
+    text_column: "support" # Use the supporting evidence text for scientific knowledge.
+    train_subset_ratio: 1.0
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "roneneldan/TinyStories"
+    text_column: "text" # Excellent for learning basic causal reasoning.
+    train_subset_ratio: 1.0
