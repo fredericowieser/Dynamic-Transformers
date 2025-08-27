@@ -54,9 +54,9 @@ dataset_configs:
   # === Category 4: Multilingual Capabilities (~10%) ===
   # A targeted dataset for multilingual understanding and translation tasks.
 
-  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.
-    dataset_name: "un_pc"
-    dataset_config: "en-fr" # English-French parallel text.
-    text_column: "translation" # Contains a dictionary with 'en' and 'fr' keys.
-    train_subset_ratio: 0.2 # Take a 20% slice to keep it fast.
+  # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+  #   # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.
+  #   dataset_name: "un_pc"
+  #   dataset_config: "en-fr" # English-French parallel text.
+  #   text_column: "translation" # Contains a dictionary with 'en' and 'fr' keys.
+  #   train_subset_ratio: 0.2 # Take a 20% slice to keep it fast.
