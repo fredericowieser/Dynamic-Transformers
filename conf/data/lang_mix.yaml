@@ -35,7 +35,7 @@ dataset_configs:
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "bigcode/the-stack-smol"
     text_column: "content" # The text column for this dataset is 'content'.
-    train_subset_ratio: 1.0
+    train_subset_ratio: 0.2
 
   # === Category 3: Mathematical & Scientific Reasoning (~20%) ===
   # To directly target MATH, GSM8K, and science-based benchmarks.
