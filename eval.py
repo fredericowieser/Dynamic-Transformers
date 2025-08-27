@@ -103,7 +103,8 @@ def main():
         model="hf", model_args=model_args_str, tasks=task_names,
         batch_size=args.batch_size, device="cuda:0"
     )
-    serializable_results = _make_json_serializable(results)
+    final_results = results.get("results", {})
+    serializable_results = _make_json_serializable(final_results)
 
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
