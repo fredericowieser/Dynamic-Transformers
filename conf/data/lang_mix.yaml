@@ -20,7 +20,7 @@ dataset_configs:
     train_subset_ratio: 0.2 # 20% provides a large volume of high-quality news text.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "danj/tiny-stories" # Excellent for learning narrative and causal links.
+    dataset_name: "roneneldan/TinyStories" # Excellent for learning narrative and causal links.
     text_column: "text"
     train_subset_ratio: 1.0
 
