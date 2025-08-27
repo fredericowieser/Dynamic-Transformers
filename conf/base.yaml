@@ -1,9 +1,9 @@
 defaults:
   - _self_
-  - data: sft_mix
+  - data: lang_mix
 
 run:
-  name: "TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
+  name: "PRETRAIN-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
@@ -13,7 +13,7 @@ run:
 data:
   name: ${hydra:runtime.choices.data}
   batch_size: 16
-  tokenizer_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  tokenizer_name: "Qwen/Qwen2.5-0.5B"
   block_size: 1024
   validation_split_percentage: 2
 
@@ -37,7 +37,7 @@ peft:
 
 model:
   _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
-  pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B-Instruct"
+  pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B"
   use_flash_attention_2: true
 
   model_cfg:
