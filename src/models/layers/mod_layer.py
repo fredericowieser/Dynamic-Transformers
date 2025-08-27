@@ -105,10 +105,12 @@ class MoDLayer(nn.Module):
         # Create a clean tensor to scatter the results into.
         final_hidden_states = hidden_states.clone()
 
-        # Scale the processed tokens by their router weights to ensure the router is learnable.
-        # Gather the router weights for the selected tokens.
+        # --- START OF FAITHFUL IMPLEMENTATION ---
+        # Scale the processed tokens by their original, un-normalized router weights.
+        # This is the method described in the MoD paper to make the router learnable.
         selected_router_weights = router_weights[batch_indices, token_indices]
         scaled_processed_tokens = processed_tokens * selected_router_weights.unsqueeze(-1).to(processed_tokens.dtype)
+        # --- END OF FAITHFUL IMPLEMENTATION ---
 
         # Scatter the scaled, processed tokens back to their original positions.
         final_hidden_states[batch_indices, token_indices] = scaled_processed_tokens
