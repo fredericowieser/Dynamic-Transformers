@@ -14,9 +14,10 @@ dataset_configs:
     train_subset_ratio: 1.0 # Use all of it.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "i-ai/para_nmt_50m" # High-quality paraphrases.
-    text_column: "translation"
-    train_subset_ratio: 0.1 # 10% provides a large set of diverse sentence structures.
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article" # Use the full articles for long-form text.
+    train_subset_ratio: 0.2 # 20% provides a large volume of high-quality news text.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "danj/tiny-stories" # Excellent for learning narrative and causal links.
