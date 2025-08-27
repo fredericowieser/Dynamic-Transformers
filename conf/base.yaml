@@ -18,7 +18,7 @@ data:
   validation_split_percentage: 2
 
 peft:
-  enabled: False
+  enabled: True
   config:
     _target_: peft.LoraConfig
     r: 16
