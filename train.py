@@ -1,6 +1,7 @@
 import logging
 import os
 import math
+import json
 from tqdm.auto import tqdm
 
 import hydra
@@ -156,8 +157,16 @@ def main(cfg: DictConfig) -> None:
                         log_router_param_stats("cu_multiplier", metrics.get("router_cu_multiplier_stats"))
                         log_router_param_stats("ce_offset", metrics.get("router_ce_offset_stats"))
                     if cfg.logging.wandb.enabled:
-                        wandb.log(log_metrics, step=progress_bar.n)
-
+                        wandb_info = {
+                            "run_id": wandb.run.id,
+                            "project": wandb.run.project,
+                            "entity": wandb.run.entity,
+                            "run_name": wandb.run.name,
+                        }
+                        wandb_info_path = os.path.join(save_path, "wandb_info.json")
+                        with open(wandb_info_path, "w") as f:
+                            json.dump(wandb_info, f, indent=2)
+                        log.info(f"Saved wandb run info to {wandb_info_path}")
                 if (progress_bar.n + 1) % cfg.training.eval_interval == 0:
                     model.eval()
                     val_losses = []
