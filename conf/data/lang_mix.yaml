@@ -41,9 +41,10 @@ dataset_configs:
   # To directly target MATH, GSM8K, and science-based benchmarks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "math-corpora/math-essays-v1"
-    text_column: "text"
-    train_subset_ratio: 1.0 # Use the full dataset as it is already small.
+    dataset_name: "gsm8k"
+    dataset_config: "main"
+    text_column: "question" # Using the question text for pre-training.
+    train_subset_ratio: 1.0 # Use the full dataset as it is small.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "sciq" # Science questions to improve reasoning and knowledge.
