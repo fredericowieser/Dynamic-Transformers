@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - data: lang_mix
+  - data: pretrain_mix
 
 run:
   name: "PRETRAIN-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"

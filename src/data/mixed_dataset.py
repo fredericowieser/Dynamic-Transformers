@@ -6,14 +6,20 @@ from omegaconf import DictConfig
 from torch.utils.data import ConcatDataset, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+# --- START OF MODIFICATION ---
+# Import both dataset handlers
 from .huggingface_dataset import HuggingFaceDataset
+from .pretraining_dataset import PretrainingDataset
+# --- END OF MODIFICATION ---
 
 log = logging.getLogger(__name__)
 
 class MixedDataset:
     """
     A class to load, process, and combine multiple Hugging Face datasets.
-    This class orchestrates multiple HuggingFaceDataset instances.
+    This class orchestrates multiple dataset handlers based on the specified
+    dataset type (e.g., 'sft' for instruction tuning, 'pretrain' for continued
+    pre-training).
     """
     def __init__(
         self,
@@ -35,13 +41,27 @@ class MixedDataset:
 
     def setup(self, stage: str = None) -> None:
         """
-        Loads, processes, and concatenates all specified datasets.
+        Loads, processes, and concatenates all specified datasets using the
+        appropriate handler for each.
         """
         log.info("Setting up mixed dataset...")
         all_train_datasets, all_val_datasets = [], []
 
         for cfg in self.dataset_configs:
-            single_dataset_handler = HuggingFaceDataset(
+            # --- START OF MODIFICATION ---
+            # Dynamically select the dataset handler based on the config
+            dataset_type = cfg.get("type", "sft") # Default to 'sft' for backward compatibility
+            log.info(f"Processing dataset '{cfg['dataset_name']}' with handler: '{dataset_type}'")
+
+            if dataset_type == "sft":
+                handler_class = HuggingFaceDataset
+            elif dataset_type == "pretrain":
+                handler_class = PretrainingDataset
+            else:
+                raise ValueError(f"Unknown dataset type '{dataset_type}' in config for '{cfg['dataset_name']}'.")
+
+            # The hydra instantiation is now more generic
+            single_dataset_handler = handler_class(
                 tokenizer=self.tokenizer,
                 dataset_name=cfg["dataset_name"],
                 text_column=cfg["text_column"],
@@ -50,6 +70,7 @@ class MixedDataset:
                 validation_split_percentage=self.validation_split_percentage,
                 train_subset_ratio=cfg.get("train_subset_ratio"),
             )
+            # --- END OF MODIFICATION ---
             
             train_data, val_data = single_dataset_handler.load_and_process()
 
