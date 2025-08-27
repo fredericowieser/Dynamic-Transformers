@@ -212,8 +212,25 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Reached max_steps ({num_training_steps}). Stopping training.")
             break
 
-    if accelerator.is_main_process and cfg.logging.wandb.enabled:
-        wandb.finish()
+    if accelerator.is_main_process:
+        log.info("--- Saving final model checkpoint ---")
+        unwrapped_model = accelerator.unwrap_model(model)
+        final_save_path = os.path.join(cfg.run.output_dir, "final_model")
+        unwrapped_model.save_pretrained(final_save_path, safe_serialization=True)
+        tokenizer.save_pretrained(final_save_path)
+        
+        if cfg.logging.wandb.enabled:
+            wandb_info = {
+                "run_id": wandb.run.id, "project": wandb.run.project,
+                "entity": wandb.run.entity, "run_name": wandb.run.name,
+            }
+            with open(os.path.join(final_save_path, "wandb_info.json"), "w") as f:
+                json.dump(wandb_info, f, indent=2)
+            log.info(f"Saved wandb run info to {final_save_path}")
+            
+        log.info(f"Final model saved to {final_save_path}")
+        if cfg.logging.wandb.enabled:
+            wandb.finish()
 
     log.info("--- Training Finished ---")
 
