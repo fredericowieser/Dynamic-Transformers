@@ -78,9 +78,6 @@ class MoDLayer(nn.Module):
         selected_tokens_batched = selected_tokens.unsqueeze(0) # Shape: (1, num_selected_tokens, hidden_dim)
 
         # Create a new causal attention mask for this temporary mega-sequence.
-        # This is an approximation but is a standard technique for making sparse
-        # attention computationally tractable. It preserves causality among the
-        # selected tokens but loses the original absolute positional relationships.
         processing_attention_mask = _prepare_4d_causal_attention_mask(
             attention_mask=None,
             input_shape=(1, num_selected_tokens),
@@ -105,15 +102,24 @@ class MoDLayer(nn.Module):
         # Create a clean tensor to scatter the results into.
         final_hidden_states = hidden_states.clone()
 
-        # --- START OF FAITHFUL IMPLEMENTATION ---
-        # Scale the processed tokens by their original, un-normalized router weights.
-        # This is the method described in the MoD paper to make the router learnable.
+        # --- START OF FAITHFUL IMPLEMENTATION & NaN FIX ---
+        # The paper states to scale the "output of the function f", which is the
+        # change (delta) computed by the block, not the entire output.
+        # This is also more numerically stable.
+        delta = processed_tokens - selected_tokens
+        
+        # Gather the router weights for only the selected tokens
         selected_router_weights = router_weights[batch_indices, token_indices]
-        scaled_processed_tokens = processed_tokens * selected_router_weights.unsqueeze(-1).to(processed_tokens.dtype)
-        # --- END OF FAITHFUL IMPLEMENTATION ---
+        
+        # Scale the delta by the original, un-normalized router weights.
+        scaled_delta = delta * selected_router_weights.unsqueeze(-1).to(delta.dtype)
+        
+        # Add the scaled delta back to the original selected tokens
+        updated_selected_tokens = selected_tokens + scaled_delta
+        # --- END OF FAITHFUL IMPLEMENTATION & NaN FIX ---
 
-        # Scatter the scaled, processed tokens back to their original positions.
-        final_hidden_states[batch_indices, token_indices] = scaled_processed_tokens
+        # Scatter the updated tokens back to their original positions.
+        final_hidden_states[batch_indices, token_indices] = updated_selected_tokens
 
         # Return in the standard format (hidden_states, present_key_value, attention_weights)
         return (final_hidden_states, None, None)
