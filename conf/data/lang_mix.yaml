@@ -55,19 +55,7 @@ dataset_configs:
   # A targeted dataset for multilingual understanding and translation tasks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "wikipedia"
-    dataset_config: "20220301.de" # German
-    text_column: "text"
-    train_subset_ratio: 0.1 # Sample 10% from each language to keep it manageable.
-
-  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "wikipedia"
-    dataset_config: "20220301.fr" # French
-    text_column: "text"
-    train_subset_ratio: 0.1
-
-  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "wikipedia"
-    dataset_config: "20220301.es" # Spanish
-    text_column: "text"
-    train_subset_ratio: 0.1
+    dataset_name: "tatoeba"
+    dataset_config: "deu-eng"
+    text_column: "translation" # This column contains a dictionary with 'de' and 'en' keys.
+    train_subset_ratio: 1.0 # Use the full dataset as it is very small.
