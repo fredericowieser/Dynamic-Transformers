@@ -1,3 +1,4 @@
+# @package _group_
 _target_: src.data.mixed_dataset.MixedDataset
 _recursive_: false
 _convert_: partial
@@ -15,10 +16,16 @@ dataset_configs:
     train_subset_ratio: 1.0 # Use all of wikitext
 
   - type: "pretrain" # Use the new pre-training data handler
-    dataset_name: "bookcorpus"
-    text_column: "text"
-    # Bookcorpus is great for learning narrative and dialogue structure.
-    train_subset_ratio: 0.5
+    dataset_name: "squad"
+    text_column: "context" # Use the context paragraphs from SQuAD
+    # These are high-quality, information-dense paragraphs.
+    train_subset_ratio: 1.0
+
+  - type: "pretrain" # Use the new pre-training data handler
+    dataset_name: "adversarial_qa"
+    dataset_config: "adversarialQA"
+    text_column: "context" # Contexts designed to be challenging for models.
+    train_subset_ratio: 1.0
 
   - type: "pretrain" # Use the new pre-training data handler
     dataset_name: "cnn_dailymail"
