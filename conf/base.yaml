@@ -69,8 +69,13 @@ model:
     freeze_main_transformer_blocks: False
 
 training:
-  accumulate_grad_batches: 16
+  # --- Training Duration Control ---
+  # Specify EITHER num_epochs OR max_steps.
+  # If max_steps is set to a positive number, it will take precedence.
   num_epochs: 1
+  max_steps: 50
+
+  accumulate_grad_batches: 16
   eval_interval: 1000
 
   use_gradient_clipping: False

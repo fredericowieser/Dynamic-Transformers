@@ -11,7 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 import wandb
 
 from accelerate import Accelerator
-from transformers import get_scheduler, AutoTokenizer, DataCollatorForLanguageModeling
+from transformers import get_scheduler, DataCollatorForLanguageModeling
 from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model
 
@@ -66,13 +66,14 @@ def main(cfg: DictConfig) -> None:
         model = get_peft_model(model, peft_config)
         log.info("Trainable parameters after applying LoRA:")
         model.print_trainable_parameters()
+
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
-    tokenizer = datamodule.tokenizer # Use tokenizer from datamodule
+    tokenizer = datamodule.tokenizer
     model.config.pad_token_id = tokenizer.pad_token_id
+    
     log.info("Setting up optimizer with 2 distinct parameter groups...")
-    base_model_params = []
-    dynamic_params = []
+    base_model_params, dynamic_params = [], []
     for n, p in model.named_parameters():
         if p.requires_grad:
             if "prior_" in n or "vpr_router" in n:
@@ -90,7 +91,18 @@ def main(cfg: DictConfig) -> None:
         weight_decay=cfg.training.optimizer.weight_decay,
     )
     gate_logger = GateLogger(model.config.num_hidden_layers)
-    num_training_steps = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches) * cfg.training.num_epochs
+
+    # Epochs and Steps Calculation
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches)
+    if cfg.training.max_steps > 0:
+        num_training_steps = cfg.training.max_steps
+        num_epochs = math.ceil(num_training_steps / num_update_steps_per_epoch)
+        log.info(f"Training for a fixed {num_training_steps} steps (approx. {num_epochs} epochs).")
+    else:
+        num_training_steps = num_update_steps_per_epoch * cfg.training.num_epochs
+        num_epochs = cfg.training.num_epochs
+        log.info(f"Training for {num_epochs} epochs ({num_training_steps} steps).")
+    
     num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
     lr_scheduler = get_scheduler(
         name="cosine",
@@ -101,6 +113,7 @@ def main(cfg: DictConfig) -> None:
     model, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader, lr_scheduler
     )
+
     if accelerator.is_main_process and cfg.logging.wandb.enabled:
         wandb.init(
             project=cfg.logging.wandb.project,
@@ -112,16 +125,20 @@ def main(cfg: DictConfig) -> None:
     log.info("--- Starting Training ---")
     progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_main_process)
     best_val_loss = float('inf')
-    for epoch in range(cfg.training.num_epochs):
+
+    for epoch in range(num_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
+            if progress_bar.n >= num_training_steps:
+                break
+            
             with accelerator.accumulate(model):
                 metrics = calculate_metrics(model, batch, progress_bar.n)
                 total_loss = metrics["total_loss"]
                 accelerator.backward(total_loss)
                 if accelerator.sync_gradients:
                     if cfg.training.use_gradient_clipping:
-                        accelerator.clip_grad_norm_(trainable_params, cfg.training.gradient_clip_val)
+                        accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -131,6 +148,7 @@ def main(cfg: DictConfig) -> None:
                 if metrics.get("per_layer_gate_stats"):
                     gate_logger.update_rolling_history(metrics["per_layer_gate_stats"])
                     gate_logger.log_rolling_history(progress_bar.n, log_interval=100)
+                
                 if accelerator.is_main_process:
                     log_metrics = {
                         "train/loss": metrics["total_loss"].item(),
@@ -157,17 +175,9 @@ def main(cfg: DictConfig) -> None:
                         log_router_param_stats("cu_multiplier", metrics.get("router_cu_multiplier_stats"))
                         log_router_param_stats("ce_offset", metrics.get("router_ce_offset_stats"))
                     if cfg.logging.wandb.enabled:
-                        wandb_info = {
-                            "run_id": wandb.run.id,
-                            "project": wandb.run.project,
-                            "entity": wandb.run.entity,
-                            "run_name": wandb.run.name,
-                        }
-                        wandb_info_path = os.path.join(save_path, "wandb_info.json")
-                        with open(wandb_info_path, "w") as f:
-                            json.dump(wandb_info, f, indent=2)
-                        log.info(f"Saved wandb run info to {wandb_info_path}")
-                if (progress_bar.n + 1) % cfg.training.eval_interval == 0:
+                        wandb.log(log_metrics, step=progress_bar.n)
+
+                if (progress_bar.n) % cfg.training.eval_interval == 0 and progress_bar.n > 0:
                     model.eval()
                     val_losses = []
                     for val_batch in val_dataloader:
@@ -187,12 +197,23 @@ def main(cfg: DictConfig) -> None:
                             save_path = os.path.join(cfg.run.output_dir, "best_model")
                             unwrapped_model.save_pretrained(save_path, safe_serialization=True)
                             tokenizer.save_pretrained(save_path)
+                            
+                            if cfg.logging.wandb.enabled:
+                                wandb_info = {
+                                    "run_id": wandb.run.id, "project": wandb.run.project,
+                                    "entity": wandb.run.entity, "run_name": wandb.run.name,
+                                }
+                                with open(os.path.join(save_path, "wandb_info.json"), "w") as f:
+                                    json.dump(wandb_info, f, indent=2)
+                                log.info(f"Saved wandb run info to {save_path}")
+                    model.train()
+        
+        if progress_bar.n >= num_training_steps:
+            log.info(f"Reached max_steps ({num_training_steps}). Stopping training.")
+            break
 
-                model.train()
-
-    if accelerator.is_main_process:
-        if cfg.logging.wandb.enabled:
-            wandb.finish()
+    if accelerator.is_main_process and cfg.logging.wandb.enabled:
+        wandb.finish()
 
     log.info("--- Training Finished ---")
 
