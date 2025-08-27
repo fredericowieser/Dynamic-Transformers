@@ -18,7 +18,7 @@ data:
   validation_split_percentage: 2
 
 peft:
-  enabled: True
+  enabled: False
   config:
     _target_: peft.LoraConfig
     r: 16
@@ -84,7 +84,7 @@ training:
   optimizer:
     base_model_lr: 1.0e-5       # base Qwen2Block parameters
     prior_lr: 1.0e-3
-    vpr_router_lr: 1.0e-1
+    vpr_router_lr: 1.0e-2
     weight_decay: 0.01
     warmup_ratio: 0.01
 
