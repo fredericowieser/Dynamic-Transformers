@@ -117,8 +117,8 @@ class VPRRouter(nn.Module):
             CE_val = mean_d_st - (mean_d_ch - torch.log(ce_criterion_offset_val + 1e-10))
             CU_val = mean_d_st - (self.cu_detection_multiplier * mean_d_st.detach())
 
-        S_CE = torch.sigmoid(self.beta_ce * CE_val)
-        S_CU = torch.sigmoid(self.beta_cu * CU_val)
+        S_CE = torch.sigmoid(F.softplus(self.beta_ce) * CE_val)
+        S_CU = torch.sigmoid(F.softplus(self.beta_cu) * CU_val)
 
         combined_gating_signal_continuous = S_CE + S_CU - (S_CE * S_CU)
 
