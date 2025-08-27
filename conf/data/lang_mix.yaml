@@ -4,83 +4,58 @@ _convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
 
 dataset_configs:
 
-  # === Category 1: Foundational Knowledge & Long-Form Coherence (~50%) ===
-  # The bedrock of the model's understanding of language, facts, and narrative.
+  # === Category 1: Core Knowledge & Coherence (~45%) ===
+  # A solid foundation of high-quality English text.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "allenai/c4"
-    dataset_config: "en"
+    dataset_name: "wikitext"
+    dataset_config: "wikitext-103-raw-v1" # A clean, standard benchmark dataset.
     text_column: "text"
-    # A large portion of C4 provides a high-quality, cleaned web text foundation.
-    train_subset_ratio: 0.20
+    train_subset_ratio: 1.0 # Use all of it.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "wikimedia/wikipedia"
-    dataset_config: "20231101.en"
+    dataset_name: "sg_edu_nus_para/para-nmt-50m" # High-quality paraphrases.
+    text_column: "translation"
+    train_subset_ratio: 0.1 # 10% provides a large set of diverse sentence structures.
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "danj/tiny-stories" # Excellent for learning narrative and causal links.
     text_column: "text"
-    # The entirety of English Wikipedia is essential for high-quality, factual knowledge.
     train_subset_ratio: 1.0
 
-  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "the_pile_books3"
-    text_column: "text"
-    # Full book corpus for long-range coherence, narrative understanding, and style.
-    train_subset_ratio: 1.0
-
-
-  # === Category 2: Code & Technical Mastery (~20%) ===
-  # To excel on HumanEval and MBPP, we need a strong dose of high-quality code.
+  # === Category 2: Code & Technical Acumen (~25%) ===
+  # Focused, high-quality code to excel on HumanEval and MBPP.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "bigcode/the-stack-dedup"
-    dataset_config: "default"
-    # Data from multiple high-value programming languages. This is the gold standard.
-    data_files:
-      - "data/python/*.parquet"
-      - "data/java/*.parquet"
-      - "data/javascript/*.parquet"
+    dataset_name: "codeparrot/codeparrot-clean-valid" # A high-quality, validated Python dataset.
     text_column: "content"
-    train_subset_ratio: 0.15 # 15% of this massive, deduplicated dataset is a huge amount of code.
+    train_subset_ratio: 1.0
 
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "iam-groot/code-clippy-dev" # A smaller, multi-language code collection.
+    text_column: "text"
+    train_subset_ratio: 1.0
 
   # === Category 3: Mathematical & Scientific Reasoning (~20%) ===
-  # This is critical for boosting scores on MATH, GSM8K, and reasoning tasks.
+  # To directly target MATH, GSM8K, and science-based benchmarks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "open-web-math/open-web-math"
-    text_column: "text"
-    # Essential for mathematical reasoning. This contains high-quality web text with LaTeX.
+    dataset_name: "camel-ai/math"
+    text_column: "message_2" # The solution part of the chat.
     train_subset_ratio: 1.0
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "togethercomputer/RedPajama-Data-1T"
-    dataset_config: "arxiv"
-    text_column: "text"
-    # We significantly increase the proportion of ArXiv papers for scientific knowledge and formal logic.
-    train_subset_ratio: 0.60
-
-  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "wikimedia/wikibooks"
-    dataset_config: "20231101.en"
-    text_column: "text"
-    # Wikibooks contains well-structured textbook content, great for math and science.
+    dataset_name: "sciq" # Science questions to improve reasoning and knowledge.
+    text_column: "support" # Use the supporting evidence as high-quality text.
     train_subset_ratio: 1.0
 
-
-  # === Category 4: Multilingual Foundation (~10%) ===
-  # To address the multilingual benchmarks directly.
+  # === Category 4: Multilingual Capabilities (~10%) ===
+  # A targeted dataset for multilingual understanding and translation tasks.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "allenai/c4"
-    # We sample from a wide range of languages from the multilingual C4 corpus.
-    # Add or remove languages as needed.
-    dataset_config: "multilingual"
-    data_files:
-      - "de/*.json.gz" # German
-      - "fr/*.json.gz" # French
-      - "es/*.json.gz" # Spanish
-      - "zh/*.json.gz" # Chinese
-      - "ar/*.json.gz" # Arabic
-      - "ja/*.json.gz" # Japanese
-    text_column: "text"
-    train_subset_ratio: 0.10 # 10% of the data for each of these languages.
+    dataset_name: "amazon_reviews_multi"
+    # This dataset contains parallel text in several key languages.
+    # We will use English, German, French, Spanish, Japanese, and Chinese reviews.
+    dataset_config: "all_languages"
+    text_column: "review_body"
+    train_subset_ratio: 0.5 # 50% provides a solid multilingual signal.
