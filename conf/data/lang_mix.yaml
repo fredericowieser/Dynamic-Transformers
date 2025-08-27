@@ -14,7 +14,7 @@ dataset_configs:
     train_subset_ratio: 1.0 # Use all of it.
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "sg_edu_nus_para/para-nmt-50m" # High-quality paraphrases.
+    dataset_name: "i-ai/para_nmt_50m" # High-quality paraphrases.
     text_column: "translation"
     train_subset_ratio: 0.1 # 10% provides a large set of diverse sentence structures.
 
