@@ -139,10 +139,10 @@ class VPRRouter(nn.Module):
         else:
             if self.token_wise_gating:
                 flat_g_signal = combined_gating_signal_continuous.flatten()
-                threshold = torch.quantile(flat_g_signal, (1.0 - capacity_gamma))
+                threshold = torch.quantile(flat_g_signal.float(), (1.0 - capacity_gamma))
             else:
                 threshold = torch.quantile(
-                    combined_gating_signal_continuous, (1.0 - capacity_gamma), dim=0
+                    combined_gating_signal_continuous.float, (1.0 - capacity_gamma), dim=0
                 )
 
         gate_vec_binary = (combined_gating_signal_continuous >= threshold).float()
