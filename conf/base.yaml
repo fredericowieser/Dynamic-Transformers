@@ -75,7 +75,7 @@ training:
   num_epochs: 1
   max_steps: -1
 
-  accumulate_grad_batches: 16
+  accumulate_grad_batches: 256
   eval_interval: 100
 
   use_gradient_clipping: False
