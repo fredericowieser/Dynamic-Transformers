@@ -1,4 +1,3 @@
-# @package _group_
 _target_: src.data.mixed_dataset.MixedDataset
 _recursive_: false
 _convert_: partial
