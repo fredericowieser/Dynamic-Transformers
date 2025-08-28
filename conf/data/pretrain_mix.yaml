@@ -30,7 +30,7 @@ dataset_configs:
 
   - type: "pretrain"
     dataset_name: "HuggingFaceTB/cosmopedia"
-    text_column: "text"
+    text_column: "openstax"
     train_subset_ratio: 0.1 # ~3M docs. Synthetic textbooks are very potent.
 
   - type: "pretrain"
