@@ -29,11 +29,6 @@ dataset_configs:
   # Directly targets MMLU and ARC-Challenge with formal, technical text.
 
   - type: "pretrain"
-    dataset_name: "EleutherAI/pile-pubmed-abstracts" # REPLACED: Switched to a smaller, high-quality academic dataset.
-    text_column: "text"
-    train_subset_ratio: 1.0 # Use all of this dataset.
-
-  - type: "pretrain"
     dataset_name: "HuggingFaceTB/cosmopedia"
     text_column: "text"
     train_subset_ratio: 0.1 # ~3M docs. Synthetic textbooks are very potent.
