@@ -4,44 +4,54 @@ _convert_: partial
 
 dataset_configs:
 
-  # === Category 1: Foundational General Text (~60%) ===
-  # The backbone of the training mix. High-quality, diverse text to
-  # prevent catastrophic forgetting and maintain broad language skills.
+  # === Category 1: Foundational General Knowledge (~40%) ===
+  # A diverse base of high-quality text to prevent catastrophic forgetting
+  # and maintain broad language, narrative, and factual skills.
 
   - type: "pretrain"
     dataset_name: "wikitext"
     dataset_config: "wikitext-103-raw-v1"
     text_column: "text"
-    train_subset_ratio: 1.0 # Use all of this high-quality corpus.
+    train_subset_ratio: 1.0 # ~1.8M docs. Core high-quality text.
 
   - type: "pretrain"
-    dataset_name: "openwebtext" # REPLACED: Switched to a stable, high-quality web text corpus.
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article"
+    train_subset_ratio: 0.2 # ~57k docs. High-quality news.
+
+  - type: "pretrain"
+    dataset_name: "storytracer/US-PD-Books"
     text_column: "text"
-    # A large, open-source recreation of the WebText dataset. Excellent for
-    # general-purpose language modeling.
-    train_subset_ratio: 0.2 # Use a 20% slice to keep it manageable but substantial.
+    train_subset_ratio: 0.5 # ~327k docs. Classic literature for narrative.
 
-  # === Category 2: Logical & Scientific Reasoning (~30%) ===
-  # Targeted datasets to boost performance on technical benchmarks.
+  # === Category 2: Academic & Scientific Reasoning (~40%) ===
+  # Directly targets MMLU and ARC-Challenge with formal, technical text.
 
   - type: "pretrain"
-    dataset_name: "codeparrot/codeparrot-clean-valid"
-    text_column: "content"
-    # High-quality Python code teaches logical structure and reasoning,
-    # which is crucial for benchmarks like BBH and MMLU.
-    train_subset_ratio: 1.0
+    dataset_name: "allenai/peS2o"
+    text_column: "text"
+    train_subset_ratio: 0.05 # ~2M docs. A slice of academic papers.
+
+  - type: "pretrain"
+    dataset_name: "HuggingFaceTB/cosmopedia"
+    text_column: "text"
+    train_subset_ratio: 0.1 # ~3M docs. Synthetic textbooks are very potent.
 
   - type: "pretrain"
     dataset_name: "sciq"
     text_column: "support"
-    # Factual scientific text to ground the model for ARC-Challenge and MMLU.
-    train_subset_ratio: 1.0
+    train_subset_ratio: 1.0 # ~13k docs. Factual science passages.
 
-  # === Category 3: Causal Commonsense (~10%) ===
-  # A small but powerful dataset for basic reasoning.
+  # === Category 3: Logical & Commonsense Reasoning (~20%) ===
+  # Improves performance on Hellaswag and general reasoning.
+
+  - type: "pretrain"
+    dataset_name: "codeparrot/codeparrot-clean-valid"
+    text_column: "content"
+    train_subset_ratio: 1.0 # ~18k docs. Code for logical structure.
 
   - type: "pretrain"
     dataset_name: "roneneldan/TinyStories"
     text_column: "text"
-    # Proven to be highly effective at teaching causal links and narrative.
-    train_subset_ratio: 1.0
+    train_subset_ratio: 1.0 # ~2.1M docs. Excellent for basic causality.
