@@ -15,11 +15,11 @@ dataset_configs:
     train_subset_ratio: 1.0 # Use all of this high-quality corpus.
 
   - type: "pretrain"
-    dataset_name: "the_pile_books3"
+    dataset_name: "openwebtext" # REPLACED: Switched to a stable, high-quality web text corpus.
     text_column: "text"
-    # A large, high-quality corpus of books. Excellent for narrative, dialogue,
-    # and long-range coherence needed for commonsense tasks.
-    train_subset_ratio: 0.1 # Use a 10% slice to keep it manageable.
+    # A large, open-source recreation of the WebText dataset. Excellent for
+    # general-purpose language modeling.
+    train_subset_ratio: 0.2 # Use a 20% slice to keep it manageable but substantial.
 
   # === Category 2: Logical & Scientific Reasoning (~30%) ===
   # Targeted datasets to boost performance on technical benchmarks.
