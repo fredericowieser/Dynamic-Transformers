@@ -72,10 +72,10 @@ training:
   # --- Training Duration Control ---
   # Specify EITHER num_epochs OR max_steps.
   # If max_steps is set to a positive number, it will take precedence.
-  num_epochs: 3
-  max_steps: 500
+  num_epochs: 1
+  max_steps: -1
 
-  accumulate_grad_batches: 16
+  accumulate_grad_batches: 64
   eval_interval: 100
 
   use_gradient_clipping: False
