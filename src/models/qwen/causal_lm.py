@@ -126,16 +126,28 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 decision_layer = self.model.layers[i]
                 dynamic_layer = self.model.layers[i+1]
                 
-                layer_args = {
+                # --- START OF FIX: Handle past_key_values for each layer ---
+                past_kv_decision = past_key_values[i] if past_key_values is not None else None
+                past_kv_dynamic = past_key_values[i+1] if past_key_values is not None else None
+
+                common_args = {
                     "attention_mask": causal_mask,
                     "position_ids": position_ids,
                     "use_cache": use_cache,
-                    "output_attentions": output_attentions
+                    "output_attentions": output_attentions,
+                    **kwargs,
                 }
-                layer_args.update(kwargs)
 
-                decision_output = decision_layer(hidden_states, **layer_args)
-                dynamic_output = dynamic_layer(decision_output.hidden_states, decision_output=decision_output, **layer_args)
+                decision_output = decision_layer(
+                    hidden_states, past_key_value=past_kv_decision, **common_args
+                )
+                dynamic_output = dynamic_layer(
+                    decision_output.hidden_states,
+                    decision_output=decision_output,
+                    past_key_value=past_kv_dynamic,
+                    **common_args,
+                )
+                # --- END OF FIX ---
 
                 hidden_states = dynamic_output.hidden_states
                 all_dynamic_layer_outputs.append(dynamic_output)
@@ -144,16 +156,22 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
         elif self.config.dynamic_architecture == "mod":
             for i, layer in enumerate(self.model.layers):
+                # --- START OF FIX: Handle past_key_values for each layer ---
+                past_kv = past_key_values[i] if past_key_values is not None else None
                 layer_outputs = layer(
                     hidden_states,
                     attention_mask=causal_mask,
                     position_ids=position_ids,
+                    past_key_value=past_kv,
                     use_cache=use_cache,
-                    output_attentions=output_attentions
+                    output_attentions=output_attentions,
+                    **kwargs,
                 )
+                # --- END OF FIX ---
                 hidden_states = layer_outputs[0]
                 if use_cache:
                     next_past_key_values.append(layer_outputs[1])
+        
         
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
