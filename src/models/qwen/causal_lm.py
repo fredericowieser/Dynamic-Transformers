@@ -89,6 +89,15 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # --- START OF FIX: Disable KV Caching for VPR during generation ---
+        # The gather-scatter logic in the VPR DynamicLayer is incompatible with
+        # the standard KV cache. We detect when generation is happening (i.e.,
+        # past_key_values are present) and disable caching to prevent errors.
+        is_generating = past_key_values is not None and past_key_values_length > 0
+        if self.config.dynamic_architecture == "vpr" and is_generating:
+            use_cache = False
+        # --- END OF FIX ---
+        
         if self.config.dynamic_architecture == "mod":
             use_cache = False
 
