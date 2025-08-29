@@ -44,6 +44,7 @@ class Qwen2Block(nn.Module):
         past_key_value: tuple[torch.Tensor] | None = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         
         residual = hidden_states
