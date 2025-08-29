@@ -14,7 +14,6 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
 # --- Pre-flight Check: Ensure project root is in the Python path ---
-# This allows for consistent absolute imports from the 'src' package.
 try:
     project_root = Path(__file__).parent.resolve()
     if str(project_root) not in sys.path:
@@ -51,18 +50,16 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
     # --- 2. Load model and tokenizer ---
     try:
         log.info("Loading model and tokenizer...")
-        # It's crucial to use trust_remote_code=True for custom architectures
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,
-            torch_dtype="auto",  # Use bfloat16 if available
-            device_map="auto",   # Automatically use GPU if available
+            torch_dtype="auto",
+            device_map="auto",
         )
-        # Use the custom tokenizer class to ensure any special tokens are handled
         tokenizer = DynamicQwenTokenizer.from_pretrained(model_path)
         log.info("✅ Model and tokenizer loaded.")
     except Exception as e:
-        log.error(f"❌ Failed to load model/tokenizer. Error: {e}")
+        log.error(f"❌ Failed to load model/tokenizer. Error: {e}", exc_info=True)
         return
 
     # --- 3. Generate text ---
@@ -70,8 +67,16 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
         log.info(f"Generating {max_new_tokens} tokens for prompt: '{prompt}'")
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-        # Generate text using the model
-        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)
+        # --- START OF FIX: Conditionally disable caching for VPR models ---
+        # The VPR architecture is incompatible with the standard KV cache used
+        # in transformers.generate(). We must explicitly disable it here.
+        generation_kwargs = {"max_new_tokens": max_new_tokens}
+        if model.config.dynamic_architecture == "vpr":
+            log.info("VPR architecture detected. Disabling KV cache for generation.")
+            generation_kwargs["use_cache"] = False
+        # --- END OF FIX ---
+
+        outputs = model.generate(**inputs, **generation_kwargs)
         
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
@@ -80,7 +85,7 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
         print("="*68 + "\n")
 
     except Exception as e:
-        log.error(f"❌ An error occurred during text generation: {e}")
+        log.error(f"❌ An error occurred during text generation: {e}", exc_info=True)
 
 
 def main():
