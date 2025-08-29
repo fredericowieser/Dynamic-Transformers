@@ -67,12 +67,11 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
         log.info(f"Generating {max_new_tokens} tokens for prompt: '{prompt}'")
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-        # --- START OF FIX: Conditionally disable caching for VPR models ---
-        # The VPR architecture is incompatible with the standard KV cache used
-        # in transformers.generate(). We must explicitly disable it here.
+        # --- START OF FIX: Conditionally disable caching for ALL dynamic models ---
+        # Both VPR and MoD architectures are incompatible with the standard KV cache.
         generation_kwargs = {"max_new_tokens": max_new_tokens}
-        if model.config.dynamic_architecture == "vpr":
-            log.info("VPR architecture detected. Disabling KV cache for generation.")
+        if model.config.dynamic_architecture in ["vpr", "mod"]:
+            log.info(f"{model.config.dynamic_architecture.upper()} architecture detected. Disabling KV cache for generation.")
             generation_kwargs["use_cache"] = False
         # --- END OF FIX ---
 
