@@ -21,13 +21,11 @@ from transformers import AutoConfig, AutoModelForCausalLM
 # --- Pre-flight Check: Ensure 'src' is in the Python path ---
 # This allows the script to import the custom model classes from the 'src' directory.
 try:
-    # Assumes the script is run from the project root
-    src_path = Path(__file__).parent.resolve() / "src"
-    if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-    from models.qwen.causal_lm import DynamicQwenForCausalLM
-    from models.qwen.config import DynamicQwenConfig
-    from models.qwen.tokenizer import DynamicQwenTokenizer
+    # Use absolute imports from the 'src' package, assuming the
+    # script is run from the project root, which adds the CWD to sys.path.
+    from src.models.qwen.causal_lm import DynamicQwenForCausalLM
+    from src.models.qwen.config import DynamicQwenConfig
+    from src.models.qwen.tokenizer import DynamicQwenTokenizer
 except ImportError:
     print("❌ Error: Could not import custom model classes from 'src'.")
     print("Please ensure you run this script from the root of your project directory.")
