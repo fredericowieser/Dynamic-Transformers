@@ -89,6 +89,16 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # --- START OF FIX: More robustly disable KV Caching for VPR during generation ---
+        # The gather-scatter logic in VPR is incompatible with the KV cache.
+        # We detect generation by simply checking if a cache is passed.
+        if self.config.dynamic_architecture == "vpr" and past_key_values is not None:
+            use_cache = False
+        # --- END OF FIX ---
+
+        if self.config.dynamic_architecture == "mod":
+            use_cache = False
+
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
 
@@ -98,18 +108,6 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         past_key_values_length = 0
         if past_key_values is not None:
             past_key_values_length = past_key_values[0][0].shape[2]
-
-        # --- START OF FIX: Disable KV Caching for VPR during generation ---
-        # The gather-scatter logic in the VPR DynamicLayer is incompatible with
-        # the standard KV cache. We detect when generation is happening (i.e.,
-        # past_key_values are present) and disable caching to prevent errors.
-        is_generating = past_key_values is not None and past_key_values_length > 0
-        if self.config.dynamic_architecture == "vpr" and is_generating:
-            use_cache = False
-        # --- END OF FIX ---
-        
-        if self.config.dynamic_architecture == "mod":
-            use_cache = False
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
