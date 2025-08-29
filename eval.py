@@ -98,13 +98,38 @@ def main():
         model_args_list.extend(["attn_implementation='flash_attention_2'", "torch_dtype='bfloat16'"])
     model_args_str = ",".join(model_args_list)
 
-    # Run evaluation
-    results = simple_evaluate(
-        model="hf", model_args=model_args_str, tasks=task_names,
-        batch_size=args.batch_size, device="cuda:0"
-    )
-    final_results = results.get("results", {})
-    serializable_results = _make_json_serializable(final_results)
+    # --- MODIFIED SECTION: Multi-shot evaluation ---
+    # Define the number of shots for each specific task.
+    # Tasks not listed here will default to 0 shots.
+    shot_counts = {
+        "mmlu": 5,
+        "arc_challenge": 25,
+        "truthfulqa_mc2": 0,
+        "winogrande": 5,
+        "hellaswag": 10,
+    }
+
+    # Run evaluation for each task individually to apply specific shot counts.
+    all_results = {}
+    for task_name in task_names:
+        # Get the number of shots for the current task, defaulting to 0 if not specified.
+        num_fewshot = shot_counts.get(task_name, 0)
+        log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
+
+        # simple_evaluate expects a list of tasks
+        results = simple_evaluate(
+            model="hf",
+            model_args=model_args_str,
+            tasks=[task_name],
+            num_fewshot=num_fewshot,
+            batch_size=args.batch_size,
+            device="cuda:0",
+        )
+        # Merge the results from the current task run into the main results dictionary
+        all_results.update(results.get("results", {}))
+    
+    serializable_results = _make_json_serializable(all_results)
+    # --- END OF MODIFIED SECTION ---
 
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
