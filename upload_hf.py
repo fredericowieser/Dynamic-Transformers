@@ -18,16 +18,20 @@ import yaml
 from huggingface_hub import HfApi, HfFolder
 from transformers import AutoConfig, AutoModelForCausalLM
 
-# --- Pre-flight Check: Ensure 'src' is in the Python path ---
-# This allows the script to import the custom model classes from the 'src' directory.
+# --- Pre-flight Check: Ensure project root is in the Python path ---
+# This allows for consistent absolute imports from the 'src' package.
 try:
-    # Use absolute imports from the 'src' package, assuming the
-    # script is run from the project root, which adds the CWD to sys.path.
+    # Get the absolute path of the project root (the directory containing this script)
+    project_root = Path(__file__).parent.resolve()
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     from src.models.qwen.causal_lm import DynamicQwenForCausalLM
     from src.models.qwen.config import DynamicQwenConfig
     from src.models.qwen.tokenizer import DynamicQwenTokenizer
-except ImportError:
+except ImportError as e:
     print("❌ Error: Could not import custom model classes from 'src'.")
+    print(f"   (Details: {e})")
     print("Please ensure you run this script from the root of your project directory.")
     sys.exit(1)
 
