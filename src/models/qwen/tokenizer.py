@@ -1,5 +1,4 @@
-from transformers.models.qwen2.tokenization_qwen2 import Qwen2TokenizerFast
-
+from transformers import Qwen2TokenizerFast
 
 class DynamicQwenTokenizer(Qwen2TokenizerFast):
     """
