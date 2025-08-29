@@ -1,203 +1,112 @@
+"""
+A simple, self-contained script to run inference with a trained DynamicQwen model.
+
+This script can load a model from a local path or a Hugging Face Hub repository
+and generate text based on a user-provided prompt.
+"""
+
 import argparse
-import glob
-import os
+import logging
 import sys
+from pathlib import Path
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM
 
-from src.models.d_llama_causal_lm import DynamicLlamaForCausalLM
-from src.models.d_llama_config import DynamicLlamaConfig
-
+# --- Pre-flight Check: Ensure project root is in the Python path ---
+# This allows for consistent absolute imports from the 'src' package.
 try:
-    from safetensors.torch import load_file as safe_load
-except ImportError:
-    safe_load = None
+    project_root = Path(__file__).parent.resolve()
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from src.models.qwen.causal_lm import DynamicQwenForCausalLM
+    from src.models.qwen.config import DynamicQwenConfig
+    from src.models.qwen.tokenizer import DynamicQwenTokenizer
+except ImportError as e:
+    print("❌ Error: Could not import custom model classes from 'src'.")
+    print(f"   (Details: {e})")
+    print("Please ensure you run this script from the root of your project directory.")
+    sys.exit(1)
+
+# --- Setup Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger(__name__)
 
 
-def load_weights(model, model_dir, device):
-    """
-    Load model weights from:
-      - one or more .safetensors shards
-      - or a single pytorch_model.safetensors
-      - or a single pytorch_model.bin
-    """
-    state_dict = {}
-    # sharded safetensors: model-*.safetensors
-    if safe_load:
-        shard_paths = sorted(glob.glob(os.path.join(model_dir, "model-*.safetensors")))
-        if shard_paths:
-            for shard in shard_paths:
-                sd_part = safe_load(shard, device=device)
-                state_dict.update(sd_part)
-            model.load_state_dict(state_dict, strict=False)
-            return
+def run_inference(model_path: str, prompt: str, max_new_tokens: int):
+    """Loads the model and tokenizer, then generates and prints text."""
+    log.info(f"Starting inference for model: {model_path}")
 
-        # single-file pytorch_model.safetensors
-        single = os.path.join(model_dir, "pytorch_model.safetensors")
-        if os.path.isfile(single):
-            sd = safe_load(single, device=device)
-            model.load_state_dict(sd, strict=False)
-            return
+    # --- 1. Register the custom architecture ---
+    log.info("Registering custom 'dynamic_qwen' architecture...")
+    AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
+    AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
+    log.info("✅ Architecture registered successfully.")
 
-    # single-file pytorch_model.bin
-    bin_path = os.path.join(model_dir, "pytorch_model.bin")
-    if os.path.isfile(bin_path):
-        sd = torch.load(bin_path, map_location=device)
-        model.load_state_dict(sd, strict=False)
+    # --- 2. Load model and tokenizer ---
+    try:
+        log.info("Loading model and tokenizer...")
+        # It's crucial to use trust_remote_code=True for custom architectures
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            torch_dtype="auto",  # Use bfloat16 if available
+            device_map="auto",   # Automatically use GPU if available
+        )
+        # Use the custom tokenizer class to ensure any special tokens are handled
+        tokenizer = DynamicQwenTokenizer.from_pretrained(model_path)
+        log.info("✅ Model and tokenizer loaded.")
+    except Exception as e:
+        log.error(f"❌ Failed to load model/tokenizer. Error: {e}")
         return
 
-    raise FileNotFoundError(
-        f"No weights found in {model_dir}. "
-        "Expected sharded '*.safetensors' or 'pytorch_model.safetensors' or 'pytorch_model.bin'."
-    )
+    # --- 3. Generate text ---
+    try:
+        log.info(f"Generating {max_new_tokens} tokens for prompt: '{prompt}'")
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+        # Generate text using the model
+        outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)
+        
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        print("\n" + "="*25 + " Generated Text " + "="*25)
+        print(generated_text)
+        print("="*68 + "\n")
+
+    except Exception as e:
+        log.error(f"❌ An error occurred during text generation: {e}")
 
 
 def main():
+    """Parses command-line arguments and calls the inference function."""
     parser = argparse.ArgumentParser(
-        description="Infer with DynamicLlamaForCausalLM (manual load w/ shards)"
+        description="Run inference with a custom DynamicQwen model.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("model_dir", help="Path to the saved `final_model` folder")
     parser.add_argument(
-        "--prompt",
+        "model_path",
         type=str,
-        default="Once upon a time,",
-        help="Text prompt",
+        help="Path to the local model directory or a Hugging Face repo ID.",
     )
     parser.add_argument(
-        "--dynamic_k",
-        type=float,
-        default=None,
-        help="Override config.dynamic_k",
-    )
-    parser.add_argument(
-        "--ce_bias",
-        type=float,
-        default=None,
-        help="Override config.ce_bias",
-    )
-    parser.add_argument(
-        "--gate_warmup_iters",
-        type=int,
-        default=0,
-        help="Override config.gate_warmup_iters",
-    )
-    parser.add_argument(
-        "--print_gates",
-        type=bool,
-        default=True,
-        choices=[True, False],
-        help="Log per-layer gate activations",
+        "prompt",
+        type=str,
+        help="The text prompt to generate from.",
     )
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=128,
-        help="Number of new tokens to generate",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.1,
-        help="Sampling temperature",
-    )
-    parser.add_argument(
-        "--top_p",
-        type=float,
-        default=0.9,
-        help="Top-p nucleus sampling",
-    )
-    parser.add_argument(
-        "--do_sample",
-        type=bool,
-        default=True,
-        choices=[True, False],
-        help="Enable sampling; otherwise greedy",
+        default=100,
+        help="The maximum number of new tokens to generate.",
     )
     args = parser.parse_args()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}", file=sys.stderr)
-
-    # Load config, model, + tokenizer
-    config = DynamicLlamaConfig.from_pretrained(args.model_dir)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = config.pad_token_id or tokenizer.eos_token_id
-    config.pad_token_id = tokenizer.pad_token_id
-    model = DynamicLlamaForCausalLM(config)
-    model.to(device)
-    model.eval()
-
-    print("🔄 Loading weights...", file=sys.stderr)
-    load_weights(model, args.model_dir, device)
-    print("✅ Weights loaded.", file=sys.stderr)
-
-    # Override dynamic params (always define these attributes)
-    dyn_k = args.dynamic_k if args.dynamic_k is not None else config.dynamic_k
-    if dyn_k is None:
-        raise ValueError("dynamic_k must be set in config.json or via --dynamic_k")
-    model.set_dynamic_k(dyn_k)
-    print(f"-> dynamic_k = {model.dynamic_k}", file=sys.stderr)
-
-    gw = args.gate_warmup_iters
-    model.set_gate_warmup_iters(gw)
-    print(f"-> gate_warmup_iters = {model.gate_warmup_iters}", file=sys.stderr)
-
-    cb = args.ce_bias if args.ce_bias is not None else getattr(config, "ce_bias", 0.0)
-    model.set_ce_bias(cb)
-    print(f"-> ce_bias = {model.ce_bias}", file=sys.stderr)
-
-    # Optional gate logging
-    accum_means = []
-    if args.print_gates and hasattr(model, "enable_gate_logging"):
-        model.enable_gate_logging(True)
-        original_forward = model.forward
-
-        def wrapped_forward(*f_args, **f_kwargs):
-            out = original_forward(*f_args, **f_kwargs)
-            if getattr(model, "_log_gates", False):
-                last = model.get_last_gate_means()
-                if last:
-                    accum_means.append(last.copy())
-            return out
-
-        model.forward = wrapped_forward
-        print("✅ Gate logging enabled", file=sys.stderr)
-
-    # Tokenize prompt
-    inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
-
-    # Generate
-    with (
-        torch.no_grad(),
-        torch.autocast(device_type=device.split(":")[0], dtype=torch.bfloat16),
-    ):
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            do_sample=args.do_sample,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            use_cache=False,
-        )
-
-    # Decode only new tokens
-    gen = outputs[0, inputs.input_ids.shape[1] :].tolist()
-    completion = tokenizer.decode(gen, skip_special_tokens=True)
-    print("\n--- Completion ---")
-    print(completion.strip())
-
-    # Print gate stats if requested
-    if args.print_gates and accum_means:
-        arr = torch.tensor(accum_means)  # (steps, layers)
-        m = arr.mean(dim=0)
-        s = arr.std(dim=0, unbiased=False)
-        print(f"\n--- Gate activations over {len(arr)} steps ---")
-        for i, (mi, si) in enumerate(zip(m.tolist(), s.tolist())):
-            print(f"Layer {i:2d}: {mi:.4f} ± {si:.4f}")
+    run_inference(args.model_path, args.prompt, args.max_new_tokens)
 
 
 if __name__ == "__main__":
