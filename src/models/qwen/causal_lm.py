@@ -79,6 +79,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         current_iter: int = 0,
+        **kwargs,
     ) -> Union[Tuple, DynamicCausalLMOutput]:
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -131,6 +132,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                     "use_cache": use_cache,
                     "output_attentions": output_attentions
                 }
+                layer_args.update(kwargs)
 
                 decision_output = decision_layer(hidden_states, **layer_args)
                 dynamic_output = dynamic_layer(decision_output.hidden_states, decision_output=decision_output, **layer_args)
