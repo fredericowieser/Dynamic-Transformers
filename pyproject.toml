@@ -55,6 +55,8 @@ dependencies = [
     "tensorboard>=2.19.0",
     "lm-eval[code-eval,hf,peft,torch]>=0.4.9.1",
     "wandb>=0.20.1",
+    "pandas>=2.3.0",
+    "matplotlib>=3.10.6",
 ]
 
 [project.urls]
