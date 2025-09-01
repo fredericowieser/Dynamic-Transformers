@@ -30,12 +30,14 @@ class DynamicLayer(nn.Module):
     ) -> DynamicLayerOutput:
         
         # 1. --- ROUTING ---
+        # --- START OF FIX ---
+        # The PEFT wrapper for trainable modules requires the first argument to be positional.
         (
             gate_vec_binary, s_ce_stats, s_cu_stats, g_cont_stats,
             _, _, combined_gating_signal, beta_ce, beta_cu,
             cu_multiplier, ce_offset,
         ) = self.vpr_router(
-            original_input_to_block=decision_output.vpr_signal_original_input,
+            decision_output.vpr_signal_original_input,  # Pass this argument positionally
             posterior_full_path_output=decision_output.vpr_signal_posterior_output,
             prior_hidden_states=decision_output.vpr_signal_prior_hidden_states,
             capacity_gamma=self.config.capacity_gamma,
