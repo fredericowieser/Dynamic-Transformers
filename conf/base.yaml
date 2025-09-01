@@ -3,7 +3,7 @@ defaults:
   - data: pretrain_mix
 
 run:
-  name: "PRETRAIN-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
+  name: "LORA-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
@@ -18,7 +18,7 @@ data:
   validation_split_percentage: 2
 
 peft:
-  enabled: False
+  enabled: True
   config:
     _target_: peft.LoraConfig
     r: 16
