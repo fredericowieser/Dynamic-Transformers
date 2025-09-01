@@ -85,7 +85,7 @@ training:
   gradient_clip_val: 1.0
 
   optimizer:
-    base_model_lr: 1.0e-5       # base Qwen2Block parameters
+    base_model_lr: 1.0e-4       # base Qwen2Block parameters
     prior_lr: 1.0e-3
     vpr_router_lr: 1.0e-2
     weight_decay: 0.01
