@@ -62,7 +62,9 @@ def main(cfg: DictConfig) -> None:
     )
     if cfg.peft.enabled:
         log.info("Applying PEFT (LoRA) configuration to the model...")
-        peft_config = hydra.utils.instantiate(cfg.peft.config)
+        peft_config_dict = OmegaConf.to_container(cfg.peft.config, resolve=True)
+        peft_config_dict.pop('_target_', None) 
+        peft_config = LoraConfig(**peft_config_dict)
         model = get_peft_model(model, peft_config)
         log.info("Trainable parameters after applying LoRA:")
         model.print_trainable_parameters()
