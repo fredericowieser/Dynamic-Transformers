@@ -31,6 +31,9 @@ peft:
       - "gate_proj"   # MLP: Gate projection for SwiGLU
       - "up_proj"     # MLP: Up projection for SwiGLU
       - "down_proj"   # MLP: Down projection
+    modules_to_train:
+      - "vpr_router"
+      - "prior_ffn"
     lora_dropout: 0.05
     bias: "none"
     task_type: "CAUSAL_LM"
