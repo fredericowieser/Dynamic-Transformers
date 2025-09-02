@@ -66,7 +66,7 @@ model:
 
     token_wise_gating: True
     moving_average_window_size: 100
-    prior_ffn_intermediate_size_factor: 0.125  # 1/8th of main FFN size
+    prior_ffn_intermediate_size_factor: 0.25  # 1/4th of main FFN size
 
     # --- General Training Params ---
     freeze_main_transformer_blocks: False
