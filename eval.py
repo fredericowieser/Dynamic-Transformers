@@ -95,7 +95,7 @@ def main():
     model_args_list = [f"pretrained={args.model_path}", "trust_remote_code=True"]
     if use_flash_attention:
         log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-        model_args_list.extend(["attn_implementation='flash_attention_2'", "torch_dtype='bfloat16'"])
+        model_args_list.extend(["attn_implementation=flash_attention_2", "torch_dtype=bfloat16"])
     model_args_str = ",".join(model_args_list)
 
     # --- MODIFIED SECTION: Multi-shot evaluation ---
