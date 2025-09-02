@@ -87,12 +87,10 @@ def main():
 
     # --- START OF IMPROVED SECTION: Manual Model Loading ---
 
+    # --- Manual Model Loading ---
     log.info(f"Loading model and tokenizer from: {args.model_path}")
 
-    # Set model loading arguments, checking the config for Flash Attention support
-    model_load_kwargs = {
-        "trust_remote_code": True
-    }
+    model_load_kwargs = {"trust_remote_code": True}
     try:
         model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
         if getattr(model_config, "use_flash_attention_2", False):
@@ -102,12 +100,15 @@ def main():
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # Load the model and tokenizer using the standard Hugging Face method.
-    # PEFT automatically handles loading the LoRA adapters found in the directory.
+    # --- START OF FIX ---
+    # Explicitly name the `pretrained_model_name_or_path` argument. This is more
+    # robust and can prevent subtle argument parsing bugs inside the library.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
+        pretrained_model_name_or_path=args.model_path,
         **model_load_kwargs
     )
+    # --- END OF FIX ---
+    
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     model.to("cuda:0")
     model.eval()
