@@ -7,7 +7,7 @@ import numpy as np
 import wandb
 from lm_eval import simple_evaluate
 
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.qwen.config import DynamicQwenConfig
 
@@ -85,25 +85,36 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # Conditionally enable Flash Attention
-    try:
-        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
-        use_flash_attention = getattr(model_config, "use_flash_attention_2", False)
-    except Exception:
-        use_flash_attention = False
+    # --- START OF IMPROVED SECTION: Manual Model Loading ---
 
-    model_args_dict = {
-        "pretrained_model_name_or_path": args.model_path,
+    log.info(f"Loading model and tokenizer from: {args.model_path}")
+
+    # Set model loading arguments, checking the config for Flash Attention support
+    model_load_kwargs = {
         "trust_remote_code": True
     }
-    if use_flash_attention:
-        log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-        model_args_dict["attn_implementation"] = "flash_attention_2"
-        model_args_dict["torch_dtype"] = "bfloat16"
+    try:
+        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+        if getattr(model_config, "use_flash_attention_2", False):
+            log.info("Enabling Flash Attention 2 for evaluation based on model config.")
+            model_load_kwargs["attn_implementation"] = "flash_attention_2"
+            model_load_kwargs["torch_dtype"] = torch.bfloat16
+    except Exception as e:
+        log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # --- MODIFIED SECTION: Multi-shot evaluation ---
+    # Load the model and tokenizer using the standard Hugging Face method.
+    # PEFT automatically handles loading the LoRA adapters found in the directory.
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        **model_load_kwargs
+    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model.to("cuda:0")
+    model.eval()
+
+    # --- END OF IMPROVED SECTION ---
+
     # Define the number of shots for each specific task.
-    # Tasks not listed here will default to 0 shots.
     shot_counts = {
         "mmlu": 5,
         #"arc_challenge": 25,
@@ -112,28 +123,25 @@ def main():
         #"hellaswag": 10,
     }
 
-    # Run evaluation for each task individually to apply specific shot counts.
+    # Run evaluation for each task individually.
     all_results = {}
     for task_name in task_names:
-        # Get the number of shots for the current task, defaulting to 0 if not specified.
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # simple_evaluate expects a list of tasks
+        # Pass the pre-loaded model and tokenizer objects directly
         results = simple_evaluate(
-            model="hf",
-            model_args=model_args_dict,
+            model=model,
+            tokenizer=tokenizer,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
-            device="cuda:0",
         )
-        # Merge the results from the current task run into the main results dictionary
         all_results.update(results.get("results", {}))
     
     serializable_results = _make_json_serializable(all_results)
-    # --- END OF MODIFIED SECTION ---
 
+    # Determine output directory (wandb run dir or local fallback)
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
         output_dir = args.output_dir
@@ -143,6 +151,7 @@ def main():
     output_filename = f"{model_name}_eval_results.json"
     output_path = os.path.join(output_dir, output_filename)
 
+    # Save and print results
     with open(output_path, "w") as f:
         json.dump(serializable_results, f, indent=2)
 
@@ -150,7 +159,7 @@ def main():
     print(json.dumps(serializable_results, indent=2))
     log.info(f"Results saved to {output_path}")
 
-    # If in a resumed wandb run, upload the results and finish
+    # If in a resumed wandb run, upload the results as an artifact and finish
     if wandb.run is not None:
         log.info("Uploading results to wandb as an artifact...")
         wandb.save(output_path)
