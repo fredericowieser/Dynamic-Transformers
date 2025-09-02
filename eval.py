@@ -103,10 +103,10 @@ def main():
     # Tasks not listed here will default to 0 shots.
     shot_counts = {
         "mmlu": 5,
-        "arc_challenge": 25,
+        #"arc_challenge": 25,
         "truthfulqa_mc2": 0,
         "winogrande": 5,
-        "hellaswag": 10,
+        #"hellaswag": 10,
     }
 
     # Run evaluation for each task individually to apply specific shot counts.

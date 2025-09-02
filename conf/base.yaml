@@ -3,7 +3,7 @@ defaults:
   - data: pretrain_mix
 
 run:
-  name: "LORA-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
+  name: "LARGER-PRIOR-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
   output_dir: "outputs/${run.name}"
   seed: 42
   device: "auto"
@@ -18,7 +18,7 @@ data:
   validation_split_percentage: 2
 
 peft:
-  enabled: True
+  enabled: False
   config:
     _target_: peft.LoraConfig
     r: 16
@@ -66,7 +66,7 @@ model:
 
     token_wise_gating: True
     moving_average_window_size: 100
-    prior_ffn_intermediate_size_factor: 0.0625  # 1/16th of the main FFN size
+    prior_ffn_intermediate_size_factor: 0.125  # 1/8th of main FFN size
 
     # --- General Training Params ---
     freeze_main_transformer_blocks: False
@@ -85,7 +85,7 @@ training:
   gradient_clip_val: 1.0
 
   optimizer:
-    base_model_lr: 1.0e-4       # base Qwen2Block parameters
+    base_model_lr: 1.0e-5       # base Qwen2Block parameters
     prior_lr: 1.0e-3
     vpr_router_lr: 1.0e-2
     weight_decay: 0.01
