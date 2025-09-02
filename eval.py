@@ -93,7 +93,7 @@ def main():
         use_flash_attention = False
 
     model_args_dict = {
-        "pretrained": args.model_path,
+        "pretrained_model_name_or_path": args.model_path,
         "trust_remote_code": True
     }
     if use_flash_attention:
