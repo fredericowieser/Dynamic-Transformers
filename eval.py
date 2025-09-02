@@ -92,11 +92,14 @@ def main():
     except Exception:
         use_flash_attention = False
 
-    model_args_list = [f"pretrained={args.model_path}", "trust_remote_code=True"]
+    model_args_dict = {
+        "pretrained": args.model_path,
+        "trust_remote_code": True
+    }
     if use_flash_attention:
         log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-        model_args_list.extend(["attn_implementation=flash_attention_2", "torch_dtype=bfloat16"])
-    model_args_str = ",".join(model_args_list)
+        model_args_dict["attn_implementation"] = "flash_attention_2"
+        model_args_dict["torch_dtype"] = "bfloat16"
 
     # --- MODIFIED SECTION: Multi-shot evaluation ---
     # Define the number of shots for each specific task.
@@ -119,7 +122,7 @@ def main():
         # simple_evaluate expects a list of tasks
         results = simple_evaluate(
             model="hf",
-            model_args=model_args_str,
+            model_args=model_args_dict,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
