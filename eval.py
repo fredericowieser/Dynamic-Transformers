@@ -8,7 +8,6 @@ import wandb
 from lm_eval import simple_evaluate
 
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.qwen.config import DynamicQwenConfig
 
@@ -76,53 +75,30 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- START OF UNIFIED MODEL LOADING ---
-    log.info(f"Loading model from: {args.model_path}")
-    adapter_config_path = os.path.join(args.model_path, "adapter_config.json")
+    # --- FINALIZED MODEL LOADING SECTION ---
+    # Build the arguments for lm-eval to load the model automatically.
+    # The key "pretrained" is the standard for this library.
+    model_args_dict = {
+        "pretrained": args.model_path,
+        "trust_remote_code": True,
+    }
+    
+    try:
+        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+        if getattr(model_config, "use_flash_attention_2", False):
+            log.info("Enabling Flash Attention 2 for evaluation based on model config.")
+            model_args_dict["attn_implementation"] = "flash_attention_2"
+            model_args_dict["torch_dtype"] = "bfloat16"
+    except Exception as e:
+        log.warning(f"Could not determine Flash Attention support from config: {e}")
+    # --- END OF LOADING SECTION ---
 
-    if os.path.exists(adapter_config_path):
-        # --- Case 1: LoRA Model Detected ---
-        log.info("LoRA adapter config found. Loading as a PEFT model.")
-        config = DynamicQwenConfig.from_pretrained(args.model_path, trust_remote_code=True)
-
-        torch_dtype = torch.bfloat16 if getattr(config, "use_flash_attention_2", False) else torch.float16
-        if getattr(config, "use_flash_attention_2", False):
-            config.attn_implementation = "flash_attention_2"
-            log.info("Enabling Flash Attention 2 for evaluation.")
-
-        base_model = DynamicQwenForCausalLM(config)
-        model = PeftModel.from_pretrained(base_model, args.model_path)
-        model = model.merge_and_unload()
-        model.to("cuda:0", dtype=torch_dtype)
-
-    else:
-        # --- Case 2: Standard Model Detected ---
-        log.info("No adapter config found. Loading as a standard Hugging Face model.")
-        model_load_kwargs = {"trust_remote_code": True}
-        try:
-            config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
-            if getattr(config, "use_flash_attention_2", False):
-                log.info("Enabling Flash Attention 2 for evaluation.")
-                model_load_kwargs["attn_implementation"] = "flash_attention_2"
-                model_load_kwargs["torch_dtype"] = torch.bfloat16
-        except Exception as e:
-            log.warning(f"Could not determine Flash Attention support from config: {e}")
-
-        model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=args.model_path,
-            **model_load_kwargs
-        )
-        model.to("cuda:0")
-
-    model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    # --- END OF UNIFIED MODEL LOADING ---
-
+    # Define the number of shots for each specific task.
     shot_counts = {
         "mmlu": 5,
+        "arc_challenge": 25,
         "truthfulqa_mc2": 0,
         "winogrande": 5,
-        "arc_challenge": 25,
         "hellaswag": 10,
     }
 
@@ -131,12 +107,14 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
+        # Let lm-eval handle the model loading automatically.
         results = simple_evaluate(
-            model=model,
-            tokenizer=tokenizer,
+            model="hf",
+            model_args=model_args_dict,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
+            device="cuda:0",
         )
         all_results.update(results.get("results", {}))
     
