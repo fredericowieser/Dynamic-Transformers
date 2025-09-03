@@ -60,10 +60,8 @@ def get_wandb_run_dir(model_path: str) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run benchmarks on a custom LoRA-trained Qwen model.")
-    # --- START OF MODIFICATION ---
     parser.add_argument("--base_model_path", type=str, required=True, help="Path or name of the original base model (e.g., 'Qwen/Qwen2.5-0.5B').")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the saved LoRA adapter directory.")
-    # --- END OF MODIFICATION ---
     parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
@@ -75,12 +73,17 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- FINALIZED MODEL LOADING ---
-    # Load the pristine config from the original base model to guarantee correct architecture.
     log.info(f"Loading base configuration from: {args.base_model_path}")
     config = DynamicQwenConfig.from_pretrained(args.base_model_path, trust_remote_code=True)
 
-    # Manually apply custom parameters that were not saved in the original config
+    correct_num_layers = 24
+    if config.num_hidden_layers != correct_num_layers:
+        log.warning(
+            f"Config reports {config.num_hidden_layers} layers, but this is a 0.5B model. "
+            f"Overriding num_hidden_layers to {correct_num_layers}."
+        )
+        config.num_hidden_layers = correct_num_layers
+
     log.info(f"Applying override for prior_ffn_intermediate_size_factor: {args.prior_ffn_factor}")
     config.prior_ffn_intermediate_size_factor = args.prior_ffn_factor
     
@@ -98,10 +101,9 @@ def main():
     
     model.to("cuda:0", dtype=torch_dtype)
     model.eval()
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    # --- END OF LOADING ---
-
+    
+    # We no longer need to load the tokenizer separately, as lm-eval will handle it.
+    
     shot_counts = {"mmlu": 5, "arc_challenge": 25, "truthfulqa_mc2": 0, "winogrande": 5, "hellaswag": 10}
 
     all_results = {}
@@ -109,13 +111,16 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
+        # --- START OF FIX ---
+        # The 'tokenizer' argument is removed. lm-eval will load it automatically
+        # based on the provided model object.
         results = simple_evaluate(
             model=model,
-            tokenizer=tokenizer,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
         )
+        # --- END OF FIX ---
         all_results.update(results.get("results", {}))
     
     serializable_results = _make_json_serializable(all_results)
