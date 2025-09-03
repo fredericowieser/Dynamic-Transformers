@@ -15,8 +15,6 @@ from src.models.qwen.config import DynamicQwenConfig
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# NOTE: Auto-registration is not needed as we are instantiating the model class directly.
-
 # Define task groups
 TASK_SUITES = {
     "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
@@ -41,7 +39,6 @@ def _make_json_serializable(obj):
     return obj
 
 def get_wandb_run_dir(model_path: str) -> str | None:
-    # This function remains the same as in the original eval.py
     wandb_info_path = os.path.join(model_path, "wandb_info.json")
     if not os.path.exists(wandb_info_path):
         log.warning("wandb_info.json not found.")
@@ -67,7 +64,6 @@ def main():
     parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
-    # Add an argument for the missing config parameter
     parser.add_argument("--prior_ffn_factor", type=float, default=0.0625, help="Correct factor for the prior FFN.")
     args = parser.parse_args()
     
@@ -80,7 +76,18 @@ def main():
     log.info(f"Loading configuration from: {args.model_path}")
     config = DynamicQwenConfig.from_pretrained(args.model_path, trust_remote_code=True)
 
-    # ** Manually insert the missing parameter into the loaded config **
+    # --- START OF FIX ---
+    # The saved config has an incorrect number of layers. We manually override it
+    # to match the true architecture of the Qwen2.5-0.5B model (24 layers).
+    correct_num_layers = 24
+    if config.num_hidden_layers != correct_num_layers:
+        log.warning(
+            f"Config reports {config.num_hidden_layers} layers, but this is a 0.5B model. "
+            f"Overriding num_hidden_layers to {correct_num_layers}."
+        )
+        config.num_hidden_layers = correct_num_layers
+    # --- END OF FIX ---
+
     log.info(f"Applying override for prior_ffn_intermediate_size_factor: {args.prior_ffn_factor}")
     config.prior_ffn_intermediate_size_factor = args.prior_ffn_factor
     
@@ -94,7 +101,7 @@ def main():
 
     log.info(f"Loading LoRA adapters from {args.model_path} onto the base model...")
     model = PeftModel.from_pretrained(base_model, args.model_path)
-    model = model.merge_and_unload() # Merge adapters for evaluation performance
+    model = model.merge_and_unload()
     
     model.to("cuda:0", dtype=torch_dtype)
     model.eval()
