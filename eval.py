@@ -85,9 +85,7 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- BUG NEUTRALIZATION: Manual Model Loading ---
-    # We take control of model loading to bypass the fragile internal logic
-    # of the evaluation library, which is the source of the error.
+    # --- Manual Model Loading Section ---
     log.info(f"Loading model and tokenizer from: {args.model_path}")
 
     model_load_kwargs = {"trust_remote_code": True}
@@ -100,7 +98,7 @@ def main():
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # Use the standard Hugging Face method. PEFT automatically handles LoRA adapters.
+    # Explicitly load the model using the standard, reliable method.
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=args.model_path,
         **model_load_kwargs
@@ -108,8 +106,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     model.to("cuda:0")
     model.eval()
-
-    # --- END OF BUG NEUTRALIZATION ---
+    
+    # --- End of Loading Section ---
 
     shot_counts = {"mmlu": 5, "truthfulqa_mc2": 0, "winogrande": 5}
 
