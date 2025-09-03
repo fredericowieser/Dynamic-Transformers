@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import wandb
 from lm_eval import simple_evaluate
+from lm_eval.models.huggingface import HFLM # Import the wrapper class
 
 from transformers import AutoTokenizer
 from peft import PeftModel
@@ -102,8 +103,18 @@ def main():
     model.to("cuda:0", dtype=torch_dtype)
     model.eval()
     
-    # We no longer need to load the tokenizer separately, as lm-eval will handle it.
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     
+    # --- START OF FIX ---
+    # Wrap the loaded Hugging Face model in the lm-eval HFLM class.
+    # The HFLM wrapper holds both the model and the tokenizer.
+    log.info("Wrapping model in lm_eval HFLM class...")
+    lm_eval_model = HFLM(
+        pretrained=model,
+        tokenizer=tokenizer,
+    )
+    # --- END OF FIX ---
+
     shot_counts = {"mmlu": 5, "arc_challenge": 25, "truthfulqa_mc2": 0, "winogrande": 5, "hellaswag": 10}
 
     all_results = {}
@@ -111,16 +122,12 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # --- START OF FIX ---
-        # The 'tokenizer' argument is removed. lm-eval will load it automatically
-        # based on the provided model object.
         results = simple_evaluate(
-            model=model,
+            model=lm_eval_model, # Pass the wrapped model object
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
         )
-        # --- END OF FIX ---
         all_results.update(results.get("results", {}))
     
     serializable_results = _make_json_serializable(all_results)
