@@ -8,13 +8,14 @@ import wandb
 from lm_eval import simple_evaluate
 
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
 from src.models.qwen.causal_lm import DynamicQwenForCausalLM
 from src.models.qwen.config import DynamicQwenConfig
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Register custom architecture with transformers
+# Registering the custom architecture is still good practice
 log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
 AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
 AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
@@ -28,10 +29,6 @@ TASK_SUITES = {
 }
 
 def _make_json_serializable(obj):
-    """
-    Recursively traverses a dictionary or list to convert non-serializable
-    types (like torch.dtype, torch.Tensor, numpy types) to JSON-friendly formats.
-    """
     if isinstance(obj, dict):
         return {k: _make_json_serializable(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -47,13 +44,9 @@ def _make_json_serializable(obj):
     return obj
 
 def get_wandb_run_dir(model_path: str) -> str | None:
-    """
-    Tries to find the wandb run directory by reading wandb_info.json,
-    resuming the run, and getting its local directory.
-    """
     wandb_info_path = os.path.join(model_path, "wandb_info.json")
     if not os.path.exists(wandb_info_path):
-        log.warning("wandb_info.json not found. Results will be saved locally in --output_dir.")
+        log.warning("wandb_info.json not found.")
         return None
     with open(wandb_info_path, "r") as f:
         wandb_info = json.load(f)
@@ -72,42 +65,44 @@ def get_wandb_run_dir(model_path: str) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run benchmarks on a custom Qwen model.")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved LoRA adapter directory.")
     parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
     args = parser.parse_args()
-
-    print(f"\n--- DEBUG INFO ---\nReceived model path: '{args.model_path}'\n------------------\n")
-
+    
     task_names = sorted(list(set(
         task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- Manual Model Loading Section ---
-    log.info(f"Loading model and tokenizer from: {args.model_path}")
-
-    model_load_kwargs = {"trust_remote_code": True}
-    try:
-        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
-        if getattr(model_config, "use_flash_attention_2", False):
-            log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-            model_load_kwargs["attn_implementation"] = "flash_attention_2"
-            model_load_kwargs["torch_dtype"] = torch.bfloat16
-    except Exception as e:
-        log.warning(f"Could not determine Flash Attention support from config: {e}")
-
-    # Explicitly load the model using the standard, reliable method.
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=args.model_path,
-        **model_load_kwargs
-    )
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model.to("cuda:0")
-    model.eval()
+    # --- BUG NEUTRALIZATION: Direct PEFT Loading ---
+    # We bypass the faulty AutoModel factory by loading the base model and adapters in two explicit steps.
     
-    # --- End of Loading Section ---
+    log.info(f"Loading configuration from: {args.model_path}")
+    config = DynamicQwenConfig.from_pretrained(args.model_path, trust_remote_code=True)
+
+    # Configure Flash Attention if supported
+    if getattr(config, "use_flash_attention_2", False):
+        log.info("Enabling Flash Attention 2 for evaluation based on model config.")
+        config.attn_implementation = "flash_attention_2"
+        torch_dtype = torch.bfloat16
+    else:
+        torch_dtype = torch.float16 # or whatever is appropriate
+
+    log.info("Instantiating base model from config...")
+    base_model = DynamicQwenForCausalLM(config)
+
+    log.info(f"Loading LoRA adapters from {args.model_path} onto the base model...")
+    model = PeftModel.from_pretrained(base_model, args.model_path)
+    model = model.merge_and_unload() # Merge adapters for evaluation performance
+    
+    model.to("cuda:0", dtype=torch_dtype)
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+
+    # --- END OF BUG NEUTRALIZATION ---
 
     shot_counts = {"mmlu": 5, "truthfulqa_mc2": 0, "winogrande": 5}
 
@@ -116,7 +111,6 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # Pass the fully-loaded model and tokenizer objects directly
         results = simple_evaluate(
             model=model,
             tokenizer=tokenizer,
