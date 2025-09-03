@@ -37,13 +37,13 @@ def _make_json_serializable(obj):
     elif isinstance(obj, list):
         return [_make_json_serializable(elem) for elem in obj]
     elif isinstance(obj, torch.dtype):
-        return str(obj)  # Convert dtype to string, e.g., "torch.bfloat16"
+        return str(obj)
     elif isinstance(obj, torch.Tensor):
-        return obj.tolist() # Convert tensor to list
+        return obj.tolist()
     elif isinstance(obj, np.ndarray):
-        return obj.tolist() # Convert numpy array to list
+        return obj.tolist()
     elif isinstance(obj, (np.float32, np.float64, np.int32, np.int64)):
-        return obj.item() # Convert numpy numbers to standard Python numbers
+        return obj.item()
     return obj
 
 def get_wandb_run_dir(model_path: str) -> str | None:
@@ -58,7 +58,6 @@ def get_wandb_run_dir(model_path: str) -> str | None:
     with open(wandb_info_path, "r") as f:
         wandb_info = json.load(f)
     try:
-        # Resume the run to get access to its properties and filesystem
         run = wandb.init(
             project=wandb_info["project"],
             entity=wandb_info["entity"],
@@ -79,59 +78,56 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
     args = parser.parse_args()
 
-    # Expand task suites
     task_names = sorted(list(set(
         task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
-    
-    # --- START OF FINALIZED SECTION ---
-    
-    # Build the arguments for lm-eval to load the model.
-    # The key "pretrained" is standard for lm-eval.
-    model_args_dict = {
-        "pretrained": args.model_path,
-        "trust_remote_code": True,
-    }
-    
+
+    # --- BUG NEUTRALIZATION: Manual Model Loading ---
+    # We take control of model loading to bypass the fragile internal logic
+    # of the evaluation library, which is the source of the error.
+    log.info(f"Loading model and tokenizer from: {args.model_path}")
+
+    model_load_kwargs = {"trust_remote_code": True}
     try:
         model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
         if getattr(model_config, "use_flash_attention_2", False):
             log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-            model_args_dict["attn_implementation"] = "flash_attention_2"
-            model_args_dict["torch_dtype"] = "bfloat16"
+            model_load_kwargs["attn_implementation"] = "flash_attention_2"
+            model_load_kwargs["torch_dtype"] = torch.bfloat16
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # --- END OF FINALIZED SECTION ---
+    # Use the standard Hugging Face method. PEFT automatically handles LoRA adapters.
+    model = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=args.model_path,
+        **model_load_kwargs
+    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model.to("cuda:0")
+    model.eval()
 
-    # Define the number of shots for each specific task.
-    shot_counts = {
-        "mmlu": 5,
-        "truthfulqa_mc2": 0,
-        "winogrande": 5,
-    }
+    # --- END OF BUG NEUTRALIZATION ---
 
-    # Run evaluation for each task individually.
+    shot_counts = {"mmlu": 5, "truthfulqa_mc2": 0, "winogrande": 5}
+
     all_results = {}
     for task_name in task_names:
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # Let lm-eval handle the model loading automatically.
+        # Pass the fully-loaded model and tokenizer objects directly
         results = simple_evaluate(
-            model="hf",
-            model_args=model_args_dict,
+            model=model,
+            tokenizer=tokenizer,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
-            device="cuda:0",
         )
         all_results.update(results.get("results", {}))
     
     serializable_results = _make_json_serializable(all_results)
 
-    # Determine output directory and save results
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
         output_dir = args.output_dir
@@ -148,7 +144,6 @@ def main():
     print(json.dumps(serializable_results, indent=2))
     log.info(f"Results saved to {output_path}")
 
-    # If in a resumed wandb run, upload the results and finish
     if wandb.run is not None:
         log.info("Uploading results to wandb as an artifact...")
         wandb.save(output_path)
