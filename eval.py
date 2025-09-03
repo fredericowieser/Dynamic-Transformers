@@ -15,12 +15,12 @@ from src.models.qwen.config import DynamicQwenConfig
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Registering the custom architecture is still good practice
+# Register custom architecture
 log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
 AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
 AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
 
-# Define task groups for easy evaluation
+# Define task groups
 TASK_SUITES = {
     "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
     "math": ["gsm8k", "math_qa"],
@@ -65,7 +65,7 @@ def get_wandb_run_dir(model_path: str) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run benchmarks on a custom Qwen model.")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved LoRA adapter directory.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
     parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
@@ -76,33 +76,47 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- BUG NEUTRALIZATION: Direct PEFT Loading ---
-    # We bypass the faulty AutoModel factory by loading the base model and adapters in two explicit steps.
-    
-    log.info(f"Loading configuration from: {args.model_path}")
-    config = DynamicQwenConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    # --- START OF UNIFIED MODEL LOADING ---
+    log.info(f"Loading model from: {args.model_path}")
+    adapter_config_path = os.path.join(args.model_path, "adapter_config.json")
 
-    # Configure Flash Attention if supported
-    if getattr(config, "use_flash_attention_2", False):
-        log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-        config.attn_implementation = "flash_attention_2"
-        torch_dtype = torch.bfloat16
+    if os.path.exists(adapter_config_path):
+        # --- Case 1: LoRA Model Detected ---
+        log.info("LoRA adapter config found. Loading as a PEFT model.")
+        config = DynamicQwenConfig.from_pretrained(args.model_path, trust_remote_code=True)
+
+        torch_dtype = torch.bfloat16 if getattr(config, "use_flash_attention_2", False) else torch.float16
+        if getattr(config, "use_flash_attention_2", False):
+            config.attn_implementation = "flash_attention_2"
+            log.info("Enabling Flash Attention 2 for evaluation.")
+
+        base_model = DynamicQwenForCausalLM(config)
+        model = PeftModel.from_pretrained(base_model, args.model_path)
+        model = model.merge_and_unload()
+        model.to("cuda:0", dtype=torch_dtype)
+
     else:
-        torch_dtype = torch.float16 # or whatever is appropriate
+        # --- Case 2: Standard Model Detected ---
+        log.info("No adapter config found. Loading as a standard Hugging Face model.")
+        model_load_kwargs = {"trust_remote_code": True}
+        try:
+            config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+            if getattr(config, "use_flash_attention_2", False):
+                log.info("Enabling Flash Attention 2 for evaluation.")
+                model_load_kwargs["attn_implementation"] = "flash_attention_2"
+                model_load_kwargs["torch_dtype"] = torch.bfloat16
+        except Exception as e:
+            log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    log.info("Instantiating base model from config...")
-    base_model = DynamicQwenForCausalLM(config)
+        model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=args.model_path,
+            **model_load_kwargs
+        )
+        model.to("cuda:0")
 
-    log.info(f"Loading LoRA adapters from {args.model_path} onto the base model...")
-    model = PeftModel.from_pretrained(base_model, args.model_path)
-    model = model.merge_and_unload() # Merge adapters for evaluation performance
-    
-    model.to("cuda:0", dtype=torch_dtype)
     model.eval()
-
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-
-    # --- END OF BUG NEUTRALIZATION ---
+    # --- END OF UNIFIED MODEL LOADING ---
 
     shot_counts = {
         "mmlu": 5,
