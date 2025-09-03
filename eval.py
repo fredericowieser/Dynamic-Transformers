@@ -104,7 +104,13 @@ def main():
 
     # --- END OF BUG NEUTRALIZATION ---
 
-    shot_counts = {"mmlu": 5, "truthfulqa_mc2": 0, "winogrande": 5}
+    shot_counts = {
+        "mmlu": 5,
+        "truthfulqa_mc2": 0,
+        "winogrande": 5,
+        "arc_challenge": 25,
+        "hellaswag": 10,
+    }
 
     all_results = {}
     for task_name in task_names:
