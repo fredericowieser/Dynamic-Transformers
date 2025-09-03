@@ -78,6 +78,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
     args = parser.parse_args()
 
+    print(f"\n--- DEBUG INFO ---\nReceived model path: '{args.model_path}'\n------------------\n")
+
     task_names = sorted(list(set(
         task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
     )))
