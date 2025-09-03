@@ -84,44 +84,32 @@ def main():
         task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
-
-    # --- START OF IMPROVED SECTION: Manual Model Loading ---
-
-    # --- Manual Model Loading ---
-    log.info(f"Loading model and tokenizer from: {args.model_path}")
-
-    model_load_kwargs = {"trust_remote_code": True}
+    
+    # --- START OF FINALIZED SECTION ---
+    
+    # Build the arguments for lm-eval to load the model.
+    # The key "pretrained" is standard for lm-eval.
+    model_args_dict = {
+        "pretrained": args.model_path,
+        "trust_remote_code": True,
+    }
+    
     try:
         model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
         if getattr(model_config, "use_flash_attention_2", False):
             log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-            model_load_kwargs["attn_implementation"] = "flash_attention_2"
-            model_load_kwargs["torch_dtype"] = torch.bfloat16
+            model_args_dict["attn_implementation"] = "flash_attention_2"
+            model_args_dict["torch_dtype"] = "bfloat16"
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # --- START OF FIX ---
-    # Explicitly name the `pretrained_model_name_or_path` argument. This is more
-    # robust and can prevent subtle argument parsing bugs inside the library.
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=args.model_path,
-        **model_load_kwargs
-    )
-    # --- END OF FIX ---
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model.to("cuda:0")
-    model.eval()
-
-    # --- END OF IMPROVED SECTION ---
+    # --- END OF FINALIZED SECTION ---
 
     # Define the number of shots for each specific task.
     shot_counts = {
         "mmlu": 5,
-        #"arc_challenge": 25,
         "truthfulqa_mc2": 0,
         "winogrande": 5,
-        #"hellaswag": 10,
     }
 
     # Run evaluation for each task individually.
@@ -130,19 +118,20 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # Pass the pre-loaded model and tokenizer objects directly
+        # Let lm-eval handle the model loading automatically.
         results = simple_evaluate(
-            model=model,
-            tokenizer=tokenizer,
+            model="hf",
+            model_args=model_args_dict,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
+            device="cuda:0",
         )
         all_results.update(results.get("results", {}))
     
     serializable_results = _make_json_serializable(all_results)
 
-    # Determine output directory (wandb run dir or local fallback)
+    # Determine output directory and save results
     output_dir = get_wandb_run_dir(args.model_path)
     if output_dir is None:
         output_dir = args.output_dir
@@ -152,7 +141,6 @@ def main():
     output_filename = f"{model_name}_eval_results.json"
     output_path = os.path.join(output_dir, output_filename)
 
-    # Save and print results
     with open(output_path, "w") as f:
         json.dump(serializable_results, f, indent=2)
 
@@ -160,7 +148,7 @@ def main():
     print(json.dumps(serializable_results, indent=2))
     log.info(f"Results saved to {output_path}")
 
-    # If in a resumed wandb run, upload the results as an artifact and finish
+    # If in a resumed wandb run, upload the results and finish
     if wandb.run is not None:
         log.info("Uploading results to wandb as an artifact...")
         wandb.save(output_path)
