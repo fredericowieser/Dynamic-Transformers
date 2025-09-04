@@ -1,8 +1,6 @@
 """
-Generates and saves comparison plots for training and validation metrics
-from multiple W&B runs.
-
-Reads data from the _common_metrics.csv files exported by download_wandb_run.py.
+Generates and saves publication-quality comparison plots for training and
+validation metrics from multiple W&B runs, comparing different model architectures.
 """
 
 import logging
@@ -35,7 +33,7 @@ RUNS_TO_PLOT = {
 }
 
 # --- 2. SCRIPT CONFIGURATION ---
-OUTPUT_DIR = Path("./plots")
+OUTPUT_DIR = Path("./plots_for_paper_final")
 METRICS_TO_PLOT = {
     "train/loss": "Training Loss",
     "train/perplexity": "Training Perplexity",
@@ -43,29 +41,32 @@ METRICS_TO_PLOT = {
 }
 
 def assign_colors(run_names):
-    """Assigns colors to runs based on their architecture (VPR or MoD)."""
+    """Assigns distinct colors to runs based on their architecture."""
     colors = {}
-    vpr_count = sum(1 for name in run_names if "vpr" in name.lower())
+    # Use a count to handle multiple runs of the same type gracefully
+    dyn_count = sum(1 for name in run_names if "dyn" in name.lower() or "vpr" in name.lower())
     mod_count = sum(1 for name in run_names if "mod" in name.lower())
 
-    vpr_colors = plt.cm.Reds(np.linspace(0.4, 0.9, vpr_count or 1))
-    mod_colors = plt.cm.Blues(np.linspace(0.4, 0.9, mod_count or 1))
+    # Use perceptually distinct colormaps
+    dyn_colors = plt.cm.Reds(np.linspace(0.5, 0.9, dyn_count or 1))
+    mod_colors = plt.cm.Blues(np.linspace(0.5, 0.9, mod_count or 1))
 
-    vpr_idx, mod_idx = 0, 0
+    dyn_idx, mod_idx = 0, 0
     for name in run_names:
-        if "dyn" in name.lower():
-            colors[name] = vpr_colors[vpr_idx]
-            vpr_idx += 1
-        elif "mod" in name.lower():
+        name_lower = name.lower()
+        if "dyn" in name_lower or "vpr" in name_lower:
+            colors[name] = dyn_colors[dyn_idx]
+            dyn_idx += 1
+        elif "mod" in name_lower:
             colors[name] = mod_colors[mod_idx]
             mod_idx += 1
         else:
-            colors[name] = "gray"  # Fallback color
+            colors[name] = "gray"  # Fallback for unidentified runs
     return colors
 
 
 def create_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
-    """Generates and saves a single plot comparing all runs for a given metric."""
+    """Generates and saves a single, publication-quality plot for a given metric."""
     log.info(f"Generating plot for: {plot_title}")
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -77,27 +78,23 @@ def create_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
                 clean_df = df[["_step", metric_key]].dropna()
                 run_color = colors.get(run_name, "gray")
 
-                # --- Simplified Plotting Logic ---
                 if metric_key == "val/loss":
-                    # For validation, plot a line with 'x' markers at each data point
+                    # For validation, plot a clean line with markers
                     ax.plot(
-                        clean_df["_step"],
-                        clean_df[metric_key],
-                        marker='x',
-                        linestyle='-',
-                        color=run_color,
-                        markersize=6,
-                        linewidth=1.5,
-                        label=run_name
+                        clean_df["_step"], clean_df[metric_key], marker='x',
+                        linestyle='-', color=run_color, markersize=8,
+                        linewidth=2.5, label=run_name
                     )
                 else:
-                    # For training metrics, plot a solid line
+                    # For training metrics, plot EMA over a faint raw data line
                     ax.plot(
-                        clean_df["_step"],
-                        clean_df[metric_key],
-                        color=run_color,
-                        linewidth=2,
-                        label=run_name
+                        clean_df["_step"], clean_df[metric_key],
+                        color=run_color, linewidth=1.0, alpha=0.25
+                    )
+                    ema = clean_df[metric_key].ewm(span=15, adjust=False).mean()
+                    ax.plot(
+                        clean_df["_step"], ema, color=run_color,
+                        linewidth=2.5, label=run_name
                     )
             else:
                 log.warning(f"Metric '{metric_key}' not found in {filepath}. Skipping.")
@@ -106,19 +103,19 @@ def create_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
         except Exception as e:
             log.error(f"Could not process {filepath}. Error: {e}")
 
-    ax.set_title(f"{plot_title} Comparison", fontsize=16, weight='bold')
-    ax.set_xlabel("Training Step", fontsize=12)
-    ax.set_ylabel(plot_title, fontsize=12)
-    ax.legend(fontsize=12)
-    ax.tick_params(axis='both', which='major', labelsize=10)
-    
+    ax.set_title(f"Architecture Comparison: {plot_title}", fontsize=18, weight='bold')
+    ax.set_xlabel("Training Step", fontsize=16)
+    ax.set_ylabel(plot_title, fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(axis='both', which='major', labelsize=12)
     ax.set_xlim(left=0)
-    
-    if "perplexity" in metric_key.lower():
-        ax.set_yscale("log")
-        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=12)
 
-    output_filename = f"{plot_title.replace(' ', '_').lower()}_comparison.pdf"
+    # Use a logarithmic scale for loss and perplexity plots
+    if "perplexity" in metric_key.lower() or "loss" in metric_key.lower():
+        ax.set_yscale("log")
+        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=16)
+
+    output_filename = f"architecture_comparison_{plot_title.replace(' ', '_').lower()}.pdf"
     output_path = OUTPUT_DIR / output_filename
     fig.savefig(output_path, format="pdf", bbox_inches="tight")
     plt.close(fig)
@@ -137,29 +134,8 @@ def main():
     for metric_key, plot_title in METRICS_TO_PLOT.items():
         create_plot(metric_key, plot_title, RUNS_TO_PLOT, colors)
     
-    log.info("✨ All plots generated successfully.")
+    log.info("✨ All architecture comparison plots generated successfully! ✨")
 
 
 if __name__ == "__main__":
     main()
-
-"""
-### ⚙️ How to Use the Script
-
-1.  **Install Dependencies**:
-    You will need `pandas` and `matplotlib`. If you haven't installed them yet, run:
-    ```bash
-    pip install pandas matplotlib
-    ```
-
-2.  **Configure Your Runs**:
-    Open the `plot_metrics.py` file and edit the `RUNS_TO_PLOT` dictionary.
-    * The **key** is the name you want to see in the plot's legend (e.g., `"VPR (gamma=0.5)"`).
-    * The **value** is the full path to the `_common_metrics.csv` file for that run.
-    
-
-3.  **Run the Script**:
-    Execute the script from your terminal. It requires no command-line arguments.
-    ```bash
-    python plot_loss.py
-"""  
