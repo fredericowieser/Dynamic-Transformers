@@ -1,81 +1,122 @@
-# Dynamic-Transformer
+# Dynamic Transformers (DTF)
 
-Important Links:
-- LaTeX for Report: https://www.overleaf.com/read/xvcyypchrghp#fe71ba
-- Google Docs For Project Files: https://docs.google.com/document/d/1rjFtPSFybRemLVBta1tl7ufb-vcAEalQxBYZ3M0Jnmw/edit?tab=t.0
+This repository contains the official implementation for the MSc thesis, **"Dynamic Transformers"**. It provides the code to train, evaluate, and run inference with the proposed Dynamic Transformer (DTF) architecture, a conditional computation model inspired by predictive coding.
 
-## Project Setup
+## Abstract
 
-configs
+The standard Transformer's uniform application of computation to all tokens creates a scalability bottleneck. While methods like Mixture-of-Depths (MoD) offer a solution by processing a subset of tokens based on a learned "importance" score, we propose a more principled approach. The **Dynamic Transformer (DTF)** is a novel architecture inspired by computational neuroscience, specifically Variational Predictive Routing (VPR). DTF uses a surprise-based gating mechanism to conditionally allocate compute, routing tokens based on a context-dependent measure of information gain.
 
-here we have some yaml files which will be how the paramaters for running training, testing, evaluating and running experiments that do all these steps. Also have flag to be able to run same evaluation multiple times on different random seeds???
+This repository provides code to adapt a pre-trained Qwen2.5-0.5B model to the DTF architecture and compare it against a re-implemented MoD baseline under matched compute capacity ($\gamma=0.5$). Our results show that DTF achieves a small but consistent validation loss advantage over MoD, suggesting a more effective inductive bias for routing.
 
-data
+## Architecture Overview
 
-Here we have the datasets wether they are tiny shakesperae the pile or shortsotries or if it's simpler scripts which cna download these datasets
+The DTF replaces the standard uniform stack of Transformer layers with alternating **Decision** and **Dynamic** layers. The Decision Layer computes a posterior state (via a standard TF block) and a prior prediction (via a lightweight PriorFFN). The Dynamic Layer's Predictive Router uses these signals to gate which tokens are processed by a second TF block.
 
-experiments
+ 
+*A high-level comparison of the standard Transformer (left) and the DTF architecture (right).*
 
-if in the config.yaml we find that their is a flag saying that the runtime is an experiemnt we will log and save the results from this experiment in this folder under it's own special folder where we will also keep all the data for that specific experiment.
+## Features
 
-logs
+- **Model Implementation**: `DynamicQwenForCausalLM` with support for both **DTF** and **MoD** architectures.
+- **Training Script**: A robust training script using `accelerate` for distributed training, `hydra` for configuration, and supporting LoRA for parameter-efficient fine-tuning.
+- **Evaluation Script**: Integrated with `lm-eval` for standardized benchmarking.
+- **Inference Script**: A simple script to run generation with a trained model.
+- **Hugging Face Hub Uploader**: A utility to generate a model card and upload models to the Hub.
 
-for any runtime wether experiment or not we save that data into here so that post runtime we cna analyse results. This should not be tracked by git though as really these are temp files that are made to help any live debugging and for dev purposes.
+## Installation
 
-model-weights
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/dynamic-transformers.git
+    cd dynamic-transformers
+    ```
 
-Here we have data (weights) and scripts in order to download models and save some of our own models into. Their should also be some code in order to upload and save these models into hugging face so that we can fetch them later.
+2.  **Create a virtual environment and install dependencies:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate
+    pip install -e ".[dev]"
+    ```
+    *The `-e` flag installs the project in editable mode.*
 
-notebooks
+## Quickstart
 
-this is just to save some of the notebooks I am using in order to develop this repo and to do quick research.
+All scripts are configured using [Hydra](https://hydra.cc/). You can override any configuration setting from the command line.
 
-scripts
+### 1. Training a Model
 
-bash scripts and that kind of thing 
+Use the `train.py` script to fine-tune a model. You can select the dynamic architecture by overriding `model`.
 
-src
-- models
-- test
-- train
+**Train a DTF model:**
+```bash
+python train.py model=dtf run.name=dtf-qwen-0.5b-run1
+```
 
-this is the real meat of the project and works in the following way
+**Train a MoD baseline:**
+```bash
+python train.py model=mod run.name=mod-qwen-0.5b-run1
+```
+- Checkpoints will be saved to the `outputs/` directory, structured by date and run name.
+- Training progress is logged to Weights & Biases if `logging.wandb.enabled=true`.
 
-all the code defining some example archtiectures and our new bayesian surprise based architectures are here in the models subfolder. We will also be defining models here that will use weights from the model-weigths folder.
+### 2. Evaluating a Model
 
-train will then have different files which will specify different ways of training for example Adam vs SGD or maybe more interestingly we could train using some alternative loss functions, perhaps some load balancing based losses or a gate warmup loss (so that at the begining gates are more likely to open so that they learn more)
+Use the `evaluate.py` script to run benchmarks on a trained checkpoint using the `lm-evaluation-harness`.
 
-NOTE: onece a model is trained the goal is to save this model into the model-weights folder
+```bash
+python evaluate.py \
+    --model_path outputs/your-run-name/final_model \
+    --tasks general
+```
+- The `--tasks` argument can be a comma-separated list of tasks or pre-defined suites (`general`, `math`, `code`, `quick_test`).
+- Results are saved as a JSON file in the model's directory.
 
-test: perplexity, and other metircs but ideally this should load back in the model from the model-weights file.
+### 3. Running Inference
 
-Example Usage:
+Use the `inference.py` script for text generation.
 
-main.py / main.sh --config==llama_3-2_1B_finetune.yaml --num_gpus==4 ...
+```bash
+python inference.py \
+    "path/to/your/model_checkpoint" \
+    "The capital of the United Kingdom is" \
+    --max_new_tokens 50
+```
+- **Note:** The script automatically disables the KV cache for dynamic models (`DTF`, `MoD`), as it is incompatible with their routing mechanism.
 
-OPTIONS:
---train ... boolean
+### 4. Uploading to Hugging Face Hub
 
---train_config ... hashmap
+The `upload_to_hub.py` script generates a model card and uploads your model, tokenizer, and custom code to the Hub.
 
---test ... boolean
+```bash
+# First, log in to your Hugging Face account
+huggingface-cli login
 
---test_config ... hashmap
+# Then, run the upload script
+python upload_to_hub.py \
+    path/to/your/model_checkpoint \
+    your-new-repo-name \
+    --hf_username YOUR_HF_USERNAME \
+    --eval_results path/to/eval_results.json
+```
 
---experiment ... boolean
+## Results Summary
 
---experiment_dir ... string
+Our key finding is that the DTF architecture consistently achieves a lower validation loss than the MoD baseline at a matched compute capacity ($\gamma=0.5$). This suggests that the surprise-based, model-comparison gating provides a more effective inductive bias for routing than a context-independent importance score.
 
---logs_dir ... string
+However, both dynamic models underperform the dense baseline on several downstream benchmarks in our limited transfer-learning setting. This is an expected trade-off due to reduced per-token computation and highlights challenges in adapting pre-trained models to conditional computation. For a detailed analysis, please see Chapter 5 of the [thesis](link-to-thesis.pdf).
 
---hf_model ... Optional[boolean, string]
+## Citation
 
---transformer_params ... hash_map
+If you find this work useful in your research, please consider citing the thesis:
 
---seed 42
-
---tensorboard ... boolean
-
---wandb login
-
-
+```bibtex
+@mastersthesis{wieser2025dynamic,
+  author  = {Wieser, Frederico Luis},
+  title   = {Dynamic Transformers},
+  school  = {University College London},
+  year    = {2025},
+  month   = {September},
+  address = {London, UK},
+  note    = {MSc Computational Statistics and Machine Learning}
+}
+```
