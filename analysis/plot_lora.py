@@ -1,7 +1,7 @@
 """
 Generates and saves a complete set of publication-quality comparison plots for
 an ablation study on adaptation methods (Full Finetuning vs. LoRA), covering
-both common and dynamic VPR metrics.
+both common and dynamic VPR metrics, now with overlap visualization.
 """
 
 import logging
@@ -46,12 +46,10 @@ COMMON_METRICS_TO_PLOT = {
 # --- COLOR ASSIGNMENT ---
 def assign_colors(run_names):
     """Assigns specific colors for the Finetune vs. LoRA comparison."""
-    # Specific color mapping for this ablation study
     color_map = {
         "Finetune (Dynamic)": "#D62728",  # A strong red
-        "LoRA (Dynamic)": "#FF69B4",     # Hot Pink
+        "LoRA (Dynamic)": "#9467BD",     # A strong purple
     }
-    # Fallback for any unexpected run names
     return {name: color_map.get(name, "gray") for name in run_names}
 
 # --- PLOTTING FUNCTIONS FOR COMMON METRICS ---
@@ -71,24 +69,24 @@ def create_common_metric_plot(metric_key: str, plot_title: str, run_data: dict, 
                 run_color = colors.get(run_name)
 
                 if metric_key == "val/loss":
-                    ax.plot(clean_df["_step"], clean_df[metric_key], marker='x', linestyle='-', color=run_color, markersize=8, linewidth=2.5, label=run_name)
+                    ax.plot(clean_df["_step"], clean_df[metric_key], marker='x', linestyle='-', color=run_color, markersize=10, linewidth=3.5, label=run_name)
                 else:
-                    ax.plot(clean_df["_step"], clean_df[metric_key], color=run_color, linewidth=1.0, alpha=0.25)
+                    ax.plot(clean_df["_step"], clean_df[metric_key], color=run_color, linewidth=1.5, alpha=0.2)
                     ema = clean_df[metric_key].ewm(span=15, adjust=False).mean()
-                    ax.plot(clean_df["_step"], ema, color=run_color, linewidth=2.5, label=run_name)
+                    ax.plot(clean_df["_step"], ema, color=run_color, linewidth=3.5, label=run_name)
         except Exception as e:
             log.error(f"Could not process {filepath} for {run_name}. Error: {e}")
 
-    ax.set_title(f"Adaptation Method Comparison: {plot_title}", fontsize=18, weight='bold')
-    ax.set_xlabel("Training Step", fontsize=16)
-    ax.set_ylabel(plot_title, fontsize=16)
-    ax.legend(fontsize=14)
-    ax.tick_params(axis='both', which='major', labelsize=12)
+    ax.set_title(f"Adaptation Method Comparison: {plot_title}", fontsize=24, weight='bold')
+    ax.set_xlabel("Training Step", fontsize=20)
+    ax.set_ylabel(plot_title, fontsize=20)
+    ax.legend(fontsize=18)
+    ax.tick_params(axis='both', which='major', labelsize=16)
     ax.set_xlim(left=0)
 
     if "perplexity" in metric_key.lower() or "loss" in metric_key.lower():
         ax.set_yscale("log")
-        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=16)
+        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=20)
 
     output_filename = f"adaptation_comparison_{plot_title.replace(' ', '_').lower()}.pdf"
     output_path = OUTPUT_DIR / output_filename
@@ -98,45 +96,63 @@ def create_common_metric_plot(metric_key: str, plot_title: str, run_data: dict, 
 
 # --- PLOTTING FUNCTIONS FOR DYNAMIC (VPR) METRICS ---
 
-def plot_gating_signals_side_by_side(run_data: dict, colors: dict):
-    log.info("Generating side-by-side plots for each gating signal...")
-    signals_to_plot = {
-        "S_CE": r"Analysis of Expected Event Signal ($S_{CE}$)",
-        "S_CU": r"Analysis of Unexpected Event Signal ($S_{CU}$)",
-        "G_cont": r"Analysis of Final Gating Signal ($G_{cont}$)",
+def plot_combined_gating_signals(run_data: dict, colors: dict):
+    log.info("Generating combined plot for gating signal components with overlap...")
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8), sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    signal_colors = {
+        "S_CU": {"line": "#00C0B0", "fill": "#5CFFE4"},      # Dark Blue line, Light Sky Blue fill
+        "S_CE": {"line": "#FF00FF", "fill": "#FF77D2"},      # Fuchsia line, Less harsh Light Pink fill
     }
+    overlap_color = "#7B21BB" # Indigo
 
-    for signal_key, signal_title in signals_to_plot.items():
-        plt.style.use('seaborn-v0_8-whitegrid')
-        # Create a 1x2 grid for side-by-side comparison
-        fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharex=True, sharey=True)
-        axes = axes.flatten()
+    for ax, (run_name, paths) in zip(axes, run_data.items()):
+        filepath = paths.get("dynamic")
+        if not filepath: continue
+        try:
+            df = pd.read_csv(filepath)
+            run_color = colors.get(run_name)
 
-        for ax, (run_name, paths) in zip(axes, run_data.items()):
-            filepath = paths.get("dynamic")
-            if not filepath: continue
-            try:
-                df = pd.read_csv(filepath)
-                mean_col, min_col, max_col = f"{signal_key}_mean", f"{signal_key}_min", f"{signal_key}_max"
-                if all(c in df.columns for c in [mean_col, min_col, max_col]):
-                    mean_df, min_df, max_df = df[["_step", mean_col]].dropna(), df[["_step", min_col]].dropna(), df[["_step", max_col]].dropna()
-                    run_color = colors.get(run_name)
-                    ax.plot(mean_df["_step"], mean_df[mean_col], color=run_color, linewidth=2.5)
-                    ax.fill_between(mean_df["_step"], min_df[min_col], max_df[max_col], color=run_color, alpha=0.2)
-                    ax.set_title(run_name, fontsize=16)
-                    ax.tick_params(axis='both', which='major', labelsize=12)
-                    ax.set_xlim(left=0)
-            except Exception as e:
-                log.error(f"Could not process {filepath} for {run_name}. Error: {e}")
+            # Prepare dataframes
+            gcont_df = df[["_step", "G_cont_mean", "G_cont_min", "G_cont_max"]].dropna()
+            scu_df = df[["_step", "S_CU_mean", "S_CU_min", "S_CU_max"]].dropna()
+            sce_df = df[["_step", "S_CE_mean", "S_CE_min", "S_CE_max"]].dropna()
 
-        fig.suptitle(signal_title, fontsize=22, weight='bold')
-        fig.text(0.5, 0.04, 'Training Step', ha='center', va='center', fontsize=18)
-        fig.text(0.06, 0.5, 'Signal Activation', ha='center', va='center', rotation='vertical', fontsize=18)
-        fig.tight_layout(rect=[0.07, 0.05, 1, 0.95])
-        output_path = OUTPUT_DIR / f"adaptation_comparison_{signal_key}.pdf"
-        fig.savefig(output_path, format="pdf", bbox_inches="tight")
-        plt.close(fig)
-        log.info(f"✅ Gating signal plot saved to: {output_path}")
+            # Merge to align steps for overlap calculation
+            merged_df = pd.merge(scu_df, sce_df, on="_step", suffixes=('_cu', '_ce'))
+            overlap_min = np.maximum(merged_df["S_CU_min"], merged_df["S_CE_min"])
+            overlap_max = np.minimum(merged_df["S_CU_max"], merged_df["S_CE_max"])
+
+            # Plot backgrounds, then overlap, then lines
+            ax.fill_between(gcont_df["_step"], gcont_df["G_cont_min"], gcont_df["G_cont_max"], color=run_color, alpha=0.25, zorder=0)
+            ax.fill_between(merged_df["_step"], merged_df["S_CU_min"], merged_df["S_CU_max"], color=signal_colors["S_CU"]["fill"], alpha=0.4, zorder=1)
+            ax.fill_between(merged_df["_step"], merged_df["S_CE_min"], merged_df["S_CE_max"], color=signal_colors["S_CE"]["fill"], alpha=0.5, zorder=2)
+            ax.fill_between(merged_df["_step"], overlap_min, overlap_max, where=overlap_max > overlap_min, color=overlap_color, alpha=0.5, zorder=3)
+
+            # Plot lines on top
+            ax.plot(gcont_df["_step"], gcont_df["G_cont_mean"], color=run_color, linewidth=3.5, zorder=5)
+            ax.plot(scu_df["_step"], scu_df["S_CU_mean"], color=signal_colors["S_CU"]["line"], linewidth=3.0, zorder=4)
+            ax.plot(sce_df["_step"], sce_df["S_CE_mean"], color=signal_colors["S_CE"]["line"], linewidth=3.0, zorder=4)
+
+            ax.set_title(run_name, fontsize=22)
+            ax.tick_params(axis='both', which='major', labelsize=18)
+            ax.set_xlim(left=0)
+
+        except Exception as e:
+            log.error(f"Could not process {filepath} for {run_name}. Error: {e}")
+
+    fig.suptitle("Analysis of Gating Signal Components", fontsize=28, weight='bold', y=0.98)
+    fig.text(0.5, 0.02, 'Training Step', ha='center', va='center', fontsize=22)
+    fig.text(0.07, 0.5, 'Signal Activation', ha='center', va='center', rotation='vertical', fontsize=22)
+    fig.tight_layout(rect=[0.08, 0.04, 1, 0.95])
+
+    output_path = OUTPUT_DIR / "adaptation_comparison_combined_gating_signals.pdf"
+    fig.savefig(output_path, format="pdf", bbox_inches="tight")
+    plt.close(fig)
+    log.info(f"✅ Combined gating signal plot saved to: {output_path}")
+
 
 def plot_router_parameters_separately(run_data: dict, colors: dict):
     log.info("Generating separate plots for router parameters...")
@@ -158,15 +174,15 @@ def plot_router_parameters_separately(run_data: dict, colors: dict):
                 df = pd.read_csv(filepath)
                 if param_col in df.columns:
                     clean_df = df[["_step", param_col]].dropna()
-                    ax.plot(clean_df["_step"], clean_df[param_col], linewidth=2.5, label=run_name, color=colors.get(run_name))
+                    ax.plot(clean_df["_step"], clean_df[param_col], linewidth=3.5, label=run_name, color=colors.get(run_name))
             except Exception as e:
                 log.error(f"Could not process {filepath} for {run_name}. Error: {e}")
 
-        ax.set_title(f"Adaptation Method Comparison: {param_title}", fontsize=18, weight='bold')
-        ax.set_xlabel("Training Step", fontsize=16)
-        ax.set_ylabel("Learned Parameter Value", fontsize=16)
-        ax.legend(fontsize=14)
-        ax.tick_params(axis='both', which='major', labelsize=12)
+        ax.set_title(f"Adaptation Method Comparison: {param_title}", fontsize=24, weight='bold')
+        ax.set_xlabel("Training Step", fontsize=20)
+        ax.set_ylabel("Learned Parameter Value", fontsize=20)
+        ax.legend(fontsize=18)
+        ax.tick_params(axis='both', which='major', labelsize=16)
         ax.set_xlim(left=0)
 
         output_filename = f"adaptation_comparison_{param_col}.pdf"
@@ -190,7 +206,7 @@ def main():
         create_common_metric_plot(metric_key, plot_title, RUNS_TO_PLOT, colors)
     
     log.info("--- Starting Dynamic VPR Metric Plots ---")
-    plot_gating_signals_side_by_side(RUNS_TO_PLOT, colors)
+    plot_combined_gating_signals(RUNS_TO_PLOT, colors)
     plot_router_parameters_separately(RUNS_TO_PLOT, colors)
     
     log.info("✨ All adaptation comparison plots generated successfully! ✨")

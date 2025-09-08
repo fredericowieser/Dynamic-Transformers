@@ -44,7 +44,7 @@ def assign_colors(run_names):
     """Assigns distinct colors to runs based on their architecture."""
     colors = {}
     # Use a count to handle multiple runs of the same type gracefully
-    dyn_count = sum(1 for name in run_names if "dyn" in name.lower() or "vpr" in name.lower())
+    dyn_count = sum(1 for name in run_names if "dynamic" in name.lower() or "vpr" in name.lower())
     mod_count = sum(1 for name in run_names if "mod" in name.lower())
 
     # Use perceptually distinct colormaps
@@ -54,7 +54,7 @@ def assign_colors(run_names):
     dyn_idx, mod_idx = 0, 0
     for name in run_names:
         name_lower = name.lower()
-        if "dyn" in name_lower or "vpr" in name_lower:
+        if "dynamic" in name_lower or "vpr" in name_lower:
             colors[name] = dyn_colors[dyn_idx]
             dyn_idx += 1
         elif "mod" in name_lower:
@@ -82,19 +82,19 @@ def create_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
                     # For validation, plot a clean line with markers
                     ax.plot(
                         clean_df["_step"], clean_df[metric_key], marker='x',
-                        linestyle='-', color=run_color, markersize=8,
-                        linewidth=2.5, label=run_name
+                        linestyle='-', color=run_color, markersize=10,
+                        linewidth=3.5, label=run_name
                     )
                 else:
                     # For training metrics, plot EMA over a faint raw data line
                     ax.plot(
                         clean_df["_step"], clean_df[metric_key],
-                        color=run_color, linewidth=1.0, alpha=0.25
+                        color=run_color, linewidth=1.5, alpha=0.2
                     )
                     ema = clean_df[metric_key].ewm(span=15, adjust=False).mean()
                     ax.plot(
                         clean_df["_step"], ema, color=run_color,
-                        linewidth=2.5, label=run_name
+                        linewidth=3.5, label=run_name
                     )
             else:
                 log.warning(f"Metric '{metric_key}' not found in {filepath}. Skipping.")
@@ -103,17 +103,17 @@ def create_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
         except Exception as e:
             log.error(f"Could not process {filepath}. Error: {e}")
 
-    ax.set_title(f"Architecture Comparison: {plot_title}", fontsize=18, weight='bold')
-    ax.set_xlabel("Training Step", fontsize=16)
-    ax.set_ylabel(plot_title, fontsize=16)
-    ax.legend(fontsize=14)
-    ax.tick_params(axis='both', which='major', labelsize=12)
+    ax.set_title(f"Architecture Comparison: {plot_title}", fontsize=24, weight='bold')
+    ax.set_xlabel("Training Step", fontsize=20)
+    ax.set_ylabel(plot_title, fontsize=20)
+    ax.legend(fontsize=18)
+    ax.tick_params(axis='both', which='major', labelsize=16)
     ax.set_xlim(left=0)
 
     # Use a logarithmic scale for loss and perplexity plots
     if "perplexity" in metric_key.lower() or "loss" in metric_key.lower():
         ax.set_yscale("log")
-        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=16)
+        ax.set_ylabel(f"{plot_title} (Log Scale)", fontsize=20)
 
     output_filename = f"architecture_comparison_{plot_title.replace(' ', '_').lower()}.pdf"
     output_path = OUTPUT_DIR / output_filename
