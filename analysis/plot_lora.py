@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-# --- Setup Logging ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -21,8 +21,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# --- 1. CONFIGURE YOUR RUNS HERE ---
-# Add the runs you want to compare.
+# Configure runs to compare
 RUNS_TO_PLOT = {
     "Finetune (Dynamic)": {
         "common": "wandb_exports/PRETRAINTESTqwen2.50.5Bvprpretrain_mix20250828_132910gamma0.5_common_metrics.csv",
@@ -34,7 +33,7 @@ RUNS_TO_PLOT = {
     },
 }
 
-# --- 2. SCRIPT CONFIGURATION ---
+# Output configuration
 OUTPUT_DIR = Path("./plots_for_paper_final")
 COMMON_METRICS_TO_PLOT = {
     "train/loss": "Training Loss",
@@ -43,7 +42,6 @@ COMMON_METRICS_TO_PLOT = {
     "train/prior_loss": "Prior Network Auxiliary Loss",
 }
 
-# --- COLOR ASSIGNMENT ---
 def assign_colors(run_names):
     """Assigns specific colors for the Finetune vs. LoRA comparison."""
     color_map = {
@@ -52,7 +50,6 @@ def assign_colors(run_names):
     }
     return {name: color_map.get(name, "gray") for name in run_names}
 
-# --- PLOTTING FUNCTIONS FOR COMMON METRICS ---
 
 def create_common_metric_plot(metric_key: str, plot_title: str, run_data: dict, colors: dict):
     log.info(f"Generating common metric plot for: {plot_title}")
@@ -94,7 +91,6 @@ def create_common_metric_plot(metric_key: str, plot_title: str, run_data: dict, 
     plt.close(fig)
     log.info(f"✅ Common metric plot saved to: {output_path}")
 
-# --- PLOTTING FUNCTIONS FOR DYNAMIC (VPR) METRICS ---
 
 def plot_combined_gating_signals(run_data: dict, colors: dict):
     log.info("Generating combined plot for gating signal components with overlap...")
@@ -103,10 +99,10 @@ def plot_combined_gating_signals(run_data: dict, colors: dict):
     axes = axes.flatten()
 
     signal_colors = {
-        "S_CU": {"line": "#00C0B0", "fill": "#5CFFE4"},      # Dark Blue line, Light Sky Blue fill
-        "S_CE": {"line": "#FF00FF", "fill": "#FF77D2"},      # Fuchsia line, Less harsh Light Pink fill
+        "S_CU": {"line": "#00C0B0", "fill": "#5CFFE4"},
+        "S_CE": {"line": "#FF00FF", "fill": "#FF77D2"},
     }
-    overlap_color = "#7B21BB" # Indigo
+    overlap_color = "#7B21BB"
 
     for ax, (run_name, paths) in zip(axes, run_data.items()):
         filepath = paths.get("dynamic")
@@ -115,23 +111,23 @@ def plot_combined_gating_signals(run_data: dict, colors: dict):
             df = pd.read_csv(filepath)
             run_color = colors.get(run_name)
 
-            # Prepare dataframes
+            # Prepare data for plotting
             gcont_df = df[["_step", "G_cont_mean", "G_cont_min", "G_cont_max"]].dropna()
             scu_df = df[["_step", "S_CU_mean", "S_CU_min", "S_CU_max"]].dropna()
             sce_df = df[["_step", "S_CE_mean", "S_CE_min", "S_CE_max"]].dropna()
 
-            # Merge to align steps for overlap calculation
+            # Calculate signal overlap
             merged_df = pd.merge(scu_df, sce_df, on="_step", suffixes=('_cu', '_ce'))
             overlap_min = np.maximum(merged_df["S_CU_min"], merged_df["S_CE_min"])
             overlap_max = np.minimum(merged_df["S_CU_max"], merged_df["S_CE_max"])
 
-            # Plot backgrounds, then overlap, then lines
+            # Plot backgrounds, overlap, then lines
             ax.fill_between(gcont_df["_step"], gcont_df["G_cont_min"], gcont_df["G_cont_max"], color=run_color, alpha=0.25, zorder=0)
             ax.fill_between(merged_df["_step"], merged_df["S_CU_min"], merged_df["S_CU_max"], color=signal_colors["S_CU"]["fill"], alpha=0.4, zorder=1)
             ax.fill_between(merged_df["_step"], merged_df["S_CE_min"], merged_df["S_CE_max"], color=signal_colors["S_CE"]["fill"], alpha=0.5, zorder=2)
             ax.fill_between(merged_df["_step"], overlap_min, overlap_max, where=overlap_max > overlap_min, color=overlap_color, alpha=0.5, zorder=3)
 
-            # Plot lines on top
+            # Plot signal lines
             ax.plot(gcont_df["_step"], gcont_df["G_cont_mean"], color=run_color, linewidth=3.5, zorder=5)
             ax.plot(scu_df["_step"], scu_df["S_CU_mean"], color=signal_colors["S_CU"]["line"], linewidth=3.0, zorder=4)
             ax.plot(sce_df["_step"], sce_df["S_CE_mean"], color=signal_colors["S_CE"]["line"], linewidth=3.0, zorder=4)
@@ -191,7 +187,6 @@ def plot_router_parameters_separately(run_data: dict, colors: dict):
         plt.close(fig)
         log.info(f"✅ Router parameter plot saved to: {output_path}")
 
-# --- MAIN ORCHESTRATION ---
 def main():
     """Main function to orchestrate the entire plotting process."""
     if not RUNS_TO_PLOT:

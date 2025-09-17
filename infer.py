@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
-# --- Pre-flight Check: Ensure project root is in the Python path ---
+# Ensure project root is in Python path for imports
 try:
     project_root = Path(__file__).parent.resolve()
     if str(project_root) not in sys.path:
@@ -28,7 +28,7 @@ except ImportError as e:
     print("Please ensure you run this script from the root of your project directory.")
     sys.exit(1)
 
-# --- Setup Logging ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -41,13 +41,13 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
     """Loads the model and tokenizer, then generates and prints text."""
     log.info(f"Starting inference for model: {model_path}")
 
-    # --- 1. Register the custom architecture ---
+    # Register custom architecture
     log.info("Registering custom 'dynamic_qwen' architecture...")
     AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
     AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
     log.info("✅ Architecture registered successfully.")
 
-    # --- 2. Load model and tokenizer ---
+    # Load model and tokenizer
     try:
         log.info("Loading model and tokenizer...")
         model = AutoModelForCausalLM.from_pretrained(
@@ -62,18 +62,16 @@ def run_inference(model_path: str, prompt: str, max_new_tokens: int):
         log.error(f"❌ Failed to load model/tokenizer. Error: {e}", exc_info=True)
         return
 
-    # --- 3. Generate text ---
+    # Generate text
     try:
         log.info(f"Generating {max_new_tokens} tokens for prompt: '{prompt}'")
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-        # --- START OF FIX: Conditionally disable caching for ALL dynamic models ---
-        # Both VPR and MoD architectures are incompatible with the standard KV cache.
+        # Disable KV cache for dynamic architectures (VPR/MoD incompatible)
         generation_kwargs = {"max_new_tokens": max_new_tokens}
         if model.config.dynamic_architecture in ["vpr", "mod"]:
             log.info(f"{model.config.dynamic_architecture.upper()} architecture detected. Disabling KV cache for generation.")
             generation_kwargs["use_cache"] = False
-        # --- END OF FIX ---
 
         outputs = model.generate(**inputs, **generation_kwargs)
         

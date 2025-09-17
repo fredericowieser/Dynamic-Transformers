@@ -18,10 +18,8 @@ import yaml
 from huggingface_hub import HfApi, HfFolder
 from transformers import AutoConfig, AutoModelForCausalLM
 
-# --- Pre-flight Check: Ensure project root is in the Python path ---
-# This allows for consistent absolute imports from the 'src' package.
+# Ensure project root is in Python path for imports
 try:
-    # Get the absolute path of the project root (the directory containing this script)
     project_root = Path(__file__).parent.resolve()
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -35,7 +33,7 @@ except ImportError as e:
     print("Please ensure you run this script from the root of your project directory.")
     sys.exit(1)
 
-# --- Setup Logging ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -177,31 +175,31 @@ def main():
     repo_id = f"{args.hf_username}/{args.repo_name}"
 
     try:
-        # --- 1. Load Artifacts ---
+        # Load artifacts
         log.info(f"Loading artifacts from {args.model_path}...")
         if not args.model_path.is_dir():
             raise FileNotFoundError(f"Model directory not found: {args.model_path}")
 
         model_config = AutoConfig.from_pretrained(args.model_path)
         
-        # Find training config (expected in parent's .hydra subdir)
+        # Load training config from .hydra directory
         training_config_path = args.model_path.parent / ".hydra" / "config.yaml"
         training_config = yaml.safe_load(training_config_path.read_text()) if training_config_path.exists() else None
         if not training_config:
             log.warning("Could not find training config. Training details will be omitted.")
 
-        # Load eval results if provided
+        # Load evaluation results if provided
         eval_results = json.loads(args.eval_results.read_text()) if args.eval_results and args.eval_results.exists() else None
         if args.eval_results and not eval_results:
             log.warning(f"Evaluation results file not found at: {args.eval_results}")
 
-        # --- 2. Generate and Save Model Card ---
+        # Generate and save model card
         log.info("Generating model card...")
         model_card = generate_model_card(model_config, repo_id, training_config, eval_results)
         (args.model_path / "README.md").write_text(model_card, encoding="utf-8")
         log.info("✅ Model card created successfully.")
 
-        # --- 3. Upload to Hub ---
+        # Upload to Hugging Face Hub
         api = HfApi()
         log.info(f"🚀 Creating repository '{repo_id}' and uploading files...")
         repo_url = api.create_repo(repo_id=repo_id, exist_ok=True, private=args.private)

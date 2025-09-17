@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import wandb
 from lm_eval import simple_evaluate
-from lm_eval.models.huggingface import HFLM # Import the wrapper class
+from lm_eval.models.huggingface import HFLM
 
 from transformers import AutoTokenizer
 from peft import PeftModel
@@ -105,15 +105,12 @@ def main():
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     
-    # --- START OF FIX ---
-    # Wrap the loaded Hugging Face model in the lm-eval HFLM class.
-    # The HFLM wrapper holds both the model and the tokenizer.
+    # Wrap model for lm-eval compatibility
     log.info("Wrapping model in lm_eval HFLM class...")
     lm_eval_model = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
     )
-    # --- END OF FIX ---
 
     shot_counts = {"mmlu": 5, "arc_challenge": 25, "truthfulqa_mc2": 0, "winogrande": 5, "hellaswag": 10}
 
@@ -123,7 +120,7 @@ def main():
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
         results = simple_evaluate(
-            model=lm_eval_model, # Pass the wrapped model object
+            model=lm_eval_model,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,

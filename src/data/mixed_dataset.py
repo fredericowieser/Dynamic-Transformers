@@ -6,11 +6,9 @@ from omegaconf import DictConfig
 from torch.utils.data import ConcatDataset, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-# --- START OF MODIFICATION ---
-# Import both dataset handlers
+# Import dataset handlers
 from .huggingface_dataset import HuggingFaceDataset
 from .pretraining_dataset import PretrainingDataset
-# --- END OF MODIFICATION ---
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +24,7 @@ class MixedDataset:
         dataset_configs: List[DictConfig],
         tokenizer_name: str,
         block_size: int,
-        batch_size: int, # Kept for Hydra instantiation compatibility, but not used here
+        batch_size: int, # For Hydra compatibility, not used
         validation_split_percentage: int = 5,
         **kwargs,
     ):
@@ -48,9 +46,8 @@ class MixedDataset:
         all_train_datasets, all_val_datasets = [], []
 
         for cfg in self.dataset_configs:
-            # --- START OF MODIFICATION ---
-            # Dynamically select the dataset handler based on the config
-            dataset_type = cfg.get("type", "sft") # Default to 'sft' for backward compatibility
+            # Select dataset handler based on type
+            dataset_type = cfg.get("type", "sft")
             log.info(f"Processing dataset '{cfg['dataset_name']}' with handler: '{dataset_type}'")
 
             if dataset_type == "sft":
@@ -60,7 +57,7 @@ class MixedDataset:
             else:
                 raise ValueError(f"Unknown dataset type '{dataset_type}' in config for '{cfg['dataset_name']}'.")
 
-            # The hydra instantiation is now more generic
+            # Instantiate handler
             single_dataset_handler = handler_class(
                 tokenizer=self.tokenizer,
                 dataset_name=cfg["dataset_name"],
@@ -70,7 +67,6 @@ class MixedDataset:
                 validation_split_percentage=self.validation_split_percentage,
                 train_subset_ratio=cfg.get("train_subset_ratio"),
             )
-            # --- END OF MODIFICATION ---
             
             train_data, val_data = single_dataset_handler.load_and_process()
 
@@ -81,7 +77,7 @@ class MixedDataset:
 
         self.train_dataset = ConcatDataset(all_train_datasets) if all_train_datasets else []
         self.val_dataset = ConcatDataset(all_val_datasets) if all_val_datasets else []
-        self.test_dataset = self.val_dataset # Use val set for testing
+        self.test_dataset = self.val_dataset
 
         log.info(f"Total mixed training samples: {len(self.train_dataset):,}")
         log.info(f"Total mixed validation samples: {len(self.val_dataset):,}")

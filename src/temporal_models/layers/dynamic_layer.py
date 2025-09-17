@@ -23,13 +23,13 @@ class DynamicLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         decision_output: DecisionLayerOutput,
-        attention_mask: torch.Tensor | None = None, # Expects 4D causal mask
+        attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
         use_cache: bool = False,
         **kwargs,
     ) -> DynamicLayerOutput:
         
-        # VPR routing - first argument must be positional for PEFT compatibility
+        # Routing: PEFT wrapper requires first argument to be positional
         (
             gate_vec_binary, s_ce_stats, s_cu_stats, g_cont_stats,
             _, _, combined_gating_signal, beta_ce, beta_cu,
@@ -41,7 +41,7 @@ class DynamicLayer(nn.Module):
             capacity_gamma=self.config.capacity_gamma,
             is_training=self.training,
         )
-        
+
         # Gather selected tokens
         batch_indices, token_indices = gate_vec_binary.nonzero(as_tuple=True)
 
@@ -57,7 +57,7 @@ class DynamicLayer(nn.Module):
         selected_tokens = hidden_states[batch_indices, token_indices]
         continuous_signal_selected = combined_gating_signal[batch_indices, token_indices]
 
-        # Process selected tokens
+        # Process selected tokens through transformer block
         num_selected_tokens = selected_tokens.shape[0]
         selected_tokens_batched = selected_tokens.unsqueeze(0)
         
@@ -74,7 +74,7 @@ class DynamicLayer(nn.Module):
         )
         processed_tokens = block_outputs[0].squeeze(0)
 
-        # Scatter results and apply straight-through estimator
+        # Scatter processed tokens back and apply STE
         final_hidden_states = hidden_states.clone()
         delta_output = processed_tokens - selected_tokens
         scaled_delta = delta_output * continuous_signal_selected.unsqueeze(-1)

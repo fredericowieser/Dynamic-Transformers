@@ -14,7 +14,7 @@ from src.models.qwen.config import DynamicQwenConfig
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Register custom architecture
+# Register custom architecture with transformers
 log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
 AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
 AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
@@ -75,9 +75,7 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # --- FINALIZED MODEL LOADING SECTION ---
-    # Build the arguments for lm-eval to load the model automatically.
-    # The key "pretrained" is the standard for this library.
+    # Configure model loading for lm-eval
     model_args_dict = {
         "pretrained": args.model_path,
         "trust_remote_code": True,
@@ -91,9 +89,8 @@ def main():
             model_args_dict["torch_dtype"] = "bfloat16"
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
-    # --- END OF LOADING SECTION ---
 
-    # Define the number of shots for each specific task.
+    # Task-specific shot counts
     shot_counts = {
         "mmlu": 5,
         "arc_challenge": 25,
@@ -107,7 +104,7 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # Let lm-eval handle the model loading automatically.
+        # Run evaluation with lm-eval
         results = simple_evaluate(
             model="hf",
             model_args=model_args_dict,
