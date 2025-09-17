@@ -8,7 +8,7 @@ class MoDTokenRouter(nn.Module):
     """
     def __init__(self, hidden_size: int):
         super().__init__()
-        # The router is a simple linear projection from the hidden dimension to a single scalar.
+        # Linear projection to scalar weight per token
         self.gate = nn.Linear(hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:

@@ -23,19 +23,19 @@ class DynamicLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         decision_output: DecisionLayerOutput,
-        attention_mask: torch.Tensor | None = None, # Expects 4D causal mask
+        attention_mask: torch.Tensor | None = None,  # 4D causal mask
         position_ids: torch.LongTensor | None = None,
         use_cache: bool = False,
         **kwargs,
     ) -> DynamicLayerOutput:
         
-        # VPR routing - first argument must be positional for PEFT compatibility
+        # VPR routing (first arg positional for PEFT)
         (
             gate_vec_binary, s_ce_stats, s_cu_stats, g_cont_stats,
             _, _, combined_gating_signal, beta_ce, beta_cu,
             cu_multiplier, ce_offset,
         ) = self.vpr_router(
-            decision_output.vpr_signal_original_input,  # Pass this argument positionally
+            decision_output.vpr_signal_original_input,  # Positional argument
             posterior_full_path_output=decision_output.vpr_signal_posterior_output,
             prior_hidden_states=decision_output.vpr_signal_prior_hidden_states,
             capacity_gamma=self.config.capacity_gamma,
@@ -80,7 +80,7 @@ class DynamicLayer(nn.Module):
         scaled_delta = delta_output * continuous_signal_selected.unsqueeze(-1)
         updated_selected_states = selected_tokens + scaled_delta
 
-        # Cast to match destination dtype before scattering
+        # Match destination dtype before scattering
         final_hidden_states[batch_indices, token_indices] = updated_selected_states.to(final_hidden_states.dtype)
 
         return DynamicLayerOutput(

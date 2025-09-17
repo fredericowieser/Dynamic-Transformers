@@ -63,7 +63,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.peft.enabled:
         log.info("Applying PEFT (LoRA) configuration to the model...")
         peft_config_dict = OmegaConf.to_container(cfg.peft.config, resolve=True)
-        peft_config_dict.pop('_target_', None) 
+        peft_config_dict.pop('_target_', None)
         peft_config = LoraConfig(**peft_config_dict)
         model = get_peft_model(model, peft_config)
         log.info("Trainable parameters after applying LoRA:")
@@ -98,7 +98,7 @@ def main(cfg: DictConfig) -> None:
     )
     gate_logger = GateLogger(model.config.num_hidden_layers)
 
-    # Epochs and Steps Calculation
+    # Calculate epochs and training steps
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches)
     if cfg.training.max_steps > 0:
         num_training_steps = cfg.training.max_steps
@@ -162,7 +162,7 @@ def main(cfg: DictConfig) -> None:
                         "train/perplexity": metrics["perplexity"].item(),
                         "lr": lr_scheduler.get_last_lr()[0]
                     }
-                    if "s_ce_stats" in metrics: # Check for any representative VPR metric
+                    if "s_ce_stats" in metrics:  # VPR metrics
                         if metrics.get("prior_loss") is not None:
                             log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
                             log_metrics["train/prior_loss_weight"] = metrics["current_prior_loss_weight"]

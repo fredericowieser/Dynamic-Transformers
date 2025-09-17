@@ -22,25 +22,25 @@ class VPRRouter(nn.Module):
         self.moving_average_window_size = getattr(
             config, "moving_average_window_size", 100
         )
-        # beta_ce
+        # Beta CE parameter
         if getattr(config, "learn_beta_ce", False):
             self.beta_ce = nn.Parameter(torch.tensor(config.beta_ce_init, dtype=torch.float32))
         else:
             self.register_buffer('beta_ce', torch.tensor(config.beta_ce_init, dtype=torch.float32))
 
-        # beta_cu
+        # Beta CU parameter
         if getattr(config, "learn_beta_cu", False):
             self.beta_cu = nn.Parameter(torch.tensor(config.beta_cu_init, dtype=torch.float32))
         else:
             self.register_buffer('beta_cu', torch.tensor(config.beta_cu_init, dtype=torch.float32))
 
-        # cu_detection_multiplier
+        # CU detection multiplier
         if getattr(config, "learn_cu_multiplier", False):
             self.cu_detection_multiplier = nn.Parameter(torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
         else:
             self.register_buffer('cu_detection_multiplier', torch.tensor(config.cu_detection_multiplier_init, dtype=torch.float32))
 
-        # ce_criterion_offset
+        # CE criterion offset
         if getattr(config, "learn_ce_offset", False):
             self.ce_criterion_offset = nn.Parameter(torch.tensor(config.ce_criterion_offset_init, dtype=torch.float32))
         else:
@@ -155,8 +155,8 @@ class VPRRouter(nn.Module):
             s_ce_stats,
             s_cu_stats,
             g_cont_stats,
-            d_st_tok, # TODO: Remove if not needed
-            d_ch_tok, # TODO: Remove if not needed
+            d_st_tok,
+            d_ch_tok
             combined_gating_signal_continuous,
             self.current_beta_ce,
             self.current_beta_cu,

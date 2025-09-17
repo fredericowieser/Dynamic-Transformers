@@ -6,7 +6,7 @@ from omegaconf import DictConfig
 from torch.utils.data import ConcatDataset, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-# Import dataset handlers
+# Dataset handlers
 from .huggingface_dataset import HuggingFaceDataset
 from .pretraining_dataset import PretrainingDataset
 
@@ -24,7 +24,7 @@ class MixedDataset:
         dataset_configs: List[DictConfig],
         tokenizer_name: str,
         block_size: int,
-        batch_size: int, # For Hydra compatibility, not used
+        batch_size: int,  # Hydra compatibility
         validation_split_percentage: int = 5,
         **kwargs,
     ):
@@ -46,7 +46,7 @@ class MixedDataset:
         all_train_datasets, all_val_datasets = [], []
 
         for cfg in self.dataset_configs:
-            # Select dataset handler based on type
+            # Select handler by type
             dataset_type = cfg.get("type", "sft")
             log.info(f"Processing dataset '{cfg['dataset_name']}' with handler: '{dataset_type}'")
 
@@ -57,7 +57,7 @@ class MixedDataset:
             else:
                 raise ValueError(f"Unknown dataset type '{dataset_type}' in config for '{cfg['dataset_name']}'.")
 
-            # Instantiate handler
+            # Create handler instance
             single_dataset_handler = handler_class(
                 tokenizer=self.tokenizer,
                 dataset_name=cfg["dataset_name"],

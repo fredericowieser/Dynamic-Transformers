@@ -3,11 +3,11 @@ defaults:
 
 model:
   model_cfg:
-    # --- Architecture Control ---
-    dynamic_architecture: "mod"  # Switch to the MoD architecture
+    # Architecture configuration
+    dynamic_architecture: "mod"  # MoD architecture
     capacity_gamma: 0.5
 
-    # --- VPR Specific Params (Not used by MoD) ---
+    # VPR parameters (disabled for MoD)
     prior_loss_schedule: null
     learn_beta_ce: False
     learn_beta_cu: False

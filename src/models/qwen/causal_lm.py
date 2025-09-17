@@ -25,7 +25,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         # Build model with dynamic layers from start
         super(Qwen2ForCausalLM, self).__init__(config)
 
-        self.model = Qwen2Model(config) # This creates embed_tokens and norm
+        self.model = Qwen2Model(config)  # Creates embed_tokens and norm
         
         # Create dynamic layer structure
         dynamic_layers = nn.ModuleList()
@@ -88,7 +88,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # Disable KV cache for VPR during generation (incompatible with gather-scatter)
+        # Disable KV cache for VPR (incompatible with gather-scatter)
         if self.config.dynamic_architecture == "vpr" and past_key_values is not None:
             use_cache = False
 
@@ -111,7 +111,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
             ).unsqueeze(0)
         
-        # Expand position_ids to match batch size
+        # Match batch size
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.expand(batch_size, -1)
 
@@ -127,7 +127,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
                 decision_layer = self.model.layers[i]
                 dynamic_layer = self.model.layers[i+1]
                 
-                # Handle past_key_values for VPR layers
+                # Past KV for VPR
                 past_kv_decision = past_key_values[i] if past_key_values is not None else None
                 past_kv_dynamic = past_key_values[i+1] if past_key_values is not None else None
 
@@ -156,7 +156,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
         elif self.config.dynamic_architecture == "mod":
             for i, layer in enumerate(self.model.layers):
-                # Handle past_key_values for MoD layers
+                # Past KV for MoD
                 past_kv = past_key_values[i] if past_key_values is not None else None
                 layer_outputs = layer(
                     hidden_states,
@@ -177,7 +177,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
 
         if self.config.dynamic_architecture == "vpr" and all_dynamic_layer_outputs:
             def aggregate_stats(outputs_list, key_name):
-                # Compute mean stats across layers
+                # Mean stats across layers
                 stats = [o.__getattribute__(key_name) for o in outputs_list]
                 return {
                     'mean': torch.stack([s['mean'] for s in stats]).mean(),
@@ -189,7 +189,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             s_cu_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 's_cu_stats')
             g_cont_stats_agg = aggregate_stats(all_dynamic_layer_outputs, 'g_cont_stats')
             def aggregate_router_param_stats(outputs_list, param_name):
-                # Compute mean and std for router parameters
+                # Router parameter stats
                 values = torch.tensor([o.__getattribute__(param_name) for o in outputs_list], device=outputs_list[0].hidden_states.device)
                 return {
                     'mean': values.mean(),
@@ -219,7 +219,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             return VPRCausalLMOutput(
                 logits=logits,
                 past_key_values=tuple(next_past_key_values) if use_cache else None,
-                loss=None,  # Loss is calculated in the training script
+                loss=None,  # Calculated in training script
                 vpr_metrics=vpr_metrics_dict,
             )
         else:
@@ -242,7 +242,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         # Create custom model with correct layer structure
         custom_model = cls(config)
 
-        # Load vanilla model for weight transfer
+        # Load vanilla model weights
         kwargs.pop('config', None)
         vanilla_model = Qwen2ForCausalLM.from_pretrained(
             pretrained_model_name_or_path, *model_args, **kwargs

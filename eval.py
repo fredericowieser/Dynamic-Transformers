@@ -14,12 +14,12 @@ from src.models.qwen.config import DynamicQwenConfig
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Register custom architecture with transformers
+# Register custom architecture
 log.info("Registering custom 'dynamic_qwen' architecture with transformers.")
 AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
 AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
 
-# Define task groups
+# Task groups
 TASK_SUITES = {
     "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
     "math": ["gsm8k", "math_qa"],
@@ -75,7 +75,7 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # Configure model loading for lm-eval
+    # Configure model loading
     model_args_dict = {
         "pretrained": args.model_path,
         "trust_remote_code": True,
@@ -90,7 +90,7 @@ def main():
     except Exception as e:
         log.warning(f"Could not determine Flash Attention support from config: {e}")
 
-    # Task-specific shot counts
+    # Shot counts per task
     shot_counts = {
         "mmlu": 5,
         "arc_challenge": 25,
@@ -104,7 +104,7 @@ def main():
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
-        # Run evaluation with lm-eval
+        # Run evaluation
         results = simple_evaluate(
             model="hf",
             model_args=model_args_dict,

@@ -1,34 +1,34 @@
 _target_: src.data.mixed_dataset.MixedDataset
-_recursive_: false   # <- DO NOT instantiate children automatically
-_convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
+_recursive_: false   # Don't instantiate children automatically
+_convert_:  partial  # Pass nested structures as DictConfig/ListConfig
 
 dataset_configs:
 
-  # === Category 1: Core Knowledge & Coherence (~45%) ===
-  # A solid foundation of high-quality English text.
+  # Category 1: Core Knowledge & Coherence (~45%)
+  # High-quality English text foundation
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "wikitext"
-    dataset_config: "wikitext-103-raw-v1" # A clean, standard benchmark dataset.
+    dataset_config: "wikitext-103-raw-v1"  # Clean benchmark dataset
     text_column: "text"
-    train_subset_ratio: 1.0 # Use all of it.
+    train_subset_ratio: 1.0  # Use full dataset
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "cnn_dailymail"
     dataset_config: "3.0.0"
-    text_column: "article" # Use the full articles for long-form text.
-    train_subset_ratio: 0.2 # 20% provides a large volume of high-quality news text.
+    text_column: "article"  # Full articles for long-form text
+    train_subset_ratio: 0.2  # 20% for high-quality news
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "roneneldan/TinyStories" # Excellent for learning narrative and causal links.
+    dataset_name: "roneneldan/TinyStories"  # Narrative and causal learning
     text_column: "text"
     train_subset_ratio: 1.0
 
-  # === Category 2: Code & Technical Acumen (~25%) ===
-  # Focused, high-quality code to excel on HumanEval and MBPP.
+  # Category 2: Code & Technical Acumen (~25%)
+  # High-quality code for HumanEval and MBPP performance
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "codeparrot/codeparrot-clean-valid" # A high-quality, validated Python dataset.
+    dataset_name: "codeparrot/codeparrot-clean-valid"  # Validated Python code
     text_column: "content"
     train_subset_ratio: 1.0
 
@@ -37,22 +37,22 @@ dataset_configs:
   #   text_column: "content" # The text column for this dataset is 'content'.
   #   train_subset_ratio: 0.2
 
-  # === Category 3: Mathematical & Scientific Reasoning (~20%) ===
-  # To directly target MATH, GSM8K, and science-based benchmarks.
+  # Category 3: Mathematical & Scientific Reasoning (~20%)
+  # Targets MATH, GSM8K, and science benchmarks
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
     dataset_name: "gsm8k"
     dataset_config: "main"
-    text_column: "question" # Using the question text for pre-training.
-    train_subset_ratio: 1.0 # Use the full dataset as it is small.
+    text_column: "question"  # Question text for pre-training
+    train_subset_ratio: 1.0  # Full dataset (small size)
 
   - _target_: src.data.huggingface_dataset.HuggingFaceDataset
-    dataset_name: "sciq" # Science questions to improve reasoning and knowledge.
-    text_column: "support" # Use the supporting evidence as high-quality text.
+    dataset_name: "sciq"  # Science questions for reasoning
+    text_column: "support"  # Supporting evidence text
     train_subset_ratio: 1.0
 
-  # === Category 4: Multilingual Capabilities (~10%) ===
-  # A targeted dataset for multilingual understanding and translation tasks.
+  # Category 4: Multilingual Capabilities (~10%)
+  # Targeted multilingual understanding and translation
 
   # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
   #   # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.

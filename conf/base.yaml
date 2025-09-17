@@ -24,13 +24,13 @@ peft:
     r: 16
     lora_alpha: 32
     target_modules:
-      - "q_proj"      # Attention: Query projection
-      - "k_proj"      # Attention: Key projection
-      - "v_proj"      # Attention: Value projection
-      - "o_proj"      # Attention: Output projection
-      - "gate_proj"   # MLP: Gate projection for SwiGLU
-      - "up_proj"     # MLP: Up projection for SwiGLU
-      - "down_proj"   # MLP: Down projection
+      - "q_proj"      # Query projection
+      - "k_proj"      # Key projection
+      - "v_proj"      # Value projection
+      - "o_proj"      # Output projection
+      - "gate_proj"   # Gate projection (SwiGLU)
+      - "up_proj"     # Up projection (SwiGLU)
+      - "down_proj"   # Down projection
     modules_to_save:
       - "vpr_router"
       - "prior_ffn"
@@ -44,15 +44,15 @@ model:
   use_flash_attention_2: true
 
   model_cfg:
-    # --- Architecture Control ---
-    dynamic_architecture: "vpr"  # Can be "vpr" or "mod"
-    capacity_gamma: 0.5          # For VPR: routing capacity. For MoD: percentage of tokens to process.
+    # Architecture configuration
+    dynamic_architecture: "vpr"  # Options: "vpr" or "mod"
+    capacity_gamma: 0.5          # VPR: routing capacity, MoD: token percentage
 
-    # --- VPR Specific Params ---
+    # VPR-specific parameters
     prior_loss_schedule:
-      initial_weight: 0.05 # Start with a high weight for aggressive initial training
-      final_weight: 0.05   # Decay to a stable final weight
-      decay_steps: 0   # Number of steps over which to perform the decay
+      initial_weight: 0.05  # Initial weight for training
+      final_weight: 0.05    # Final stable weight
+      decay_steps: 0        # Decay duration (steps)
 
     learn_beta_ce: True
     learn_beta_cu: True
@@ -66,15 +66,14 @@ model:
 
     token_wise_gating: True
     moving_average_window_size: 100
-    prior_ffn_intermediate_size_factor: 0.5  # 1/2 of main FFN size
+    prior_ffn_intermediate_size_factor: 0.5  # Fraction of main FFN size
 
-    # --- General Training Params ---
+    # General training parameters
     freeze_main_transformer_blocks: False
 
 training:
-  # --- Training Duration Control ---
-  # Specify EITHER num_epochs OR max_steps.
-  # If max_steps is set to a positive number, it will take precedence.
+  # Training duration control - specify either num_epochs or max_steps
+  # If max_steps > 0, it takes precedence over num_epochs
   num_epochs: 1
   max_steps: -1
 
@@ -85,7 +84,7 @@ training:
   gradient_clip_val: 1.0
 
   optimizer:
-    base_model_lr: 1.0e-5       # base Qwen2Block parameters
+    base_model_lr: 1.0e-5       # Base model learning rate
     prior_lr: 1.0e-3
     vpr_router_lr: 1.0e-2
     weight_decay: 0.01
