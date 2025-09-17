@@ -44,10 +44,10 @@ def calculate_metrics(model, batch, global_step):
         prior_loss = vpr_metrics.get("prior_loss")
 
         if prior_loss is not None:
-            # Get model config (handle accelerator wrapper)
+            # Get the model config, handling the accelerator wrapper
             config = model.module.config if hasattr(model, 'module') else model.config
             
-            # Calculate weight based on schedule
+            # Calculate the current weight based on the schedule
             schedule_cfg = config.prior_loss_schedule
             initial_w = schedule_cfg['initial_weight']
             final_w = schedule_cfg['final_weight']

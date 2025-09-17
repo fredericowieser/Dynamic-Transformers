@@ -12,7 +12,7 @@ import pandas as pd
 import wandb
 from wandb.apis.public import Run
 
-# --- Setup Logging ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -40,8 +40,7 @@ def get_run_data(api: wandb.Api, run_path: str) -> Run | None:
 
 def process_and_save_data(run: Run, output_dir: Path):
     """Processes run history into common and dynamic metrics and saves them to CSV."""
-    # --- START OF MODIFICATION: Use scan_history for complete data ---
-    # scan_history() is an iterator that fetches all data points without sampling.
+    # Use scan_history for complete, unsampled data
     log.info("Downloading all metric data points... (this may take a moment for long runs)")
     all_history = list(run.scan_history())
     if not all_history:
@@ -50,10 +49,9 @@ def process_and_save_data(run: Run, output_dir: Path):
         
     run_history_df = pd.DataFrame(all_history)
     log.info(f"Successfully downloaded {len(run_history_df)} steps from the run history.")
-    # --- END OF MODIFICATION ---
 
 
-    # --- Identify Common and Dynamic Metric Columns ---
+    # Separate common and dynamic metrics
     vpr_prefixes = ("train_vpr_signals/", "train_vpr_router/")
     
     common_cols = [
@@ -64,18 +62,18 @@ def process_and_save_data(run: Run, output_dir: Path):
     existing_common_cols = [col for col in common_cols if col in run_history_df.columns]
     dynamic_cols = [col for col in run_history_df.columns if col.startswith(vpr_prefixes)]
     
-    # --- Create DataFrames ---
+    # Create output DataFrames
     common_df = run_history_df[existing_common_cols].set_index("_step")
     
-    # --- Generate Filenames ---
+    # Generate output filenames
     base_filename = sanitize_filename(run.name)
     common_csv_path = output_dir / f"{base_filename}_common_metrics.csv"
     
-    # --- Save Common Metrics ---
+    # Save common metrics
     common_df.to_csv(common_csv_path)
     log.info(f"📈 Saved complete common metrics to: {common_csv_path}")
 
-    # --- Save Dynamic Metrics if they exist ---
+    # Save dynamic metrics if available
     if dynamic_cols:
         dynamic_df = run_history_df[["_step"] + dynamic_cols].set_index("_step")
         dynamic_df.columns = [

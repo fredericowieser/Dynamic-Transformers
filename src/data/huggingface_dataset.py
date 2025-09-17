@@ -12,7 +12,7 @@ from transformers import PreTrainedTokenizerBase
 log = logging.getLogger(__name__)
 
 def _dict_list_to_chat(tokenizer, conv: list[dict[str, Any]]) -> dict[str, str]:
-    """Takes [{'role': 'user', 'content': '…'}, …] -> {'text': '…'}"""
+    """Convert conversation list to formatted text."""
     norm = []
     for turn in conv:
         role = (turn.get("role") or turn.get("from") or "").lower()
@@ -55,7 +55,7 @@ class HuggingFaceDataset:
         self.train_subset_ratio = train_subset_ratio
 
     def _format_text(self, examples):
-        """Extremely tolerant normaliser for various chat and instruction formats."""
+        """Normalize various chat and instruction formats."""
         preferred = self.text_column
         raw = examples.get(preferred)
 
@@ -100,7 +100,7 @@ class HuggingFaceDataset:
         return {"text": str(raw).strip() if raw is not None else ""}
 
     def _group_texts(self, examples):
-        """Concatenate and group texts into blocks."""
+        """Group texts into fixed-size blocks."""
         concatenated = {k: sum(examples[k], []) for k in examples.keys()}
         total_length = len(concatenated[list(examples.keys())[0]])
         total_length = (total_length // self.block_size) * self.block_size
@@ -112,7 +112,7 @@ class HuggingFaceDataset:
         return result
 
     def load_and_process(self):
-        """Main method to download, process, and split the dataset."""
+        """Download, process, and split the dataset."""
         log.info(f"Loading and processing dataset: {self.dataset_name}")
         raw_datasets = load_dataset(self.dataset_name, self.dataset_config, trust_remote_code=True)
 
