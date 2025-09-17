@@ -102,7 +102,7 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         batch_size, seq_length, _ = hidden_states.shape
         
         past_key_values_length = 0
-        if past_key_values is not None:
+        if past_key_values is not None and past_key_values[0] is not None and past_key_values[0][0] is not None:
             past_key_values_length = past_key_values[0][0].shape[2]
 
         if position_ids is None:
@@ -175,6 +175,17 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            loss = loss_fct(shift_logits, shift_labels)
+
         if self.config.dynamic_architecture == "vpr" and all_dynamic_layer_outputs:
             def aggregate_stats(outputs_list, key_name):
                 # Mean stats across layers
@@ -217,17 +228,26 @@ class DynamicQwenForCausalLM(Qwen2ForCausalLM):
             }
 
             return VPRCausalLMOutput(
+                loss=loss,
                 logits=logits,
                 past_key_values=tuple(next_past_key_values) if use_cache else None,
-                loss=None,  # Calculated in training script
                 vpr_metrics=vpr_metrics_dict,
             )
         else:
             return DynamicCausalLMOutput(
+                loss=loss,
                 logits=logits,
                 past_key_values=tuple(next_past_key_values) if use_cache else None,
             )
 
+
+    def generate(self, *args, **kwargs):
+        """Override generate to disable caching for VPR architecture."""
+        if self.config.dynamic_architecture == "vpr":
+            kwargs['use_cache'] = False
+        elif self.config.dynamic_architecture == "mod":
+            kwargs['use_cache'] = False
+        return super().generate(*args, **kwargs)
 
     @classmethod
     def from_vanilla_checkpoint(cls, pretrained_model_name_or_path, *model_args, **kwargs):

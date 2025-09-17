@@ -1,0 +1,126 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly run on Sunday at midnight
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.10', '3.11']
+        pytorch-version: ['2.2.0', '2.3.0']
+        exclude:
+          - os: macos-latest
+            pytorch-version: '2.3.0'  # Exclude if not compatible
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch==${{ matrix.pytorch-version }} --index-url https://download.pytorch.org/whl/cpu
+        pip install -e .
+        pip install pytest pytest-cov pytest-xdist
+
+    - name: Run unit tests
+      run: |
+        pytest tests/test_layers.py tests/test_routers.py tests/test_blocks.py tests/test_models.py \
+          -v --cov=src --cov-report=xml --cov-report=term-missing
+
+    - name: Run integration tests
+      run: |
+        pytest tests/test_training_integration.py tests/test_evaluation_integration.py \
+          -v --cov=src --cov-append --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage to Codecov
+      if: matrix.python-version == '3.11' && matrix.pytorch-version == '2.3.0' && matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install ruff
+      run: pip install ruff
+
+    - name: Run ruff check
+      run: ruff check src tests
+
+    - name: Run ruff format check
+      run: ruff format --check src tests
+
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install mypy types-PyYAML types-requests torch --index-url https://download.pytorch.org/whl/cpu
+
+    - name: Run mypy
+      run: mypy src --ignore-missing-imports --no-strict-optional
+
+  gpu-test:
+    runs-on: [self-hosted, gpu]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install pytest pytest-cov
+
+    - name: Run GPU tests
+      run: |
+        pytest tests/ -v -m "not slow" --cov=src --cov-report=xml
+
+    - name: Check GPU utilization
+      run: nvidia-smi

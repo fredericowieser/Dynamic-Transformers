@@ -46,19 +46,23 @@ def calculate_metrics(model, batch, global_step):
         if prior_loss is not None:
             # Get model config (handle accelerator wrapper)
             config = model.module.config if hasattr(model, 'module') else model.config
-            
-            # Calculate weight based on schedule
-            schedule_cfg = config.prior_loss_schedule
-            initial_w = schedule_cfg['initial_weight']
-            final_w = schedule_cfg['final_weight']
-            decay_steps = schedule_cfg['decay_steps']
 
-            if global_step < decay_steps:
-                progress = global_step / decay_steps
-                current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
+            # Calculate weight based on schedule
+            schedule_cfg = getattr(config, 'prior_loss_schedule', None)
+            if schedule_cfg is not None:
+                initial_w = schedule_cfg['initial_weight']
+                final_w = schedule_cfg['final_weight']
+                decay_steps = schedule_cfg['decay_steps']
+
+                if global_step < decay_steps:
+                    progress = global_step / decay_steps
+                    current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
+                else:
+                    current_prior_loss_weight = final_w
             else:
-                current_prior_loss_weight = final_w
-            
+                # Default weight if no schedule specified
+                current_prior_loss_weight = 0.1
+
             total_loss += prior_loss * current_prior_loss_weight
         
         metrics.update(vpr_metrics)

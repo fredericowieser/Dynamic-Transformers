@@ -53,6 +53,7 @@ class DynamicCausalLMOutput(ModelOutput):
     """
     A general output class, now primarily for the MoD architecture.
     """
-    logits: torch.Tensor
+    loss: Optional[torch.Tensor] = None
+    logits: torch.Tensor = None
     past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None
     attentions: Optional[Tuple[torch.Tensor]] = None

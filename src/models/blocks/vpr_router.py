@@ -156,7 +156,7 @@ class VPRRouter(nn.Module):
             s_cu_stats,
             g_cont_stats,
             d_st_tok,
-            d_ch_tok
+            d_ch_tok,
             combined_gating_signal_continuous,
             self.current_beta_ce,
             self.current_beta_cu,
