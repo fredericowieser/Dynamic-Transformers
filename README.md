@@ -1,122 +1,141 @@
-# Dynamic Transformers (DTF)
+# Dynamic Transformer
 
-This repository contains the official implementation for the MSc thesis, **"Dynamic Transformers"**. It provides the code to train, evaluate, and run inference with the proposed Dynamic Transformer (DTF) architecture, a conditional computation model inspired by predictive coding.
-
-## Abstract
-
-The standard Transformer's uniform application of computation to all tokens creates a scalability bottleneck. While methods like Mixture-of-Depths (MoD) offer a solution by processing a subset of tokens based on a learned "importance" score, we propose a more principled approach. The **Dynamic Transformer (DTF)** is a novel architecture inspired by computational neuroscience, specifically Variational Predictive Routing (VPR). DTF uses a surprise-based gating mechanism to conditionally allocate compute, routing tokens based on a context-dependent measure of information gain.
-
-This repository provides code to adapt a pre-trained Qwen2.5-0.5B model to the DTF architecture and compare it against a re-implemented MoD baseline under matched compute capacity ($\gamma=0.5$). Our results show that DTF achieves a small but consistent validation loss advantage over MoD, suggesting a more effective inductive bias for routing.
-
-## Architecture Overview
-
-The DTF replaces the standard uniform stack of Transformer layers with alternating **Decision** and **Dynamic** layers. The Decision Layer computes a posterior state (via a standard TF block) and a prior prediction (via a lightweight PriorFFN). The Dynamic Layer's Predictive Router uses these signals to gate which tokens are processed by a second TF block.
-
- 
-*A high-level comparison of the standard Transformer (left) and the DTF architecture (right).*
+Modular implementation of DTF (Dynamic Transformer) and MoD (Mixture-of-Depths) architectures with multi-GPU support.
 
 ## Features
 
-- **Model Implementation**: `DynamicQwenForCausalLM` with support for both **DTF** and **MoD** architectures.
-- **Training Script**: A robust training script using `accelerate` for distributed training, `hydra` for configuration, and supporting LoRA for parameter-efficient fine-tuning.
-- **Evaluation Script**: Integrated with `lm-eval` for standardized benchmarking.
-- **Inference Script**: A simple script to run generation with a trained model.
-- **Hugging Face Hub Uploader**: A utility to generate a model card and upload models to the Hub.
+- **DTF**: Surprise-based routing using predictive coding principles
+- **MoD**: Importance-based top-k token selection
+- **Multi-GPU training** via Accelerate
+- **Multi-dataset support** with weighted mixing
+- **Hydra configuration** for flexible experimentation
+- **Flash Attention 2** support
+- **WandB integration** for experiment tracking
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/dynamic-transformers.git
-    cd dynamic-transformers
-    ```
-
-2.  **Create a virtual environment and install dependencies:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate
-    pip install -e ".[dev]"
-    ```
-    *The `-e` flag installs the project in editable mode.*
-
-## Quickstart
-
-All scripts are configured using [Hydra](https://hydra.cc/). You can override any configuration setting from the command line.
-
-### 1. Training a Model
-
-Use the `train.py` script to fine-tune a model. You can select the dynamic architecture by overriding `model`.
-
-**Train a DTF model:**
 ```bash
-python train.py model=dtf run.name=dtf-qwen-0.5b-run1
+pip install -r requirements.txt
 ```
 
-**Train a MoD baseline:**
-```bash
-python train.py model=mod run.name=mod-qwen-0.5b-run1
+## Project Structure
+
 ```
-- Checkpoints will be saved to the `outputs/` directory, structured by date and run name.
-- Training progress is logged to Weights & Biases if `logging.wandb.enabled=true`.
-
-### 2. Evaluating a Model
-
-Use the `evaluate.py` script to run benchmarks on a trained checkpoint using the `lm-evaluation-harness`.
-
-```bash
-python evaluate.py \
-    --model_path outputs/your-run-name/final_model \
-    --tasks general
-```
-- The `--tasks` argument can be a comma-separated list of tasks or pre-defined suites (`general`, `math`, `code`, `quick_test`).
-- Results are saved as a JSON file in the model's directory.
-
-### 3. Running Inference
-
-Use the `inference.py` script for text generation.
-
-```bash
-python inference.py \
-    "path/to/your/model_checkpoint" \
-    "The capital of the United Kingdom is" \
-    --max_new_tokens 50
-```
-- **Note:** The script automatically disables the KV cache for dynamic models (`DTF`, `MoD`), as it is incompatible with their routing mechanism.
-
-### 4. Uploading to Hugging Face Hub
-
-The `upload_to_hub.py` script generates a model card and uploads your model, tokenizer, and custom code to the Hub.
-
-```bash
-# First, log in to your Hugging Face account
-huggingface-cli login
-
-# Then, run the upload script
-python upload_to_hub.py \
-    path/to/your/model_checkpoint \
-    your-new-repo-name \
-    --hf_username YOUR_HF_USERNAME \
-    --eval_results path/to/eval_results.json
+├── config/
+│   └── base.yaml        # Hydra configuration
+├── src/
+│   ├── models/
+│   │   ├── base/        # Base classes
+│   │   ├── dtf/         # DTF implementation
+│   │   └── mod/         # MoD implementation
+│   └── data/            # Dataset utilities
+└── train.py             # Training script
 ```
 
-## Results Summary
+## Usage
 
-Our key finding is that the DTF architecture consistently achieves a lower validation loss than the MoD baseline at a matched compute capacity ($\gamma=0.5$). This suggests that the surprise-based, model-comparison gating provides a more effective inductive bias for routing than a context-independent importance score.
+### Training DTF Model
 
-However, both dynamic models underperform the dense baseline on several downstream benchmarks in our limited transfer-learning setting. This is an expected trade-off due to reduced per-token computation and highlights challenges in adapting pre-trained models to conditional computation. For a detailed analysis, please see Chapter 5 of the [thesis](link-to-thesis.pdf).
+```bash
+python train.py model_type=dtf model.capacity_gamma=0.5
+```
 
-## Citation
+### Training MoD Model
 
-If you find this work useful in your research, please consider citing the thesis:
+```bash
+python train.py model_type=mod model.capacity_gamma=0.5
+```
 
-```bibtex
-@mastersthesis{wieser2025dynamic,
-  author  = {Wieser, Frederico Luis},
-  title   = {Dynamic Transformers},
-  school  = {University College London},
-  year    = {2025},
-  month   = {September},
-  address = {London, UK},
-  note    = {MSc Computational Statistics and Machine Learning}
+### Multi-GPU Training
+
+```bash
+accelerate launch --multi_gpu train.py model_type=dtf
+```
+
+### Custom Configuration
+
+```bash
+python train.py \
+    model_type=dtf \
+    model.capacity_gamma=0.25 \
+    data.dataset_name=openwebtext \
+    training.lr=5e-5 \
+    training.num_epochs=5
+```
+
+### Mixed Datasets
+
+```yaml
+# In config or via command line
+data:
+  mixed: true
+  dataset_names: ["wikitext", "openwebtext", "pile-subset"]
+  dataset_weights: [0.3, 0.5, 0.2]
+```
+
+## Model Architecture
+
+Both DTF and MoD models inherit from `BaseDynamicCausalLM` which provides:
+- Common interface for dynamic models
+- Automatic weight loading from pretrained models
+- Unified loss computation
+
+### DTF Components
+- **DTFRouter**: Surprise-based routing with CE and CU criteria
+- **DTFDecisionLayer**: Computes original, posterior, and prior states
+- **DTFDynamicLayer**: Processes selected tokens based on routing
+- **PriorFFN**: Lightweight network for prior prediction
+
+### MoD Components
+- **MoDRouter**: Learned importance scoring
+- **MoDLayer**: Top-k token selection and processing
+
+## Configuration
+
+Key parameters in `config/base.yaml`:
+
+```yaml
+model_type: "dtf"              # Model selection
+model:
+  capacity_gamma: 0.5          # Fraction of tokens to process
+
+  # DTF-specific
+  beta_ce_init: -0.3           # CE criterion temperature
+  beta_cu_init: -0.6           # CU criterion temperature
+  prior_loss_weight: 0.05      # Auxiliary loss weight
+
+training:
+  num_epochs: 3
+  gradient_accumulation_steps: 8
+  lr_multipliers:              # Component-specific LRs
+    base_model: 1.0
+    router: 10.0
+    prior: 10.0
+```
+
+## Adding New Models
+
+To add a new dynamic model:
+
+1. Create a new folder in `src/models/`
+2. Implement router and layers
+3. Create model class inheriting from `BaseDynamicCausalLM`
+4. Register in `train.py`:
+
+```python
+model_classes = {
+    "dtf": DTFForCausalLM,
+    "mod": MoDForCausalLM,
+    "new_model": NewModelForCausalLM,  # Add here
 }
 ```
+
+## Requirements
+
+See `pyproject.toml` for dependencies. Main requirements:
+- PyTorch >= 2.0
+- Transformers >= 4.30
+- Accelerate
+- Hydra
+- OmegaConf
+- WandB (optional)

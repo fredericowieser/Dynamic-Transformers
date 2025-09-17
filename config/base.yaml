@@ -1,0 +1,78 @@
+defaults:
+  - _self_
+
+# Model selection
+model_type: "dtf"  # Options: "dtf" or "mod"
+
+# Model configuration
+model:
+  pretrained_model_name: "Qwen/Qwen2.5-0.5B"
+  use_flash_attention: true
+
+  # Dynamic model parameters
+  capacity_gamma: 0.5
+
+  # DTF-specific parameters
+  beta_ce_init: -0.3
+  beta_cu_init: -0.6
+  cu_detection_multiplier_init: 1.1
+  ce_criterion_offset_init: 1.025
+  prior_ffn_intermediate_size_factor: 0.5
+  prior_loss_weight: 0.05
+
+# Data configuration
+data:
+  dataset_name: "wikitext"  # Single dataset
+  # For mixed datasets:
+  # mixed: true
+  # dataset_names: ["wikitext", "openwebtext"]
+  # dataset_weights: [0.5, 0.5]
+
+  block_size: 512
+  batch_size: 4
+  num_workers: 4
+  validation_split: 0.02
+
+# Training configuration
+training:
+  num_epochs: 3
+  max_steps: -1  # Set > 0 to override num_epochs
+  gradient_accumulation_steps: 8
+  gradient_clip_val: 1.0
+
+  optimizer:
+    lr: 1e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    scheduler: "cosine"
+
+  # Different learning rates for model components
+  lr_multipliers:
+    base_model: 1.0
+    router: 10.0
+    prior: 10.0
+
+  # Evaluation
+  eval_interval: 100
+  save_interval: 500
+
+# Logging
+logging:
+  wandb:
+    enabled: true
+    project: "dynamic-transformer"
+    entity: null  # Set your wandb entity
+
+  log_interval: 10
+
+# System
+system:
+  seed: 42
+  output_dir: "outputs/${model_type}_${now:%Y%m%d_%H%M%S}"
+  mixed_precision: "bf16"
+  compile: false  # torch.compile
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${system.output_dir}

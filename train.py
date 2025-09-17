@@ -1,244 +1,247 @@
+#!/usr/bin/env python3
+
 import logging
 import os
-import math
-import json
-from tqdm.auto import tqdm
+from pathlib import Path
 
 import hydra
 import torch
-import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
 import wandb
-
 from accelerate import Accelerator
-from transformers import get_scheduler, DataCollatorForLanguageModeling
-from torch.utils.data import DataLoader
-from peft import LoraConfig, get_peft_model
+from omegaconf import DictConfig, OmegaConf
+from transformers import AutoTokenizer, get_scheduler
+from tqdm.auto import tqdm
 
-from src.data.gate_logging import GateLogger
-from src.models.qwen.causal_lm import DynamicQwenForCausalLM
-from src.models.utils.training import set_seed, calculate_metrics
+from src.data.datasets import get_dataloader
+from src.models.dtf.model import DTFForCausalLM
+from src.models.mod.model import MoDForCausalLM
 
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="base")
-def main(cfg: DictConfig) -> None:
-    log.info(f"--- Config ---\n{OmegaConf.to_yaml(cfg)}")
-    set_seed(cfg.run.seed)
-    accelerator = Accelerator(
-        mixed_precision=cfg.run.precision,
-        gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
-    )
-    log.info(f"Using device: {accelerator.device}")
-    datamodule = hydra.utils.instantiate(cfg.data, _convert_="partial")
-    datamodule.setup()
-    data_collator = DataCollatorForLanguageModeling(tokenizer=datamodule.tokenizer, mlm=False)
-    train_dataloader = DataLoader(
-        datamodule.train_dataset,
-        shuffle=True,
-        collate_fn=data_collator,
-        batch_size=cfg.data.batch_size,
-        num_workers=4,
-    )
-    val_dataloader = DataLoader(
-        datamodule.val_dataset,
-        collate_fn=data_collator,
-        batch_size=cfg.data.batch_size,
-        num_workers=4,
-    )
-
-    log.info(f"Instantiating Model <{cfg.model.pretrained_model_name_or_path}>")
-    model_load_kwargs = {
-        "model_cfg": OmegaConf.to_container(cfg.model.model_cfg, resolve=True)
+def get_model(config: DictConfig):
+    """Get model based on configuration."""
+    model_classes = {
+        "dtf": DTFForCausalLM,
+        "mod": MoDForCausalLM,
     }
-    if getattr(cfg.model, "use_flash_attention_2", False):
-        log.info("Flash Attention 2 is enabled in the config. Applying to model loading.")
-        model_load_kwargs["attn_implementation"] = "flash_attention_2"
-        model_load_kwargs["torch_dtype"] = torch.bfloat16
-    model = DynamicQwenForCausalLM.from_vanilla_checkpoint(
-        cfg.model.pretrained_model_name_or_path,
-        **model_load_kwargs
-    )
-    if cfg.peft.enabled:
-        log.info("Applying PEFT (LoRA) configuration to the model...")
-        peft_config_dict = OmegaConf.to_container(cfg.peft.config, resolve=True)
-        peft_config_dict.pop('_target_', None)
-        peft_config = LoraConfig(**peft_config_dict)
-        model = get_peft_model(model, peft_config)
-        log.info("Trainable parameters after applying LoRA:")
-        model.print_trainable_parameters()
 
+    if config.model_type not in model_classes:
+        raise ValueError(f"Unknown model type: {config.model_type}")
+
+    log.info(f"Loading {config.model_type.upper()} model from {config.model.pretrained_model_name}")
+
+    model_class = model_classes[config.model_type]
+    model_config = OmegaConf.to_container(config.model, resolve=True)
+
+    # Load model
+    model = model_class.from_pretrained(
+        config.model.pretrained_model_name,
+        config_dict=model_config,
+        torch_dtype=torch.bfloat16 if config.model.use_flash_attention else torch.float32,
+        attn_implementation="flash_attention_2" if config.model.use_flash_attention else "eager"
+    )
+
+    # Enable gradient checkpointing
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
-    tokenizer = datamodule.tokenizer
-    model.config.pad_token_id = tokenizer.pad_token_id
-    
-    log.info("Setting up optimizer with distinct parameter groups...")
-    base_model_params, prior_params, vpr_router_params = [], [], []
-    for n, p in model.named_parameters():
-        if p.requires_grad:
-            if "vpr_router" in n:
-                vpr_router_params.append(p)
-            elif "prior_ffn" in n:
-                prior_params.append(p)
-            else:
-                base_model_params.append(p)
+
+    return model
+
+
+def get_optimizer_groups(model, config):
+    """Create optimizer parameter groups with different learning rates."""
+    base_params, router_params, prior_params = [], [], []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if "router" in name:
+            router_params.append(param)
+        elif "prior" in name:
+            prior_params.append(param)
+        else:
+            base_params.append(param)
+
     param_groups = [
-        {"params": base_model_params, "lr": cfg.training.optimizer.base_model_lr},
-        {"params": prior_params, "lr": cfg.training.optimizer.prior_lr},
-        {"params": vpr_router_params, "lr": cfg.training.optimizer.vpr_router_lr},
+        {"params": base_params, "lr": config.training.optimizer.lr},
+        {"params": router_params, "lr": config.training.optimizer.lr * config.training.lr_multipliers.router},
+        {"params": prior_params, "lr": config.training.optimizer.lr * config.training.lr_multipliers.prior},
     ]
-    log.info(f"  - Base Model parameters: {sum(p.numel() for p in base_model_params):,}")
-    log.info(f"  - Dynamic Component (Prior FFN) parameters: {sum(p.numel() for p in prior_params):,}")
-    log.info(f"  - VPR Router parameters: {sum(p.numel() for p in vpr_router_params):,}")
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        weight_decay=cfg.training.optimizer.weight_decay,
-    )
-    gate_logger = GateLogger(model.config.num_hidden_layers)
 
-    # Calculate epochs and training steps
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.training.accumulate_grad_batches)
-    if cfg.training.max_steps > 0:
-        num_training_steps = cfg.training.max_steps
-        num_epochs = math.ceil(num_training_steps / num_update_steps_per_epoch)
-        log.info(f"Training for a fixed {num_training_steps} steps (approx. {num_epochs} epochs).")
-    else:
-        num_training_steps = num_update_steps_per_epoch * cfg.training.num_epochs
-        num_epochs = cfg.training.num_epochs
-        log.info(f"Training for {num_epochs} epochs ({num_training_steps} steps).")
-    
-    num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
-    lr_scheduler = get_scheduler(
-        name="cosine",
-        optimizer=optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps,
-    )
-    model, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, val_dataloader, lr_scheduler
-    )
+    log.info(f"Parameter groups:")
+    log.info(f"  Base: {sum(p.numel() for p in base_params):,} params")
+    log.info(f"  Router: {sum(p.numel() for p in router_params):,} params")
+    log.info(f"  Prior: {sum(p.numel() for p in prior_params):,} params")
 
-    if accelerator.is_main_process and cfg.logging.wandb.enabled:
-        wandb.init(
-            project=cfg.logging.wandb.project,
-            entity=cfg.logging.wandb.entity,
-            name=cfg.run.name,
-            config=OmegaConf.to_container(cfg, resolve=True)
-        )
+    return param_groups
 
-    log.info("--- Starting Training ---")
-    progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_main_process)
-    best_val_loss = float('inf')
 
-    for epoch in range(num_epochs):
-        model.train()
-        for step, batch in enumerate(train_dataloader):
-            if progress_bar.n >= num_training_steps:
-                break
-            
-            with accelerator.accumulate(model):
-                metrics = calculate_metrics(model, batch, progress_bar.n)
-                total_loss = metrics["total_loss"]
-                accelerator.backward(total_loss)
-                if accelerator.sync_gradients:
-                    if cfg.training.use_gradient_clipping:
-                        accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+def train_epoch(model, dataloader, optimizer, scheduler, accelerator, config):
+    """Train for one epoch."""
+    model.train()
+    total_loss = 0
+    progress_bar = tqdm(dataloader, disable=not accelerator.is_local_main_process)
+
+    for step, batch in enumerate(progress_bar):
+        with accelerator.accumulate(model):
+            outputs = model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
 
             if accelerator.sync_gradients:
-                progress_bar.update(1)
-                if metrics.get("per_layer_gate_stats"):
-                    gate_logger.update_rolling_history(metrics["per_layer_gate_stats"])
-                    gate_logger.log_rolling_history(progress_bar.n, log_interval=100)
-                
-                if accelerator.is_main_process:
-                    log_metrics = {
-                        "train/loss": metrics["total_loss"].item(),
-                        "train/lm_loss": metrics["lm_loss"].item(),
-                        "train/perplexity": metrics["perplexity"].item(),
-                        "lr": lr_scheduler.get_last_lr()[0]
-                    }
-                    if "s_ce_stats" in metrics:  # VPR metrics
-                        if metrics.get("prior_loss") is not None:
-                            log_metrics["train/prior_loss"] = metrics["prior_loss"].item()
-                            log_metrics["train/prior_loss_weight"] = metrics["current_prior_loss_weight"]
-                        def log_signal_stats(signal_name, stats_dict):
-                            for key, value in stats_dict.items():
-                                log_metrics[f"train_vpr_signals/{signal_name}_{key}"] = value.item()
-                        log_signal_stats("S_CE", metrics["s_ce_stats"])
-                        log_signal_stats("S_CU", metrics["s_cu_stats"])
-                        log_signal_stats("G_cont", metrics["g_cont_stats"])
-                        def log_router_param_stats(param_name, stats_dict):
-                            if stats_dict:
-                                log_metrics[f"train_vpr_router/{param_name}_mean"] = stats_dict["mean"].item()
-                                log_metrics[f"train_vpr_router/{param_name}_std"] = stats_dict["std"].item()
-                        log_router_param_stats("beta_ce", metrics.get("router_beta_ce_stats"))
-                        log_router_param_stats("beta_cu", metrics.get("router_beta_cu_stats"))
-                        log_router_param_stats("cu_multiplier", metrics.get("router_cu_multiplier_stats"))
-                        log_router_param_stats("ce_offset", metrics.get("router_ce_offset_stats"))
-                    if cfg.logging.wandb.enabled:
-                        wandb.log(log_metrics, step=progress_bar.n)
+                accelerator.clip_grad_norm_(model.parameters(), config.training.gradient_clip_val)
 
-                if (progress_bar.n) % cfg.training.eval_interval == 0 and progress_bar.n > 0:
-                    model.eval()
-                    val_losses = []
-                    for val_batch in val_dataloader:
-                        with torch.no_grad():
-                            val_metrics_dict = calculate_metrics(model, val_batch, progress_bar.n)
-                        val_losses.append(accelerator.gather(val_metrics_dict["total_loss"]))
-                    val_loss = torch.stack(val_losses).mean().item()
-                    
-                    if accelerator.is_main_process:
-                        log.info(f"Epoch {epoch}, Step {progress_bar.n}: Validation Loss = {val_loss:.4f}")
-                        if cfg.logging.wandb.enabled:
-                            wandb.log({"val/loss": val_loss}, step=progress_bar.n)
-                        if val_loss < best_val_loss:
-                            best_val_loss = val_loss
-                            log.info(f"New best validation loss: {best_val_loss:.4f}. Saving model...")
-                            unwrapped_model = accelerator.unwrap_model(model)
-                            save_path = os.path.join(cfg.run.output_dir, "best_model")
-                            unwrapped_model.save_pretrained(save_path, safe_serialization=True)
-                            tokenizer.save_pretrained(save_path)
-                            
-                            if cfg.logging.wandb.enabled:
-                                wandb_info = {
-                                    "run_id": wandb.run.id, "project": wandb.run.project,
-                                    "entity": wandb.run.entity, "run_name": wandb.run.name,
-                                }
-                                with open(os.path.join(save_path, "wandb_info.json"), "w") as f:
-                                    json.dump(wandb_info, f, indent=2)
-                                log.info(f"Saved wandb run info to {save_path}")
-                    model.train()
-        
-        if progress_bar.n >= num_training_steps:
-            log.info(f"Reached max_steps ({num_training_steps}). Stopping training.")
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+        total_loss += loss.item()
+
+        if step % config.logging.log_interval == 0:
+            progress_bar.set_postfix(loss=f"{loss.item():.4f}", lr=scheduler.get_last_lr()[0])
+
+            if config.logging.wandb.enabled and accelerator.is_local_main_process:
+                wandb.log({
+                    "train/loss": loss.item(),
+                    "train/lr": scheduler.get_last_lr()[0],
+                    "train/step": step
+                })
+
+    return total_loss / len(dataloader)
+
+
+def evaluate(model, dataloader, accelerator):
+    """Evaluate model."""
+    model.eval()
+    losses = []
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, disable=not accelerator.is_local_main_process):
+            outputs = model(**batch)
+            losses.append(accelerator.gather(outputs.loss))
+
+    return torch.stack(losses).mean().item()
+
+
+@hydra.main(version_base=None, config_path="config", config_name="base")
+def main(config: DictConfig) -> None:
+    """Main training loop."""
+
+    # Set seed
+    torch.manual_seed(config.system.seed)
+
+    # Initialize accelerator
+    accelerator = Accelerator(
+        mixed_precision=config.system.mixed_precision,
+        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+    )
+
+    log.info(f"Configuration:\n{OmegaConf.to_yaml(config)}")
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config.model.pretrained_model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Get data loaders
+    train_dataloader = get_dataloader(config, tokenizer, split="train")
+    val_dataloader = get_dataloader(config, tokenizer, split="validation")
+
+    # Load model
+    model = get_model(config)
+    model.config.pad_token_id = tokenizer.pad_token_id
+
+    # Setup optimizer
+    param_groups = get_optimizer_groups(model, config)
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        weight_decay=config.training.optimizer.weight_decay
+    )
+
+    # Setup scheduler
+    num_training_steps = (
+        config.training.max_steps if config.training.max_steps > 0
+        else len(train_dataloader) * config.training.num_epochs // config.training.gradient_accumulation_steps
+    )
+    num_warmup_steps = int(num_training_steps * config.training.optimizer.warmup_ratio)
+
+    scheduler = get_scheduler(
+        config.training.optimizer.scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
+    )
+
+    # Prepare with accelerator
+    model, optimizer, train_dataloader, val_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, val_dataloader, scheduler
+    )
+
+    # Initialize wandb
+    if config.logging.wandb.enabled and accelerator.is_local_main_process:
+        wandb.init(
+            project=config.logging.wandb.project,
+            entity=config.logging.wandb.entity,
+            name=f"{config.model_type}_{config.model.capacity_gamma}",
+            config=OmegaConf.to_container(config, resolve=True)
+        )
+
+    # Create output directory
+    output_dir = Path(config.system.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Training loop
+    best_val_loss = float('inf')
+    global_step = 0
+
+    for epoch in range(config.training.num_epochs):
+        log.info(f"Epoch {epoch + 1}/{config.training.num_epochs}")
+
+        # Train
+        train_loss = train_epoch(
+            model, train_dataloader, optimizer, scheduler, accelerator, config
+        )
+
+        # Evaluate
+        if (epoch + 1) % config.training.eval_interval == 0:
+            val_loss = evaluate(model, val_dataloader, accelerator)
+
+            if accelerator.is_local_main_process:
+                log.info(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+
+                if config.logging.wandb.enabled:
+                    wandb.log({
+                        "epoch": epoch + 1,
+                        "train/epoch_loss": train_loss,
+                        "val/loss": val_loss
+                    })
+
+                # Save best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    unwrapped_model.save_pretrained(output_dir / "best_model")
+                    tokenizer.save_pretrained(output_dir / "best_model")
+                    log.info(f"Saved best model with val_loss={val_loss:.4f}")
+
+        global_step += len(train_dataloader)
+
+        # Check max steps
+        if config.training.max_steps > 0 and global_step >= config.training.max_steps:
+            log.info(f"Reached max_steps ({config.training.max_steps})")
             break
 
-    if accelerator.is_main_process:
-        log.info("--- Saving final model checkpoint ---")
+    # Save final model
+    if accelerator.is_local_main_process:
         unwrapped_model = accelerator.unwrap_model(model)
-        final_save_path = os.path.join(cfg.run.output_dir, "final_model")
-        unwrapped_model.save_pretrained(final_save_path, safe_serialization=True)
-        tokenizer.save_pretrained(final_save_path)
-        
-        if cfg.logging.wandb.enabled:
-            wandb_info = {
-                "run_id": wandb.run.id, "project": wandb.run.project,
-                "entity": wandb.run.entity, "run_name": wandb.run.name,
-            }
-            with open(os.path.join(final_save_path, "wandb_info.json"), "w") as f:
-                json.dump(wandb_info, f, indent=2)
-            log.info(f"Saved wandb run info to {final_save_path}")
-            
-        log.info(f"Final model saved to {final_save_path}")
-        if cfg.logging.wandb.enabled:
+        unwrapped_model.save_pretrained(output_dir / "final_model")
+        tokenizer.save_pretrained(output_dir / "final_model")
+        log.info(f"Training complete. Models saved to {output_dir}")
+
+        if config.logging.wandb.enabled:
             wandb.finish()
 
-    log.info("--- Training Finished ---")
 
 if __name__ == "__main__":
     main()

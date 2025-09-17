@@ -1,0 +1,98 @@
+# Mixed dataset configuration for comprehensive training
+# High-quality diverse datasets from HuggingFace
+
+data:
+  mixed: true
+
+  # Dataset names and their relative weights
+  dataset_names:
+    # High-quality instructional data
+    - "tatsu-lab/alpaca"                    # Stanford Alpaca dataset
+    - "databricks/databricks-dolly-15k"     # Dolly 2.0 dataset
+    - "teknium/openhermes"                  # OpenHermes dataset
+    - "Open-Orca/OpenOrca"                  # OpenOrca dataset
+
+    # Code and technical
+    - "codeparrot/github-code-clean"        # Clean GitHub code
+    - "bigcode/starcoderdata"              # StarCoder training data
+
+    # General knowledge and web text
+    - "c4"                                   # Common Crawl cleaned
+    - "allenai/c4"                          # AllenAI's C4 variant
+    - "openwebtext"                         # OpenWebText
+
+    # Books and long-form content
+    - "bookcorpus"                          # Books corpus
+    - "pg19"                                # Project Gutenberg books
+
+    # Scientific and academic
+    - "scientific_papers"                   # arXiv and PubMed papers
+    - "allenai/s2orc"                      # Semantic Scholar corpus
+
+    # Conversational and dialog
+    - "allenai/soda"                       # Social dialog dataset
+    - "daily_dialog"                        # Daily dialog conversations
+
+    # Math and reasoning
+    - "gsm8k"                               # Grade school math
+    - "competition_math"                    # Competition mathematics
+
+    # Wikipedia and encyclopedic
+    - "wikipedia"                           # Wikipedia articles
+    - "wikihow"                            # WikiHow instructions
+
+  # Weights for mixing (should sum to 1.0)
+  dataset_weights:
+    # Instructional (25%)
+    - 0.08  # alpaca
+    - 0.07  # dolly
+    - 0.05  # openhermes
+    - 0.05  # openorca
+
+    # Code (15%)
+    - 0.08  # github-code
+    - 0.07  # starcoder
+
+    # General web (20%)
+    - 0.07  # c4
+    - 0.06  # allenai/c4
+    - 0.07  # openwebtext
+
+    # Books (10%)
+    - 0.05  # bookcorpus
+    - 0.05  # pg19
+
+    # Scientific (10%)
+    - 0.05  # scientific_papers
+    - 0.05  # s2orc
+
+    # Conversational (5%)
+    - 0.025  # soda
+    - 0.025  # daily_dialog
+
+    # Math (5%)
+    - 0.025  # gsm8k
+    - 0.025  # competition_math
+
+    # Wikipedia (10%)
+    - 0.07  # wikipedia
+    - 0.03  # wikihow
+
+  # Data processing parameters
+  block_size: 2048      # Longer context for better learning
+  batch_size: 8         # Reasonable for Mac
+  num_workers: 4        # Mac-optimized
+  validation_split: 0.01  # 1% for validation
+
+  # Tokenizer settings
+  add_special_tokens: true
+  truncation: true
+  padding: "max_length"
+
+  # Filtering parameters (optional)
+  min_length: 100       # Minimum text length
+  max_length: 50000     # Maximum text length
+
+  # Sampling strategy
+  sampling_strategy: "weighted"  # or "interleaved"
+  seed: 42

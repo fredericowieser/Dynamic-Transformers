@@ -1,0 +1,39 @@
+defaults:
+  - _self_
+  - data: wikitext  # Use simple dataset for testing
+  - model: small_50m
+
+# Quick test configuration for Mac
+model_type: "dtf"
+
+training:
+  num_epochs: 1
+  max_steps: 100  # Very short for testing
+
+  gradient_accumulation_steps: 4  # Smaller for faster feedback
+  gradient_clip_val: 1.0
+
+  optimizer:
+    lr: 3e-4
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    scheduler: "linear"
+
+  lr_multipliers:
+    base_model: 1.0
+    router: 2.0
+    prior: 2.0
+
+  eval_interval: 50
+  save_interval: 100
+  eval_samples: 100
+
+logging:
+  wandb:
+    enabled: false  # Disable for quick test
+  log_interval: 10
+
+system:
+  seed: 42
+  output_dir: "outputs/test_${now:%Y%m%d_%H%M%S}"
+  device: "mps"
