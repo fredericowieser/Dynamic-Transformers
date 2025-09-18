@@ -1,0 +1,14 @@
+# Standard Transformer - Train from scratch
+defaults:
+  - train
+  - _self_
+
+model:
+  type: standard
+  size: 0.5B
+
+training:
+  from_scratch: true
+  optimizer:
+    lr: 6e-4
+  num_epochs: 10

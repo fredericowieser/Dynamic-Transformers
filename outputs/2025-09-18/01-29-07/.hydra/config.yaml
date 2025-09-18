@@ -1,0 +1,32 @@
+model:
+  type: dtf
+  size: 0.5B
+training:
+  from_scratch: true
+  num_epochs: 1
+  max_steps: 1000
+  gradient_accumulation_steps: 16
+  gradient_clip_val: 1.0
+  eval_interval: 100
+  eval_samples: 1000
+  save_interval: 500
+  optimizer:
+    lr: 0.0006
+    weight_decay: 0.1
+    warmup_ratio: 0.05
+    scheduler: cosine
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1.0e-08
+data:
+  dataset: wikitext
+  dataset_config: wikitext-2-raw-v1
+  batch_size: 8
+  block_size: 512
+  validation_split: 0.05
+logging:
+  log_interval: 50
+system:
+  seed: 42
+  output_dir: outputs/dtf_quick_20250918_012904
+  compile: false

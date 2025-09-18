@@ -1,7 +1,6 @@
-from .datasets import HuggingFaceDataset, MixedDataset, get_dataloader
+from .datasets import TextDataset, get_dataloader
 
 __all__ = [
-    "HuggingFaceDataset",
-    "MixedDataset",
+    "TextDataset",
     "get_dataloader",
 ]

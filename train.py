@@ -1,246 +1,203 @@
 #!/usr/bin/env python3
+"""Unified training script for all model architectures."""
 
 import logging
-import os
 from pathlib import Path
 
 import hydra
 import torch
-import wandb
-from accelerate import Accelerator
+import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
-from transformers import AutoTokenizer, get_scheduler
-from tqdm.auto import tqdm
+from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from src.data.datasets import get_dataloader
-from src.models.dtf.model import DTFForCausalLM
-from src.models.mod.model import MoDForCausalLM
+from src.training.utils import (
+    PlatformOptimizer,
+    create_model,
+    save_checkpoint,
+    setup_optimizer_and_scheduler,
+)
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
 
-def get_model(config: DictConfig):
-    """Get model based on configuration."""
-    model_classes = {
-        "dtf": DTFForCausalLM,
-        "mod": MoDForCausalLM,
-    }
+def train_step(model: nn.Module, batch: dict, scaler, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Execute single training step."""
+    batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-    if config.model_type not in model_classes:
-        raise ValueError(f"Unknown model type: {config.model_type}")
-
-    log.info(f"Loading {config.model_type.upper()} model from {config.model.pretrained_model_name}")
-
-    model_class = model_classes[config.model_type]
-    model_config = OmegaConf.to_container(config.model, resolve=True)
-
-    # Load model
-    model = model_class.from_pretrained(
-        config.model.pretrained_model_name,
-        config_dict=model_config,
-        torch_dtype=torch.bfloat16 if config.model.use_flash_attention else torch.float32,
-        attn_implementation="flash_attention_2" if config.model.use_flash_attention else "eager"
-    )
-
-    # Enable gradient checkpointing
-    model.gradient_checkpointing_enable()
-    model.enable_input_require_grads()
-
-    return model
-
-
-def get_optimizer_groups(model, config):
-    """Create optimizer parameter groups with different learning rates."""
-    base_params, router_params, prior_params = [], [], []
-
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-
-        if "router" in name:
-            router_params.append(param)
-        elif "prior" in name:
-            prior_params.append(param)
-        else:
-            base_params.append(param)
-
-    param_groups = [
-        {"params": base_params, "lr": config.training.optimizer.lr},
-        {"params": router_params, "lr": config.training.optimizer.lr * config.training.lr_multipliers.router},
-        {"params": prior_params, "lr": config.training.optimizer.lr * config.training.lr_multipliers.prior},
-    ]
-
-    log.info(f"Parameter groups:")
-    log.info(f"  Base: {sum(p.numel() for p in base_params):,} params")
-    log.info(f"  Router: {sum(p.numel() for p in router_params):,} params")
-    log.info(f"  Prior: {sum(p.numel() for p in prior_params):,} params")
-
-    return param_groups
-
-
-def train_epoch(model, dataloader, optimizer, scheduler, accelerator, config):
-    """Train for one epoch."""
-    model.train()
-    total_loss = 0
-    progress_bar = tqdm(dataloader, disable=not accelerator.is_local_main_process)
-
-    for step, batch in enumerate(progress_bar):
-        with accelerator.accumulate(model):
+    # Use appropriate precision
+    if scaler:  # CUDA with AMP
+        with autocast():
             outputs = model(**batch)
-            loss = outputs.loss
-            accelerator.backward(loss)
+            loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
+    else:  # MPS or CPU
+        with torch.autocast(device_type=str(device).split(':')[0], dtype=dtype, enabled=(dtype != torch.float32)):
+            outputs = model(**batch)
+            loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
 
-            if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), config.training.gradient_clip_val)
-
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-
-        total_loss += loss.item()
-
-        if step % config.logging.log_interval == 0:
-            progress_bar.set_postfix(loss=f"{loss.item():.4f}", lr=scheduler.get_last_lr()[0])
-
-            if config.logging.wandb.enabled and accelerator.is_local_main_process:
-                wandb.log({
-                    "train/loss": loss.item(),
-                    "train/lr": scheduler.get_last_lr()[0],
-                    "train/step": step
-                })
-
-    return total_loss / len(dataloader)
+    return loss
 
 
-def evaluate(model, dataloader, accelerator):
-    """Evaluate model."""
+def evaluate(model: nn.Module, eval_loader, device: torch.device, dtype: torch.dtype, max_batches: int = 100) -> float:
+    """Evaluate model on validation set."""
     model.eval()
-    losses = []
+    total_loss = 0
+    num_batches = 0
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, disable=not accelerator.is_local_main_process):
-            outputs = model(**batch)
-            losses.append(accelerator.gather(outputs.loss))
+        for batch in eval_loader:
+            if num_batches >= max_batches:
+                break
 
-    return torch.stack(losses).mean().item()
+            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+
+            with torch.autocast(device_type=str(device).split(':')[0], dtype=dtype, enabled=(dtype != torch.float32)):
+                outputs = model(**batch)
+                loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
+
+            total_loss += loss.item()
+            num_batches += 1
+
+    model.train()
+    return total_loss / max(num_batches, 1)
 
 
-@hydra.main(version_base=None, config_path="config", config_name="base")
-def main(config: DictConfig) -> None:
+@hydra.main(version_base=None, config_path="config", config_name="train")
+def main(cfg: DictConfig):
     """Main training loop."""
+    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Set seed
-    torch.manual_seed(config.system.seed)
-
-    # Initialize accelerator
-    accelerator = Accelerator(
-        mixed_precision=config.system.mixed_precision,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-    )
-
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(config)}")
+    # Platform optimization
+    platform = PlatformOptimizer.detect_platform()
+    platform_settings = PlatformOptimizer.get_optimal_settings(platform, cfg)
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.model.pretrained_model_name)
-    tokenizer.pad_token = tokenizer.eos_token
+    model_name = f"Qwen/Qwen2.5-{cfg.model.size}"
+    log.info(f"Loading tokenizer: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    # Get data loaders
-    train_dataloader = get_dataloader(config, tokenizer, split="train")
-    val_dataloader = get_dataloader(config, tokenizer, split="validation")
+    # Create data loaders
+    log.info("Creating data loaders...")
+    train_loader = get_dataloader(cfg, tokenizer, split='train')
+    eval_loader = get_dataloader(cfg, tokenizer, split='validation')
 
-    # Load model
-    model = get_model(config)
-    model.config.pad_token_id = tokenizer.pad_token_id
-
-    # Setup optimizer
-    param_groups = get_optimizer_groups(model, config)
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        weight_decay=config.training.optimizer.weight_decay
+    # Create model
+    log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.training.from_scratch})")
+    model = create_model(
+        cfg.model.type,
+        cfg.model.size,
+        cfg.training.from_scratch,
+        platform_settings
     )
 
-    # Setup scheduler
-    num_training_steps = (
-        config.training.max_steps if config.training.max_steps > 0
-        else len(train_dataloader) * config.training.num_epochs // config.training.gradient_accumulation_steps
+    # Setup device and precision
+    device = platform_settings['device']
+    dtype = platform_settings['dtype']
+    model = model.to(device)
+    if dtype != torch.float32:
+        model = model.to(dtype)
+
+    # Log model size
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    log.info(f"Model: {total_params/1e6:.1f}M params ({trainable_params/1e6:.1f}M trainable)")
+
+    # Setup training
+    steps_per_epoch = len(train_loader) // cfg.training.gradient_accumulation_steps
+    num_training_steps = steps_per_epoch * cfg.training.num_epochs
+
+    optimizer, scheduler = setup_optimizer_and_scheduler(
+        model, cfg, num_training_steps, platform_settings
     )
-    num_warmup_steps = int(num_training_steps * config.training.optimizer.warmup_ratio)
 
-    scheduler = get_scheduler(
-        config.training.optimizer.scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps
-    )
-
-    # Prepare with accelerator
-    model, optimizer, train_dataloader, val_dataloader, scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, val_dataloader, scheduler
-    )
-
-    # Initialize wandb
-    if config.logging.wandb.enabled and accelerator.is_local_main_process:
-        wandb.init(
-            project=config.logging.wandb.project,
-            entity=config.logging.wandb.entity,
-            name=f"{config.model_type}_{config.model.capacity_gamma}",
-            config=OmegaConf.to_container(config, resolve=True)
-        )
-
-    # Create output directory
-    output_dir = Path(config.system.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    scaler = GradScaler() if platform_settings['use_amp'] else None
 
     # Training loop
-    best_val_loss = float('inf')
+    log.info("Starting training...")
     global_step = 0
+    best_eval_loss = float('inf')
 
-    for epoch in range(config.training.num_epochs):
-        log.info(f"Epoch {epoch + 1}/{config.training.num_epochs}")
+    for epoch in range(cfg.training.num_epochs):
+        model.train()
+        epoch_loss = 0
+        num_batches = 0
 
-        # Train
-        train_loss = train_epoch(
-            model, train_dataloader, optimizer, scheduler, accelerator, config
-        )
+        progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.training.num_epochs}")
+        optimizer.zero_grad()
 
-        # Evaluate
-        if (epoch + 1) % config.training.eval_interval == 0:
-            val_loss = evaluate(model, val_dataloader, accelerator)
+        for step, batch in enumerate(progress):
+            # Forward pass
+            loss = train_step(model, batch, scaler, device, dtype)
+            loss = loss / cfg.training.gradient_accumulation_steps
 
-            if accelerator.is_local_main_process:
-                log.info(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+            # Backward pass
+            if scaler:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
-                if config.logging.wandb.enabled:
-                    wandb.log({
-                        "epoch": epoch + 1,
-                        "train/epoch_loss": train_loss,
-                        "val/loss": val_loss
+            # Optimizer step every N accumulation steps
+            if (step + 1) % cfg.training.gradient_accumulation_steps == 0:
+                # Gradient clipping
+                if cfg.training.gradient_clip_val > 0:
+                    if scaler:
+                        scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
+
+                # Update weights
+                if scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+                # Track loss
+                epoch_loss += loss.item() * cfg.training.gradient_accumulation_steps
+                num_batches += 1
+
+                # Update progress bar
+                if global_step % cfg.logging.log_interval == 0:
+                    avg_loss = epoch_loss / num_batches
+                    progress.set_postfix({
+                        'loss': f'{avg_loss:.4f}',
+                        'lr': f'{scheduler.get_last_lr()[0]:.2e}'
                     })
 
-                # Save best model
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    unwrapped_model.save_pretrained(output_dir / "best_model")
-                    tokenizer.save_pretrained(output_dir / "best_model")
-                    log.info(f"Saved best model with val_loss={val_loss:.4f}")
+                # Evaluation
+                if global_step % cfg.training.eval_interval == 0:
+                    eval_loss = evaluate(
+                        model, eval_loader, device, dtype,
+                        max_batches=cfg.training.eval_samples // cfg.data.batch_size
+                    )
+                    log.info(f"Step {global_step}: eval_loss={eval_loss:.4f}")
 
-        global_step += len(train_dataloader)
+                    # Save best model
+                    if eval_loss < best_eval_loss:
+                        best_eval_loss = eval_loss
+                        save_path = Path(cfg.system.output_dir) / "best_model"
+                        save_checkpoint(model, optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
 
-        # Check max steps
-        if config.training.max_steps > 0 and global_step >= config.training.max_steps:
-            log.info(f"Reached max_steps ({config.training.max_steps})")
+                # Early stopping
+                if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
+                    log.info(f"Reached max steps ({cfg.training.max_steps})")
+                    break
+
+        if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
             break
 
     # Save final model
-    if accelerator.is_local_main_process:
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(output_dir / "final_model")
-        tokenizer.save_pretrained(output_dir / "final_model")
-        log.info(f"Training complete. Models saved to {output_dir}")
-
-        if config.logging.wandb.enabled:
-            wandb.finish()
+    save_path = Path(cfg.system.output_dir) / "final_model"
+    save_checkpoint(model, optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
+    log.info("Training complete!")
 
 
 if __name__ == "__main__":

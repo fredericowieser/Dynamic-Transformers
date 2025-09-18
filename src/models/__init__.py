@@ -1,9 +1,11 @@
 from .dtf.model import DTFForCausalLM
 from .mod.model import MoDForCausalLM
-from .base.causal_lm import BaseDynamicCausalLM
+from .standard.model import StandardTransformerForCausalLM
+from .base.dynamic_model import BaseDynamicModel
 
 __all__ = [
     "DTFForCausalLM",
     "MoDForCausalLM",
-    "BaseDynamicCausalLM",
+    "StandardTransformerForCausalLM",
+    "BaseDynamicModel",
 ]

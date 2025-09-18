@@ -1,164 +1,92 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset
-from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+"""Data loading utilities for training."""
+
 import logging
+import torch
+from torch.utils.data import DataLoader, Dataset
+from datasets import load_dataset
+from transformers import DataCollatorForLanguageModeling
 
 log = logging.getLogger(__name__)
 
 
-class HuggingFaceDataset(Dataset):
-    """Dataset wrapper for HuggingFace datasets."""
+class TextDataset(Dataset):
+    """Simple text dataset for language modeling."""
 
     def __init__(self, config, tokenizer, split="train"):
-        self.config = config
-        self.tokenizer = tokenizer
-        self.block_size = config.data.block_size
+        """Initialize dataset.
 
+        Args:
+            config: Data configuration
+            tokenizer: Tokenizer to use
+            split: Dataset split (train/validation)
+        """
         # Load dataset
-        dataset_name = config.data.dataset_name
-        dataset_config = getattr(config.data, 'dataset_config', None)
+        dataset_name = config.data.get('dataset', 'wikitext')
+        dataset_config = config.data.get('dataset_config', 'wikitext-2-raw-v1')
 
-        log.info(f"Loading dataset: {dataset_name}")
+        log.info(f"Loading {dataset_name} dataset...")
+        raw_dataset = load_dataset(dataset_name, dataset_config)
 
-        if dataset_config:
-            self.dataset = load_dataset(dataset_name, dataset_config, split=split)
-        else:
-            self.dataset = load_dataset(dataset_name, split=split)
+        # Handle splits
+        if split == "validation" and "validation" not in raw_dataset:
+            split = "test"
 
-        # Tokenize dataset
-        self.tokenized = self._tokenize_dataset()
+        self.dataset = raw_dataset[split]
 
-    def _tokenize_dataset(self):
-        """Tokenize and chunk the dataset."""
-        def tokenize_function(examples):
-            # Handle different text field names
-            text_field = "text"
-            if "text" not in examples:
-                # Try common alternatives
-                for field in ["content", "document", "passage"]:
-                    if field in examples:
-                        text_field = field
-                        break
+        # Tokenize
+        self.tokenizer = tokenizer
+        self.block_size = config.data.get('block_size', 512)
 
-            texts = examples[text_field]
+        # Process texts
+        self._process_dataset()
 
-            # Filter out empty strings
-            texts = [t for t in texts if t and len(t.strip()) > 0]
+    def _process_dataset(self):
+        """Process and tokenize dataset."""
+        # Filter empty texts
+        texts = [text for text in self.dataset['text'] if text.strip()]
 
-            if not texts:
-                # Return empty tensors if no valid text
-                return {
-                    "input_ids": [],
-                    "attention_mask": []
-                }
-
-            return self.tokenizer(
-                texts,
-                truncation=True,
-                padding="max_length",
-                max_length=self.block_size,
-                return_special_tokens_mask=True
-            )
-
-        # Get number of workers
-        num_proc = getattr(self.config.data, 'num_workers', 1)
-
-        tokenized = self.dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=self.dataset.column_names,
-            num_proc=num_proc if num_proc > 1 else None
+        # Tokenize all texts
+        log.info(f"Tokenizing {len(texts)} texts...")
+        tokenized = self.tokenizer(
+            texts,
+            truncation=True,
+            padding=False,
+            max_length=self.block_size,
+            return_overflowing_tokens=True,
+            return_length=True,
         )
 
-        # Filter out empty samples
-        tokenized = tokenized.filter(lambda x: len(x["input_ids"]) > 0)
+        # Filter by length
+        self.input_ids = []
+        for ids, length in zip(tokenized['input_ids'], tokenized['length']):
+            if length > 10:  # Skip very short sequences
+                self.input_ids.append(torch.tensor(ids))
 
-        tokenized.set_format("torch")
-        return tokenized
-
-    def __len__(self):
-        return len(self.tokenized)
-
-    def __getitem__(self, idx):
-        item = self.tokenized[idx]
-        item["labels"] = item["input_ids"].clone()
-        return item
-
-
-class MixedDataset(Dataset):
-    """Dataset that mixes multiple data sources."""
-
-    def __init__(self, config, tokenizer, split="train"):
-        self.datasets = []
-        self.weights = getattr(config.data, 'dataset_weights', None)
-
-        log.info(f"Creating mixed dataset with {len(config.data.dataset_names)} sources")
-
-        for i, dataset_name in enumerate(config.data.dataset_names):
-            log.info(f"Loading dataset {i+1}/{len(config.data.dataset_names)}: {dataset_name}")
-
-            # Create a temporary config for each dataset
-            temp_config = type('Config', (), {})()
-            temp_config.data = type('DataConfig', (), {})()
-            temp_config.data.dataset_name = dataset_name
-            temp_config.data.block_size = config.data.block_size
-            temp_config.data.num_workers = getattr(config.data, 'num_workers', 1)
-
-            try:
-                dataset = HuggingFaceDataset(temp_config, tokenizer, split)
-                if len(dataset) > 0:
-                    self.datasets.append(dataset)
-                else:
-                    log.warning(f"Dataset {dataset_name} is empty, skipping")
-            except Exception as e:
-                log.warning(f"Failed to load {dataset_name}: {e}")
-
-        if not self.datasets:
-            raise ValueError("No datasets could be loaded")
-
-        # Compute dataset sizes and sampling probabilities
-        self.dataset_sizes = [len(d) for d in self.datasets]
-        self.total_size = sum(self.dataset_sizes)
-
-        if self.weights and len(self.weights) == len(self.datasets):
-            self.probs = torch.tensor(self.weights[:len(self.datasets)], dtype=torch.float32)
-            self.probs /= self.probs.sum()
-        else:
-            # Uniform sampling
-            self.probs = torch.ones(len(self.datasets)) / len(self.datasets)
-
-        log.info(f"Mixed dataset created: {len(self.datasets)} sources, {self.total_size} total samples")
+        log.info(f"Created {len(self.input_ids)} samples")
 
     def __len__(self):
-        return self.total_size
+        return len(self.input_ids)
 
     def __getitem__(self, idx):
-        # Sample dataset based on weights
-        dataset_idx = torch.multinomial(self.probs, 1).item()
-        dataset = self.datasets[dataset_idx]
-
-        # Sample random item from selected dataset
-        item_idx = torch.randint(0, len(dataset), (1,)).item()
-        return dataset[item_idx]
+        return {'input_ids': self.input_ids[idx]}
 
 
 def get_dataloader(config, tokenizer, split="train"):
-    """Get dataloader based on configuration."""
+    """Create dataloader for training or evaluation.
 
-    # Check if mixed dataset
-    is_mixed = getattr(config.data, 'mixed', False)
+    Args:
+        config: Configuration object
+        tokenizer: Tokenizer
+        split: Dataset split
 
-    if is_mixed:
-        dataset = MixedDataset(config, tokenizer, split)
-    else:
-        dataset = HuggingFaceDataset(config, tokenizer, split)
-
-    log.info(f"Created {split} dataset with {len(dataset)} samples")
+    Returns:
+        DataLoader instance
+    """
+    dataset = TextDataset(config, tokenizer, split)
 
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False,
+        mlm=False,  # Causal LM, not masked LM
         pad_to_multiple_of=8
     )
 
@@ -167,7 +95,7 @@ def get_dataloader(config, tokenizer, split="train"):
         batch_size=config.data.batch_size,
         shuffle=(split == "train"),
         collate_fn=collator,
-        num_workers=getattr(config.data, 'num_workers', 0),
-        pin_memory=False,  # Disable for Mac compatibility
+        num_workers=0,  # Avoid multiprocessing issues
+        pin_memory=False,
         drop_last=True
     )

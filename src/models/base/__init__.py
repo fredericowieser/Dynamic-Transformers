@@ -1,3 +1,3 @@
-from .causal_lm import BaseDynamicCausalLM
+from .dynamic_model import BaseDynamicModel
 
-__all__ = ["BaseDynamicCausalLM"]
+__all__ = ["BaseDynamicModel"]
