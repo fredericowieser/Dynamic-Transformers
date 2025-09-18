@@ -1,0 +1,14 @@
+# @package _global_
+
+data:
+  batch_size: 2 # Very small batch size for laptop
+  name: "pretrain_mix"
+  tokenizer_name: "Qwen/Qwen2.5-0.5B"
+  block_size: 1024
+  validation_split_percentage: 2
+  dataset_configs:
+    - type: "pretrain"
+      dataset_name: "wikitext"
+      dataset_config: "wikitext-103-raw-v1"
+      text_column: "text"
+      train_subset_ratio: 0.01 # Use a very small subset for quick testing

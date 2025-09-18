@@ -3,6 +3,7 @@
 
 import logging
 from pathlib import Path
+from typing import List
 
 import hydra
 import torch
@@ -11,73 +12,155 @@ from omegaconf import DictConfig, OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import AutoTokenizer
+from lm_eval import evaluator, tasks
+
+from accelerate import Accelerator
+from accelerate.utils import set_seed
+import wandb
+from peft import LoraConfig, get_peft_model
 
 from src.data.datasets import get_dataloader
 from src.training.utils import (
-    PlatformOptimizer,
     create_model,
     save_checkpoint,
     setup_optimizer_and_scheduler,
 )
 
+from typing import Dict, Any # Added Dict, Any
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
 
-def train_step(model: nn.Module, batch: dict, scaler, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+def train_step(model: nn.Module, batch: dict) -> Dict[str, Any]:
     """Execute single training step."""
-    batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-
-    # Use appropriate precision
-    if scaler:  # CUDA with AMP
-        with autocast():
-            outputs = model(**batch)
-            loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
-    else:  # MPS or CPU
-        with torch.autocast(device_type=str(device).split(':')[0], dtype=dtype, enabled=(dtype != torch.float32)):
-            outputs = model(**batch)
-            loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
-
-    return loss
+    outputs = model(**batch)
+    if isinstance(outputs, dict):
+        loss = outputs["loss"]
+    else: # Assume it's a CausalLMOutputWithPast or similar object
+        loss = outputs.loss
+    return outputs, loss
 
 
-def evaluate(model: nn.Module, eval_loader, device: torch.device, dtype: torch.dtype, max_batches: int = 100) -> float:
-    """Evaluate model on validation set."""
+def evaluate(model, dataloader, accelerator, cfg, tokenizer):
     model.eval()
-    total_loss = 0
-    num_batches = 0
+    losses = []
+    for step, batch in enumerate(dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+        loss = outputs["loss"]
+        losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
 
-    with torch.no_grad():
-        for batch in eval_loader:
-            if num_batches >= max_batches:
-                break
+    losses = torch.cat(losses)
+    val_loss = torch.mean(losses).item()
 
-            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+    # lm_eval integration
+    if cfg.lm_eval.enabled and accelerator.is_main_process:
+        log.info("Running lm_eval benchmarks...")
+        # Unwrap model for lm_eval
+        unwrapped_model = accelerator.unwrap_model(model)
 
-            with torch.autocast(device_type=str(device).split(':')[0], dtype=dtype, enabled=(dtype != torch.float32)):
-                outputs = model(**batch)
-                loss = outputs.loss if hasattr(outputs, 'loss') else outputs[0]
+        # Merge LoRA weights if enabled and configured
+        if cfg.peft.enabled and cfg.lm_eval.merge_lora_for_eval:
+            log.info("Merging LoRA weights for lm_eval...")
+            unwrapped_model = unwrapped_model.merge_and_unload()
 
-            total_loss += loss.item()
-            num_batches += 1
+        # Prepare model for lm_eval
+        class LMEvalModel(unwrapped_model.__class__):
+            def __init__(self, model, tokenizer):
+                super().__init__(model.config)
+                self.model = model # The actual model (unwrapped, potentially merged)
+                self.tokenizer = tokenizer
 
-    model.train()
-    return total_loss / max(num_batches, 1)
+            def _model_call(self, inputs):
+                return self.model(inputs["input_ids"].to(self.model.device)).logits
+
+            def tok_encode(self, string: str, **kwargs) -> List[int]:
+                return self.tokenizer.encode(string, **kwargs)
+
+            def tok_decode(self, tokens: List[int], **kwargs) -> str:
+                return self.tokenizer.decode(tokens, **kwargs)
+
+            def _loglikelihood_tokens(self, requests, disable_tqdm=False):
+                # This is a simplified version. lm_eval expects a specific format.
+                # For full implementation, refer to lm_eval's HFLM class.
+                res = []
+                for context, continuation in requests:
+                    # Encode context and continuation
+                    context_enc = self.tok_encode(context)
+                    continuation_enc = self.tok_encode(continuation)
+
+                    # Prepare input_ids and labels
+                    input_ids = torch.tensor(context_enc + continuation_enc, dtype=torch.long).unsqueeze(0).to(self.model.device)
+                    labels = torch.tensor(context_enc + continuation_enc, dtype=torch.long).unsqueeze(0).to(self.model.device)
+                    labels[:, :len(context_enc)] = -100 # Mask context
+
+                    with torch.no_grad():
+                        outputs = self.model(input_ids=input_ids, labels=labels)
+                        neg_log_likelihood = outputs.loss
+                    res.append((neg_log_likelihood.item(), True)) # (loglikelihood, is_greedy)
+                return res
+
+        lm_eval_model = LMEvalModel(unwrapped_model, tokenizer)
+
+        # Load lm_eval tasks
+        task_names = cfg.lm_eval.tasks
+        if "all" in task_names:
+            task_names = tasks.ALL_TASKS
+
+        results = evaluator.simple_evaluate(
+            model=lm_eval_model,
+            tasks=task_names,
+            batch_size=cfg.lm_eval.batch_size,
+            device=accelerator.device,
+            no_cache=True, # Set to False for faster subsequent runs
+        )
+
+        log.info(f"lm_eval results: {results}")
+
+        # Log lm_eval results to wandb
+        if cfg.logging.wandb.enabled:
+            lm_eval_log = {"lm_eval": {}}
+            for task_name, task_results in results["results"].items():
+                for metric, value in task_results.items():
+                    if isinstance(value, (int, float)):
+                        lm_eval_log["lm_eval"][f"{task_name}/{metric}"] = value
+            accelerator.log(lm_eval_log, step=accelerator.num_steps)
+
+        # Unmerge LoRA weights if they were merged
+        if cfg.peft.enabled and cfg.lm_eval.merge_lora_for_eval:
+            log.info("Unmerging LoRA weights...")
+            # This is a placeholder. PEFT doesn't have a direct unmerge.
+            # You'd typically reload the original model or save/load the adapter state.
+            # For now, we'll just log a warning if the model is not in training mode.
+            if not model.training:
+                log.warning("Model is not in training mode after lm_eval. If you merged LoRA, you might need to reload the model or its adapters.")
+
+    return val_loss
 
 
-@hydra.main(version_base=None, config_path="config", config_name="train")
+@hydra.main(config_path="config", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
     """Main training loop."""
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Platform optimization
-    platform = PlatformOptimizer.detect_platform()
-    platform_settings = PlatformOptimizer.get_optimal_settings(platform, cfg)
+    # Setup accelerator
+    accelerator = Accelerator(
+        mixed_precision=cfg.system.precision,
+        gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
+    )
+
+    # Initialize Weights & Biases
+    if cfg.logging.wandb.enabled:
+        accelerator.init_trackers(
+            project_name=cfg.logging.wandb.project,
+            config=OmegaConf.to_container(cfg, resolve=True),
+        )
 
     # Load tokenizer
-    model_name = f"Qwen/Qwen2.5-{cfg.model.size}"
-    log.info(f"Loading tokenizer: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer_path = cfg.data.tokenizer_name # Use the tokenizer path from config
+    log.info(f"Loading tokenizer: {tokenizer_path}")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -87,20 +170,20 @@ def main(cfg: DictConfig):
     eval_loader = get_dataloader(cfg, tokenizer, split='validation')
 
     # Create model
-    log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.training.from_scratch})")
+    log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.training.mode == 'scratch'})")
     model = create_model(
         cfg.model.type,
         cfg.model.size,
-        cfg.training.from_scratch,
-        platform_settings
+        cfg.training.mode == 'scratch',
+        cfg
     )
 
-    # Setup device and precision
-    device = platform_settings['device']
-    dtype = platform_settings['dtype']
-    model = model.to(device)
-    if dtype != torch.float32:
-        model = model.to(dtype)
+    # Apply LoRA if enabled
+    if cfg.peft.enabled:
+        log.info("Applying LoRA to the model.")
+        peft_config = LoraConfig(**cfg.peft.config)
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
 
     # Log model size
     total_params = sum(p.numel() for p in model.parameters())
@@ -108,14 +191,17 @@ def main(cfg: DictConfig):
     log.info(f"Model: {total_params/1e6:.1f}M params ({trainable_params/1e6:.1f}M trainable)")
 
     # Setup training
-    steps_per_epoch = len(train_loader) // cfg.training.gradient_accumulation_steps
+    steps_per_epoch = len(train_loader) // cfg.training.accumulate_grad_batches
     num_training_steps = steps_per_epoch * cfg.training.num_epochs
 
     optimizer, scheduler = setup_optimizer_and_scheduler(
-        model, cfg, num_training_steps, platform_settings
+        model, cfg, num_training_steps
     )
 
-    scaler = GradScaler() if platform_settings['use_amp'] else None
+    # Prepare for distributed training
+    model, optimizer, train_loader, eval_loader, scheduler = accelerator.prepare(
+        model, optimizer, train_loader, eval_loader, scheduler
+    )
 
     # Training loop
     log.info("Starting training...")
@@ -124,67 +210,100 @@ def main(cfg: DictConfig):
 
     for epoch in range(cfg.training.num_epochs):
         model.train()
-        epoch_loss = 0
-        num_batches = 0
-
-        progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.training.num_epochs}")
+        progress_bar = tqdm(range(len(train_loader)), disable=not accelerator.is_main_process)
         optimizer.zero_grad()
 
-        for step, batch in enumerate(progress):
-            # Forward pass
-            loss = train_step(model, batch, scaler, device, dtype)
-            loss = loss / cfg.training.gradient_accumulation_steps
+        for step, batch in enumerate(train_loader):
+            with accelerator.accumulate(model):
+                outputs, loss = train_step(model, batch)
+                accelerator.backward(loss)
 
-            # Backward pass
-            if scaler:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
+                if cfg.training.use_gradient_clipping:
+                    accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
 
-            # Optimizer step every N accumulation steps
-            if (step + 1) % cfg.training.gradient_accumulation_steps == 0:
-                # Gradient clipping
-                if cfg.training.gradient_clip_val > 0:
-                    if scaler:
-                        scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
-
-                # Update weights
-                if scaler:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-
+                optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-                global_step += 1
 
-                # Track loss
-                epoch_loss += loss.item() * cfg.training.gradient_accumulation_steps
-                num_batches += 1
+            # Extract auxiliary losses and router stats
+            prior_loss = outputs.get("prior_loss", torch.tensor(0.0, device=loss.device)).detach().float()
+            causal_loss = outputs.get("causal_loss", torch.tensor(0.0, device=loss.device)).detach().float()
+            aux_loss = outputs.get("aux_loss", torch.tensor(0.0, device=loss.device)).detach().float() # For MoD
+            router_stats = outputs.get("router_stats", {})
 
-                # Update progress bar
-                if global_step % cfg.logging.log_interval == 0:
-                    avg_loss = epoch_loss / num_batches
-                    progress.set_postfix({
-                        'loss': f'{avg_loss:.4f}',
-                        'lr': f'{scheduler.get_last_lr()[0]:.2e}'
-                    })
+            # Calculate perplexity
+            perplexity = torch.exp(loss.detach().float())
 
-                # Evaluation
-                if global_step % cfg.training.eval_interval == 0:
-                    eval_loss = evaluate(
-                        model, eval_loader, device, dtype,
-                        max_batches=cfg.training.eval_samples // cfg.data.batch_size
+            # Prepare metrics for logging
+            log_metrics = {
+                "train/loss": loss.detach().float().item(),
+                "train/perplexity": perplexity.item(),
+            }
+
+            log_metrics["train/prior_loss"] = prior_loss.item()
+            log_metrics["train/causal_loss"] = causal_loss.item()
+            log_metrics["train/mod_aux_loss"] = aux_loss.item() # For MoD
+
+            # Process and add router stats
+            def process_router_stats(stats: Dict[str, Any], model_type: str) -> Dict[str, float]:
+                processed = {}
+                if model_type == "dtf":
+                    for k, v in stats.items():
+                        processed[f"train/router_stats/{k}"] = v
+                elif model_type == "mod":
+                    for i, layer_stats in enumerate(stats):
+                        for k, v in layer_stats.items():
+                            processed[f"train/router_stats/layer_{i}/{k}"] = v
+                elif model_type == "tdtf":
+                    for k, v_list in stats.items():
+                        if isinstance(v_list, list) and len(v_list) > 0:
+                            processed[f"train/router_stats/{k}_avg"] = sum(v_list) / len(v_list)
+                return processed
+
+            processed_router_stats = process_router_stats(router_stats, cfg.model.type)
+            log_metrics.update(processed_router_stats)
+
+            if accelerator.is_main_process and (global_step + 1) % cfg.logging.wandb.log_interval == 0:
+                accelerator.log(log_metrics, step=global_step)
+                accelerator.print(
+                    f"Epoch {epoch}, Step {global_step+1}: "
+                    f"Loss = {loss.detach().float():.4f}, "
+                    f"Perplexity = {perplexity:.2f}, "
+                    f"Prior Loss = {log_metrics['train/prior_loss']:.4f}, "
+                    f"Causal Loss = {log_metrics['train/causal_loss']:.4f}, "
+                    f"MoD Aux Loss = {log_metrics['train/mod_aux_loss']:.4f}, "
+                    f"Router Stats Logged: {bool(processed_router_stats)}"
+                )
+
+            global_step += 1
+            progress_bar.update(1)
+
+            # Evaluation and checkpointing
+            if (global_step) % cfg.training.eval_interval == 0:
+                accelerator.wait_for_everyone()
+                unwrapped_model = accelerator.unwrap_model(model)
+                eval_loss = evaluate(unwrapped_model, eval_loader, accelerator, cfg, tokenizer)
+                eval_perplexity = torch.exp(torch.tensor(eval_loss))
+
+                accelerator.log({
+                    "val/loss": eval_loss,
+                    "val/perplexity": eval_perplexity.item(),
+                }, step=global_step)
+                accelerator.print(f"Validation Loss: {eval_loss:.4f}, Validation Perplexity: {eval_perplexity:.2f}")
+
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    save_checkpoint(
+                        unwrapped_model,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        global_step,
+                        best_eval_loss,
+                        Path(cfg.run.output_dir) / "best_model"
                     )
-                    log.info(f"Step {global_step}: eval_loss={eval_loss:.4f}")
-
-                    # Save best model
-                    if eval_loss < best_eval_loss:
-                        best_eval_loss = eval_loss
-                        save_path = Path(cfg.system.output_dir) / "best_model"
-                        save_checkpoint(model, optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
+                accelerator.wait_for_everyone()
+                model.train() # Resume training mode
 
                 # Early stopping
                 if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
@@ -195,9 +314,25 @@ def main(cfg: DictConfig):
             break
 
     # Save final model
-    save_path = Path(cfg.system.output_dir) / "final_model"
-    save_checkpoint(model, optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
-    log.info("Training complete!")
+    save_path = Path(cfg.run.output_dir) / "final_model"
+    save_checkpoint(accelerator.unwrap_model(model), optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
+
+    # Push to Hugging Face Hub if enabled
+    if cfg.push_to_hub.enabled and accelerator.is_main_process:
+        from src.training.utils import push_to_hub
+        push_to_hub(
+            model=accelerator.unwrap_model(model),
+            tokenizer=tokenizer,
+            hub_model_id=cfg.push_to_hub.repo_id,
+            commit_message=cfg.push_to_hub.commit_message,
+            private=cfg.push_to_hub.private,
+        )
+
+    # End of training
+    if accelerator.is_main_process:
+        log.info("Training complete!")
+        if cfg.logging.wandb.enabled:
+            wandb.finish()
 
 
 if __name__ == "__main__":

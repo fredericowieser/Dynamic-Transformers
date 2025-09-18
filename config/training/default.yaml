@@ -1,0 +1,19 @@
+# @package _global_
+
+training:
+  mode: ??? # Must be specified: scratch or transfer
+  num_epochs: 1
+  max_steps: -1
+  accumulate_grad_batches: 64
+  eval_interval: 100
+  use_gradient_clipping: False
+  gradient_clip_val: 1.0
+
+  optimizer:
+    lr: 1.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    scheduler: cosine
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1e-8

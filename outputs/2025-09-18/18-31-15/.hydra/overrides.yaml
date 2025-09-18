@@ -1,0 +1,2 @@
+- system.precision=float32
+- system.torch_dtype=float32

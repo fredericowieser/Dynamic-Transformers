@@ -1,3 +1,3 @@
-from .model import StandardTransformerForCausalLM
+from .causalLM import StandardTransformerForCausalLM
 
-__all__ = ['StandardTransformerForCausalLM']
+__all__ = ["StandardTransformerForCausalLM"]

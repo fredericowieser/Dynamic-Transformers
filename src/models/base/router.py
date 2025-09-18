@@ -1,4 +1,3 @@
-"""Base router class for token selection in dynamic architectures."""
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod

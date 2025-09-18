@@ -1,5 +1,3 @@
-"""Training utilities for dynamic transformer models."""
-
 import os
 import torch
 import logging
@@ -13,89 +11,25 @@ from transformers import (
     Qwen2ForCausalLM,
     get_scheduler
 )
+from huggingface_hub import HfApi
 
 log = logging.getLogger(__name__)
 
 
-class PlatformOptimizer:
-    """Platform-specific optimization settings."""
 
-    @staticmethod
-    def detect_platform() -> str:
-        """Detect available compute platform."""
-        if torch.cuda.is_available():
-            return 'cuda'
-        elif torch.backends.mps.is_available():
-            return 'mps'
-        else:
-            return 'cpu'
-
-    @staticmethod
-    def get_optimal_settings(platform: str, config: DictConfig) -> Dict[str, Any]:
-        """Get optimal settings for the platform."""
-        # Handle nested config from presets
-        cfg = config.presets if 'presets' in config else config
-
-        settings = {
-            'device': torch.device(platform),
-            'dtype': torch.float32,
-            'use_amp': False,
-            'use_flash_attention': False,
-            'compile_model': False,
-            'num_workers': 0,
-            'pin_memory': False,
-            'persistent_workers': False,
-        }
-
-        if platform == 'cuda':
-            log.info("✅ Using CUDA GPU")
-            settings.update({
-                'dtype': torch.bfloat16 if cfg.training.get('use_bf16', True) else torch.float16,
-                'use_amp': True,
-                'use_flash_attention': cfg.model.get('use_flash_attention', True),
-                'compile_model': cfg.system.get('compile', False),
-                'num_workers': cfg.system.get('num_workers', 4),
-                'pin_memory': True,
-                'persistent_workers': True,
-            })
-
-        elif platform == 'mps':
-            log.info("✅ Using Mac GPU (Metal Performance Shaders)")
-            # MPS doesn't support BF16 or AMP well yet
-            settings.update({
-                'dtype': torch.float32,
-                'use_amp': False,
-                'use_flash_attention': False,
-                'compile_model': False,
-                'num_workers': 0,  # MPS has issues with multiprocessing
-                'pin_memory': False,
-                'persistent_workers': False,
-            })
-
-        else:
-            log.info("⚠️ Using CPU (this will be slow)")
-            settings.update({
-                'dtype': torch.float32,
-                'use_amp': False,
-                'num_workers': min(4, os.cpu_count() or 1),
-            })
-
-        return settings
 
 
 def create_model_config(
-    model_type: str,
     model_size: str,
     from_scratch: bool,
-    platform_settings: Dict[str, Any]
+    cfg: DictConfig,
 ) -> Qwen2Config:
     """Create model configuration.
 
     Args:
-        model_type: 'standard', 'mod', 'dtf', or 'tdtf'
         model_size: '0.5B', '1.5B', or '3B'
         from_scratch: Whether to train from scratch
-        platform_settings: Platform-specific settings
+        cfg: The full training config
 
     Returns:
         Qwen2Config with appropriate settings
@@ -104,39 +38,15 @@ def create_model_config(
 
     if from_scratch:
         # Create config from scratch with Qwen2.5 specifications
-        size_configs = {
-            "0.5B": {
-                "hidden_size": 896,
-                "intermediate_size": 4864,
-                "num_hidden_layers": 24,
-                "num_attention_heads": 14,
-                "num_key_value_heads": 2,
-            },
-            "1.5B": {
-                "hidden_size": 1536,
-                "intermediate_size": 8960,
-                "num_hidden_layers": 28,
-                "num_attention_heads": 12,
-                "num_key_value_heads": 2,
-            },
-            "3B": {
-                "hidden_size": 2048,
-                "intermediate_size": 11008,
-                "num_hidden_layers": 36,
-                "num_attention_heads": 16,
-                "num_key_value_heads": 2,
-            },
-        }
-
-        if model_size not in size_configs:
-            raise ValueError(f"Unknown model size: {model_size}")
+        if model_size not in cfg.model.scratch_config:
+            raise ValueError(f"Unknown model size for scratch training: {model_size}")
 
         config = Qwen2Config(
-            vocab_size=151936,
-            max_position_embeddings=32768,
-            rope_theta=1000000.0,
-            sliding_window=131072,
-            **size_configs[model_size]
+            vocab_size=cfg.model.scratch_config.vocab_size,
+            max_position_embeddings=cfg.model.scratch_config.max_position_embeddings,
+            rope_theta=cfg.model.scratch_config.rope_theta,
+            sliding_window=cfg.model.scratch_config.sliding_window,
+            **cfg.model.scratch_config[model_size]
         )
         config.init_from_scratch = True
     else:
@@ -144,44 +54,24 @@ def create_model_config(
         config = Qwen2Config.from_pretrained(pretrained_name)
 
     # Ensure _attn_implementation is set
-    config._attn_implementation = 'eager'
+    config._attn_implementation = cfg.model.get('attn_implementation', 'eager')
 
-    # Add model-type specific configurations
-    if model_type == "dtf":
-        config.prior_ffn_intermediate_size_factor = 0.25
-        config.prior_loss_weight = 0.05
-        config.capacity_gamma = 0.5
-        config.beta_ce_init = -0.5
-        config.beta_cu_init = -0.8
-        config.cu_detection_multiplier_init = 1.2
-        config.ce_criterion_offset_init = 1.0
-
-    elif model_type == "mod":
-        config.mod_capacity = 0.125
-        config.mod_aux_loss_weight = 0.01
-        config.mod_total_aux_loss_weight = 0.01
-
-    elif model_type == "tdtf":
-        # TDTF-specific configuration
-        config.tpn_intermediate_size_factor = 0.25
-        config.tpn_loss_weight = 1.0
-        config.causal_loss_weight = 1.0
-        config.tdtf_capacity = 0.5  # γ parameter (50% capacity)
-        config.o_ce_init = 1.025
-        config.m_cu_init = 1.1
-        config.beta_ce_init = -0.3
-        config.beta_cu_init = -0.6
-        config.ma_window = 100
+    # Add model-type specific configurations from the provided config
+    # Copy all relevant model parameters from cfg.model to the Qwen2Config object
+    for key, value in cfg.model.items():
+        if key not in ['scratch_config', 'params', 'size', 'type', 'pretrained_model_name_or_path', 'use_flash_attention_2', 'attn_implementation', 'use_cache', 'tie_word_embeddings']:
+            setattr(config, key, value)
+    if 'model' in cfg and 'params' in cfg.model: # Keep existing params copy logic
+        for key, value in cfg.model.params.items():
+            setattr(config, key, value)
 
     # Common settings for all models
-    config.initializer_range = 0.02
-    config.rms_norm_eps = 1e-6
-    config.use_cache = True
-    config.tie_word_embeddings = True
+    config.use_cache = cfg.model.get('use_cache', True)
+    config.tie_word_embeddings = cfg.model.get('tie_word_embeddings', True)
 
     # Platform-specific settings
-    config.use_flash_attention = platform_settings['use_flash_attention']
-    config.torch_dtype = str(platform_settings['dtype']).split('.')[-1]
+    config.use_flash_attention = cfg.system.get('use_flash_attention', False)
+    config.torch_dtype = cfg.system.get('torch_dtype', 'float32')
 
     return config
 
@@ -190,7 +80,7 @@ def create_model(
     model_type: str,
     model_size: str,
     from_scratch: bool,
-    platform_settings: Dict[str, Any]
+    cfg: DictConfig,
 ) -> torch.nn.Module:
     """Create and initialize model.
 
@@ -198,13 +88,14 @@ def create_model(
         model_type: 'standard', 'mod', 'dtf', or 'tdtf'
         model_size: '0.5B', '1.5B', or '3B'
         from_scratch: Whether to train from scratch
-        platform_settings: Platform-specific settings
+        cfg: The full training config
 
     Returns:
         Initialized model
     """
-    config = create_model_config(model_type, model_size, from_scratch, platform_settings)
+    config = create_model_config(model_size, from_scratch, cfg)
     pretrained_name = f"Qwen/Qwen2.5-{model_size}"
+    torch_dtype = getattr(torch, cfg.system.get('torch_dtype', 'float32'))
 
     if model_type == "standard":
         from ..models.standard.model import StandardTransformerForCausalLM
@@ -212,7 +103,7 @@ def create_model(
             pretrained_name if not from_scratch else config,
             from_scratch=from_scratch,
             config=config if from_scratch else None,
-            torch_dtype=platform_settings['dtype'],
+            torch_dtype=torch_dtype,
             ignore_mismatched_sizes=True
         )
 
@@ -225,7 +116,7 @@ def create_model(
             log.info(f"Initializing MoD model from pretrained {pretrained_name}")
             base_model = Qwen2ForCausalLM.from_pretrained(
                 pretrained_name,
-                torch_dtype=platform_settings['dtype']
+                torch_dtype=torch_dtype
             )
             model = MoDForCausalLM(config)
             model.copy_weights_from_pretrained(base_model)
@@ -241,7 +132,7 @@ def create_model(
             log.info(f"Initializing DTF model from pretrained {pretrained_name}")
             base_model = Qwen2ForCausalLM.from_pretrained(
                 pretrained_name,
-                torch_dtype=platform_settings['dtype']
+                torch_dtype=torch_dtype
             )
             model = DTFForCausalLM(config)
             model.copy_weights_from_pretrained(base_model)
@@ -257,7 +148,7 @@ def create_model(
             log.info(f"Initializing TDTF model from pretrained {pretrained_name}")
             base_model = Qwen2ForCausalLM.from_pretrained(
                 pretrained_name,
-                torch_dtype=platform_settings['dtype']
+                torch_dtype=torch_dtype
             )
             model = TDTFForCausalLM(config)
             model.copy_weights_from_pretrained(base_model)
@@ -272,7 +163,6 @@ def setup_optimizer_and_scheduler(
     model: torch.nn.Module,
     cfg: DictConfig,
     num_training_steps: int,
-    platform_settings: Dict[str, Any]
 ) -> Tuple[torch.optim.Optimizer, Any]:
     """Setup optimizer with parameter groups and scheduler."""
 
@@ -368,3 +258,34 @@ def load_checkpoint(
         return state
 
     return {'epoch': 0, 'step': 0, 'best_loss': float('inf')}
+
+
+def push_to_hub(
+    model: torch.nn.Module,
+    tokenizer: AutoTokenizer,
+    hub_model_id: str,
+    commit_message: str = "Add new model",
+    private: bool = False,
+) -> None:
+    """Push model and tokenizer to Hugging Face Hub."""
+    log.info(f"Pushing model to Hugging Face Hub: {hub_model_id}")
+    api = HfApi()
+
+    # Save model and tokenizer locally first
+    model_dir = Path("temp_hub_upload")
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(model_dir)
+    tokenizer.save_pretrained(model_dir)
+
+    # Push to hub
+    api.upload_folder(
+        folder_path=model_dir,
+        repo_id=hub_model_id,
+        commit_message=commit_message,
+        private=private,
+    )
+    log.info("Model successfully pushed to Hub!")
+
+    # Clean up local files
+    import shutil
+    shutil.rmtree(model_dir)

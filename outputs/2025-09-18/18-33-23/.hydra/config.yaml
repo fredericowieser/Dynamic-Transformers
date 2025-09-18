@@ -1,0 +1,112 @@
+run:
+  name: laptop-10M-wikitext-${now:%Y-%m-%d_%H-%M-%S}
+  output_dir: outputs/${run.name}
+  seed: 42
+  run_final_evaluation: true
+model:
+  size: 0.5B
+  type: standard
+  pretrained_model_name_or_path: Qwen/Qwen2.5-${model.size}
+  use_flash_attention_2: ${system.use_flash_attention}
+  attn_implementation: eager
+  use_cache: true
+  tie_word_embeddings: true
+  params: {}
+  dtf_capacity: 0.5
+  prior_loss_weight: 0.05
+  causal_loss_weight: 0.01
+  beta_ce_init: -0.3
+  beta_cu_init: -0.6
+  cu_detection_multiplier_init: 1.1
+  ce_criterion_offset_init: 1.025
+  prior_ffn_intermediate_size_factor: 0.5
+  mod_capacity: 0.125
+  mod_aux_loss_weight: 0.01
+  tdtf_capacity: 0.5
+  tpn_loss_weight: 0.05
+  ma_window: 100
+  o_ce_init: 1.025
+  m_cu_init: 1.1
+training:
+  mode: scratch
+  num_epochs: 1
+  accumulate_grad_batches: 64
+  max_steps: -1
+  eval_interval: 100
+  use_gradient_clipping: false
+  gradient_clip_val: 1.0
+  optimizer:
+    lr: 1.0e-05
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    scheduler: cosine
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1.0e-08
+system:
+  device: cpu
+  precision: 'no'
+  use_flash_attention: false
+  compile_model: false
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  torch_dtype: float32
+data:
+  batch_size: 16
+  name: pretrain_mix
+  tokenizer_name: Qwen/Qwen2.5-${model.size}
+  block_size: 1024
+  validation_split_percentage: 2
+  dataset_configs:
+  - type: pretrain
+    dataset_name: wikitext
+    dataset_config: wikitext-103-raw-v1
+    text_column: text
+    train_subset_ratio: 1.0
+  - type: pretrain
+    dataset_name: cnn_dailymail
+    dataset_config: 3.0.0
+    text_column: article
+    train_subset_ratio: 0.2
+  - type: pretrain
+    dataset_name: storytracer/US-PD-Books
+    text_column: text
+    train_subset_ratio: 0.5
+  - type: pretrain
+    dataset_name: HuggingFaceTB/cosmopedia
+    dataset_config: openstax
+    text_column: text
+    train_subset_ratio: 0.1
+  - type: pretrain
+    dataset_name: sciq
+    text_column: support
+    train_subset_ratio: 1.0
+  - type: pretrain
+    dataset_name: codeparrot/codeparrot-clean-valid
+    text_column: content
+    train_subset_ratio: 1.0
+  - type: pretrain
+    dataset_name: roneneldan/TinyStories
+    text_column: text
+    train_subset_ratio: 1.0
+logging:
+  wandb:
+    enabled: true
+    project: Dynamic-Transformers
+    entity: huawei-noahs-ark
+    log_interval: 50
+peft:
+  enabled: false
+push_to_hub:
+  enabled: false
+lm_eval:
+  enabled: false
+  tasks:
+  - arc_challenge
+  - hellaswag
+  - mmlu
+  - winogrande
+  - truthfulqa_mc2
+  batch_size: 8
+  merge_lora_for_eval: true

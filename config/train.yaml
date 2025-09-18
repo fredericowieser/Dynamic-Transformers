@@ -1,40 +1,57 @@
-# Base training configuration
+# @package _global_
+
 defaults:
   - _self_
+  - system: default
+  - model: default
+  - data: default
+  - training: default
+  - logging: default
+  - override hydra/job_logging: default
+  - override hydra/hydra_logging: default
 
-model:
-  type: ???  # Must be specified: standard, mod, or dtf
-  size: 0.5B  # 0.5B, 1.5B, or 3B
+hydra:
+  run:
+    dir: outputs/${run.name}
 
-training:
-  from_scratch: ???  # Must be specified: true or false
-  num_epochs: 3
-  max_steps: -1
-  gradient_accumulation_steps: 16
-  gradient_clip_val: 1.0
-  eval_interval: 500
-  eval_samples: 1000
-  save_interval: 1000
-  optimizer:
-    lr: 3e-4
-    weight_decay: 0.1
-    warmup_ratio: 0.05
-    scheduler: cosine
-    adam_beta1: 0.9
-    adam_beta2: 0.95
-    adam_epsilon: 1e-8
-
-data:
-  dataset: wikitext
-  dataset_config: wikitext-2-raw-v1
-  batch_size: 8
-  block_size: 512
-  validation_split: 0.05
-
-logging:
-  log_interval: 50
-
-system:
+run:
+  name: "qwen2.5-${model.size}-${model.type}-${training.mode}-${now:%Y-%m-%d_%H-%M-%S}"
+  output_dir: "outputs/${run.name}"
   seed: 42
-  output_dir: outputs/${model.type}_${model.size}_${now:%Y%m%d_%H%M%S}
-  compile: false
+  run_final_evaluation: True
+
+# PEFT (LoRA) configuration
+peft:
+  enabled: False
+  config:
+    _target_: peft.LoraConfig
+    r: 16
+    lora_alpha: 32
+    target_modules:
+      - "q_proj"
+      - "k_proj"
+      - "v_proj"
+      - "o_proj"
+      - "gate_proj"
+      - "up_proj"
+      - "down_proj"
+    modules_to_save:
+      - "vpr_router" # Placeholder, will be updated based on model type
+      - "prior_ffn"  # Placeholder, will be updated based on model type
+    lora_dropout: 0.05
+    bias: "none"
+    task_type: "CAUSAL_LM"
+
+# Push to Hugging Face Hub
+push_to_hub:
+  enabled: False
+  repo_id: "your-username/your-model-id"
+  commit_message: "Trained model with Dynamic Transformer"
+  private: False
+
+# lm_eval configuration
+lm_eval:
+  enabled: False
+  tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
+  batch_size: 8
+  merge_lora_for_eval: True

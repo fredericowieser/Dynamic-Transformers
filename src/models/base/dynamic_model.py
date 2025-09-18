@@ -1,5 +1,3 @@
-"""Base class for dynamic models (DTF and MoD) using Qwen2 architecture."""
-
 import torch
 import torch.nn as nn
 from transformers import Qwen2Config, Qwen2Model

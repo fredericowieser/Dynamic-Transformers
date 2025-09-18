@@ -1,0 +1,11 @@
+# @package _global_
+
+system:
+  device: "auto" # auto, cuda, mps, cpu
+  precision: "bf16" # bf16, fp16, fp32
+  use_flash_attention: true
+  compile_model: false
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  torch_dtype: "bfloat16" # or float16, float32

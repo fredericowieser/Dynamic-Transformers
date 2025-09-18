@@ -1,0 +1,8 @@
+# @package _global_
+
+logging:
+  wandb:
+    enabled: true
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
+    log_interval: 50

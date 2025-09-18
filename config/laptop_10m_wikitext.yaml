@@ -1,0 +1,63 @@
+# @package _global_
+
+defaults:
+  - _self_
+
+  - model: 10M_scratch  # Use 10M scratch model config
+  - data: laptop_10m_data   # Use laptop-specific data config
+  - training: default # Pull in training defaults
+  - logging: default # Pull in logging defaults
+
+run:
+  name: "laptop-10M-wikitext-${now:%Y-%m-%d_%H-%M-%S}"
+  output_dir: "outputs/${run.name}"
+  seed: 42
+  run_final_evaluation: True
+
+training:
+  mode: scratch
+  num_epochs: 1
+  accumulate_grad_batches: 16
+  max_steps: -1
+  eval_interval: 100
+  use_gradient_clipping: False
+  gradient_clip_val: 1.0
+  optimizer:
+    lr: 1.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    scheduler: cosine
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1.0e-8
+
+system:
+  device: cpu
+  precision: "no"
+  use_flash_attention: false
+  compile_model: false
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  torch_dtype: "float32"
+logging:
+  wandb:
+    enabled: false
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
+    log_interval: 50
+
+model:
+  type: dtf # Options: standard, mod, dtf, tdtf
+
+peft:
+  enabled: false
+
+push_to_hub:
+  enabled: false
+
+lm_eval:
+  enabled: false
+  tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
+  batch_size: 8
+  merge_lora_for_eval: True

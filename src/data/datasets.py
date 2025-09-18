@@ -1,5 +1,3 @@
-"""Data loading utilities for training."""
-
 import logging
 import torch
 from torch.utils.data import DataLoader, Dataset
