@@ -156,9 +156,12 @@ class DTFForCausalLM(BaseDynamicModel):
         if loss is not None and total_prior_loss > 0:
             loss = loss + self.prior_loss_weight * total_prior_loss
 
-        # Add causal loss
-        if loss is not None and total_causal_loss > 0:
-            loss = loss + self.causal_loss_weight * total_causal_loss
+        # Calculate averaged router stats
+        averaged_router_stats = {}
+        num_dynamic_layers = len(self.layers) // 2 # Assuming alternating Decision and Dynamic layers
+        if num_dynamic_layers > 0:
+            for k, v in total_router_stats.items():
+                averaged_router_stats[k] = v / num_dynamic_layers
 
         if all_hidden_states is not None:
             all_hidden_states += (hidden_states,)
@@ -170,6 +173,100 @@ class DTFForCausalLM(BaseDynamicModel):
             "hidden_states": all_hidden_states,
             "attentions": all_attentions,
             "prior_loss": total_prior_loss,
-            "causal_loss": total_causal_loss,
-            "router_stats": total_router_stats,
+            "router_stats": averaged_router_stats,
         }
+
+    def copy_weights_from_pretrained(self, pretrained_model):
+        """Copy weights from a pretrained Qwen2 model to the DTF model.
+
+        This method copies weights for shared components (embeddings, norms, LM head)
+        and for the Qwen2Attention and Qwen2MLP parts within Decision/Dynamic layers.
+        PriorFFN and DTFRouter are left with their random initialization.
+        """
+        super().copy_weights_from_pretrained(pretrained_model)
+
+        # Copy weights for each layer
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer, DTFDecisionLayer):
+                # Decision layer contains a standard Qwen2DecoderLayer's components
+                # and a PriorFFN (which should be randomly initialized).
+                pretrained_layer = pretrained_model.model.layers[i // 2] # Original Qwen2 layers
+
+                layer.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                layer.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                layer.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                layer.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+
+            elif isinstance(layer, DTFDynamicLayer):
+                # Dynamic layer contains a second standard Qwen2DecoderLayer's components
+                # and a DTFRouter (which should be randomly initialized).
+                # The index for the pretrained model needs to account for the alternating structure.
+                # If DecisionLayer is at i, DynamicLayer is at i+1, so original layer index is (i+1)//2
+                pretrained_layer = pretrained_model.model.layers[(i - 1) // 2] # Original Qwen2 layers
+
+                layer.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                layer.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                layer.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                layer.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+
+    def get_trainable_parameters(self) -> List[Dict[str, Any]]:
+        """Returns parameter groups for differential learning rates.
+
+        Groups parameters into: base model, PriorFFN, and Predictive Router.
+        Only includes parameters where requires_grad is True.
+        """
+        base_model_params = []
+        prior_ffn_params = []
+        router_params = []
+
+        # Parameters from BaseDynamicModel (embeddings, final norm, lm_head)
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "embed_tokens" in name or "norm" in name or "lm_head" in name:
+                base_model_params.append(param)
+
+        # Parameters from Decision and Dynamic Layers
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer, DTFDecisionLayer):
+                for name, param in layer.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    if "prior_ffn" in name:
+                        prior_ffn_params.append(param)
+                    else:
+                        base_model_params.append(param)
+            elif isinstance(layer, DTFDynamicLayer):
+                for name, param in layer.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    if "router" in name:
+                        router_params.append(param)
+                    else:
+                        base_model_params.append(param)
+
+        # Define learning rate scales as per Feature-Spec.md
+        # These scales will be multiplied by the base_lr from the config.
+        # The actual base_lr for each group is defined in the config.
+        # Here we just provide the relative scales.
+        param_groups = []
+        if base_model_params:
+            param_groups.append({
+                'params': base_model_params,
+                'lr_scale': getattr(self.config, 'base_model_lr_scale', 1.0),
+                'name': 'base_model'
+            })
+        if prior_ffn_params:
+            param_groups.append({
+                'params': prior_ffn_params,
+                'lr_scale': getattr(self.config, 'prior_ffn_lr_scale', 1.0),
+                'name': 'prior_ffn'
+            })
+        if router_params:
+            param_groups.append({
+                'params': router_params,
+                'lr_scale': getattr(self.config, 'router_lr_scale', 1.0),
+                'name': 'predictive_router'
+            })
+
+        return param_groups

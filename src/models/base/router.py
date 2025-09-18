@@ -7,7 +7,7 @@ from typing import Tuple, Optional
 class BaseRouter(nn.Module, ABC):
     """Base router for token selection shared by MoD and DTF."""
 
-    def __init__(self, capacity: float = 0.125):
+    def __init__(self, capacity: float):
         super().__init__()
         self.capacity = capacity
 

@@ -13,7 +13,10 @@ model:
 
   dtf_capacity: 0.5
   prior_loss_weight: 0.05
-  causal_loss_weight: 0.01
+  causal_loss_weight: 0.01 # This is for TDTF, not DTF. Kept for compatibility.
+  base_model_lr_scale: 1.0
+  prior_ffn_lr_scale: 100.0 # 1.0e-3 / 1.0e-5
+  router_lr_scale: 1000.0 # 1.0e-2 / 1.0e-5
   beta_ce_init: -0.3
   beta_cu_init: -0.6
   cu_detection_multiplier_init: 1.1

@@ -36,8 +36,8 @@ peft:
       - "up_proj"
       - "down_proj"
     modules_to_save:
-      - "vpr_router" # Placeholder, will be updated based on model type
-      - "prior_ffn"  # Placeholder, will be updated based on model type
+      - "prior_ffn"
+      - "router"
     lora_dropout: 0.05
     bias: "none"
     task_type: "CAUSAL_LM"

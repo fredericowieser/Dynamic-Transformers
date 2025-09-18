@@ -57,38 +57,56 @@ class DTFRouter(BaseRouter):
         B, T, D = original.shape
 
         # Compute surprise metrics (MSE as proxy for KL divergence)
-        # Static surprise: error of assuming no change
-        cu = (original - posterior).norm(dim=-1)  # [B, T]
-        # Change surprise: error of prior prediction
-        ce = (posterior - prior).norm(dim=-1)  # [B, T]
+        # D_st,i = (1/d) ||H_post,i - H_orig,i||_2^2
+        # D_ch,i = (1/d) ||H_post,i - H_prior,i||_2^2
+        # Note: The spec uses 'd' for hidden dimension, which is config.hidden_size
+        d = float(original.shape[-1])
+        D_st = torch.sum((posterior - original).pow(2), dim=-1) / d  # [B, T]
+        D_ch = torch.sum((posterior - prior).pow(2), dim=-1) / d  # [B, T]
+
+        # Compute Moving Average of D_st for CU criterion
+        # The spec implies a temporal MA. For a single forward pass, we approximate
+        # this by taking the MA over the current sequence.
+        # This is a simplification and might need refinement for true temporal MA across batches.
+        ma_D_st = torch.mean(D_st, dim=-1, keepdim=True) # [B, 1]
+
+        # Ensure beta parameters are positive using Softplus
+        beta_ce_positive = torch.nn.functional.softplus(self.beta_ce)
+        beta_cu_positive = torch.nn.functional.softplus(self.beta_cu)
 
         # Compute routing criteria with learnable parameters
-        # CE criterion: Is prior prediction better than static?
-        cu_criterion = self.beta_cu * cu
-        ce_criterion = self.beta_ce * (ce + self.ce_criterion_offset)
+        # CE_i = D_st,i - (D_ch,i - log(o_ce + epsilon))
+        # CU_i = D_st,i - (m_cu * MA(D_st,i))
+        epsilon = 1e-10 # As per DTF-Report.md
+        CE_i = D_st - (D_ch - torch.log(self.ce_criterion_offset + epsilon)) # [B, T]
+        CU_i = D_st - (self.cu_detection_multiplier * ma_D_st) # [B, T]
 
-        # Combined routing score
-        scores = cu_criterion + ce_criterion  # [B, T]
+        # Convert raw criteria into probabilities using scaled sigmoid functions
+        S_CE = torch.sigmoid(beta_ce_positive * CE_i) # [B, T]
+        S_CU = torch.sigmoid(beta_cu_positive * CU_i) # [B, T]
 
-        # Compute gating signal for soft selection
-        gate_signal = torch.sigmoid(scores)
+        # Combine probabilities using a probabilistic OR to form a final continuous gating signal G_cont
+        # G_cont = S_CE + S_CU - (S_CE * S_CU)
+        G_cont = S_CE + S_CU - (S_CE * S_CU) # [B, T]
 
         stats = {
             'layer_idx': self.layer_idx,
             'capacity': self.capacity,
-            'avg_cu': cu.mean().item(),
-            'avg_ce': ce.mean().item(),
-            'avg_gate': gate_signal.mean().item(),
+            'D_st_mean': D_st.mean().item(),
+            'D_ch_mean': D_ch.mean().item(),
+            'CE_i_mean': CE_i.mean().item(),
+            'CU_i_mean': CU_i.mean().item(),
+            'S_CE_mean': S_CE.mean().item(),
+            'S_CU_mean': S_CU.mean().item(),
+            'G_cont_mean': G_cont.mean().item(),
+            'beta_ce': self.beta_ce.item(),
+            'beta_cu': self.beta_cu.item(),
+            'o_ce': self.ce_criterion_offset.item(),
+            'm_cu': self.cu_detection_multiplier.item(),
         }
 
-            # Compute prior loss
-            prior_loss = self.prior_loss_weight * prior_dist.entropy().mean()
-
-            # Compute causal loss
-            # TODO: Implement actual causal loss for DTF based on specification.
-            # For now, using a placeholder.
-            causal_loss = self.causal_loss_weight * torch.tensor(0.0, device=hidden_states.device)
-        return scores, None, stats
+        # The scores returned here are G_cont, which will be used for TopK selection in DTFDynamicLayer
+        return G_cont, None, stats
 
 
 class CausalDTFRouter(BaseRouter):
