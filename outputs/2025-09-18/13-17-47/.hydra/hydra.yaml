@@ -111,19 +111,14 @@ hydra:
   overrides:
     hydra:
     - hydra.mode=RUN
-    task:
-    - system.output_dir=outputs/dtf_quick_20250918_012904
-    - training.num_epochs=1
-    - training.max_steps=1000
-    - training.eval_interval=100
-    - training.save_interval=500
+    task: []
   job:
     name: train
     chdir: null
-    override_dirname: system.output_dir=outputs/dtf_quick_20250918_012904,training.eval_interval=100,training.max_steps=1000,training.num_epochs=1,training.save_interval=500
+    override_dirname: ''
     id: ???
     num: ???
-    config_name: dtf_scratch
+    config_name: tdtf_test_config
     env_set: {}
     env_copy: []
     config:
@@ -139,13 +134,13 @@ hydra:
     - path: hydra.conf
       schema: pkg
       provider: hydra
-    - path: /Users/fredericowieser/Documents/flow/_work/___HUAWEI_NOAHS_ARK/Dynamic-Transformer/config
+    - path: /tmp
       schema: file
       provider: main
     - path: ''
       schema: structured
       provider: schema
-    output_dir: /Users/fredericowieser/Documents/flow/_work/___HUAWEI_NOAHS_ARK/Dynamic-Transformer/outputs/2025-09-18/01-29-07
+    output_dir: /Users/fredericowieser/Documents/flow/_work/___HUAWEI_NOAHS_ARK/Dynamic-Transformer/outputs/2025-09-18/13-17-47
     choices:
       hydra/env: default
       hydra/callbacks: null

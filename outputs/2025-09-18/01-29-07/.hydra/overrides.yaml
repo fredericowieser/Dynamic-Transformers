@@ -1,5 +1,0 @@
-- system.output_dir=outputs/dtf_quick_20250918_012904
-- training.num_epochs=1
-- training.max_steps=1000
-- training.eval_interval=100
-- training.save_interval=500

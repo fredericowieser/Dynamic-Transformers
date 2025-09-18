@@ -1,0 +1,70 @@
+# TDTF Training Configuration
+defaults:
+  - _self_
+
+# Model configuration
+model:
+  type: "tdtf"  # Temporal Dynamic Transformer
+  size: "0.5B"
+
+# Data configuration
+data:
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-103-raw-v1"
+  split: "train"
+  max_length: 256
+  batch_size: 16
+  shuffle: true
+  num_workers: 4
+
+# Training configuration
+training:
+  num_epochs: 1
+  max_steps: 100  # Short run for testing
+  gradient_accumulation_steps: 1
+  gradient_clip_val: 1.0
+  eval_interval: 50
+  eval_samples: 100
+  from_scratch: false  # Use pretrained weights as base
+
+  # Optimizer settings
+  optimizer:
+    lr: 1e-4
+    weight_decay: 0.01
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_epsilon: 1e-8
+    scheduler: "cosine"
+    warmup_ratio: 0.1
+
+# System configuration
+system:
+  output_dir: "outputs/test_tdtf_${now:%Y%m%d_%H%M%S}"
+  compile: false
+  num_workers: 4
+  seed: 42
+
+# Logging configuration
+logging:
+  log_interval: 10
+  save_interval: 50
+  eval_interval: 50
+
+# TDTF specific configuration (these will be passed to model config)
+tdtf:
+  # TPN configuration
+  tpn_intermediate_size_factor: 0.25
+  tpn_loss_weight: 1.0
+
+  # Causal router configuration
+  causal_loss_weight: 1.0
+
+  # Capacity configuration
+  capacity: 0.5  # γ parameter - 50% of tokens processed
+
+  # VPR criteria initialization
+  o_ce_init: 1.025
+  m_cu_init: 1.1
+  beta_ce_init: -0.3
+  beta_cu_init: -0.6
+  ma_window: 100

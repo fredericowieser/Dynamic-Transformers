@@ -92,7 +92,7 @@ def create_model_config(
     """Create model configuration.
 
     Args:
-        model_type: 'standard', 'mod', or 'dtf'
+        model_type: 'standard', 'mod', 'dtf', or 'tdtf'
         model_size: '0.5B', '1.5B', or '3B'
         from_scratch: Whether to train from scratch
         platform_settings: Platform-specific settings
@@ -161,6 +161,18 @@ def create_model_config(
         config.mod_aux_loss_weight = 0.01
         config.mod_total_aux_loss_weight = 0.01
 
+    elif model_type == "tdtf":
+        # TDTF-specific configuration
+        config.tpn_intermediate_size_factor = 0.25
+        config.tpn_loss_weight = 1.0
+        config.causal_loss_weight = 1.0
+        config.tdtf_capacity = 0.5  # γ parameter (50% capacity)
+        config.o_ce_init = 1.025
+        config.m_cu_init = 1.1
+        config.beta_ce_init = -0.3
+        config.beta_cu_init = -0.6
+        config.ma_window = 100
+
     # Common settings for all models
     config.initializer_range = 0.02
     config.rms_norm_eps = 1e-6
@@ -183,7 +195,7 @@ def create_model(
     """Create and initialize model.
 
     Args:
-        model_type: 'standard', 'mod', or 'dtf'
+        model_type: 'standard', 'mod', 'dtf', or 'tdtf'
         model_size: '0.5B', '1.5B', or '3B'
         from_scratch: Whether to train from scratch
         platform_settings: Platform-specific settings
@@ -232,6 +244,22 @@ def create_model(
                 torch_dtype=platform_settings['dtype']
             )
             model = DTFForCausalLM(config)
+            model.copy_weights_from_pretrained(base_model)
+            del base_model  # Free memory
+        return model
+
+    elif model_type == "tdtf":
+        from ..models.tdtf.model import TDTFForCausalLM
+        if from_scratch:
+            log.info(f"Initializing TDTF model from scratch with {model_size} config")
+            model = TDTFForCausalLM(config)
+        else:
+            log.info(f"Initializing TDTF model from pretrained {pretrained_name}")
+            base_model = Qwen2ForCausalLM.from_pretrained(
+                pretrained_name,
+                torch_dtype=platform_settings['dtype']
+            )
+            model = TDTFForCausalLM(config)
             model.copy_weights_from_pretrained(base_model)
             del base_model  # Free memory
         return model

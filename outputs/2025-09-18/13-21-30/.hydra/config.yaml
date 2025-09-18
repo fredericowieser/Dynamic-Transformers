@@ -1,0 +1,36 @@
+model:
+  type: tdtf
+  size: 0.5B
+data:
+  dataset_name: wikitext
+  dataset_config: wikitext-2-raw-v1
+  split: train
+  max_length: 128
+  batch_size: 4
+  shuffle: true
+  num_workers: 0
+training:
+  num_epochs: 1
+  max_steps: 5
+  gradient_accumulation_steps: 1
+  gradient_clip_val: 1.0
+  eval_interval: 5
+  eval_samples: 10
+  from_scratch: true
+  optimizer:
+    lr: 0.0001
+    weight_decay: 0.01
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_epsilon: 1.0e-08
+    scheduler: cosine
+    warmup_ratio: 0.0
+system:
+  output_dir: outputs/test_tdtf_quick
+  compile: false
+  num_workers: 0
+  seed: 42
+logging:
+  log_interval: 1
+  save_interval: 5
+  eval_interval: 5
