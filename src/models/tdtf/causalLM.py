@@ -228,3 +228,13 @@ class TDTFForCausalLM(BaseDynamicModel):
         return param_groups
 
     def copy_weights_from_pretrained(self, pretrained_model):
+        """Copy weights from a pretrained Qwen2 model to the TDTF model.
+
+        This method copies weights for shared components (embeddings, norms, LM head)
+        and for the Qwen2DecoderLayer parts within TDTFLayer.
+        TDTFTransitionNetwork, TDTFPredictiveRouter, and TDTFCausalRouter are left
+        with their random initialization.
+        """
+        super().copy_weights_from_pretrained(pretrained_model)
+
+        log.info("Starting weight copying from pretrained model to TDTF model.")
