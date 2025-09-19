@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP, Qwen2RMSNorm
+from transformers import Qwen2Config
 
 
 class DTFPriorNetwork(nn.Module):
