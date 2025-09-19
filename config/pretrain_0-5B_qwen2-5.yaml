@@ -48,8 +48,8 @@ training:
   gradient_clip_val: 1.0
   optimizer:
     base_model_lr: 1.0e-4
-    tpn_router_lr: 1.0e-2
-    causal_router_lr: 1.0e-1
+    tpn_router_lr: 1.0e-3
+    causal_router_lr: 1.0e-2
     weight_decay: 0.01
     warmup_ratio: 0.01
     scheduler: cosine
