@@ -152,6 +152,7 @@ def main(cfg: DictConfig):
     accelerator = Accelerator(
         mixed_precision=cfg.system.precision,
         gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
+        gradient_checkpointing=cfg.training.gradient_checkpointing,
     )
 
     # Initialize Weights & Biases
@@ -212,11 +213,6 @@ def main(cfg: DictConfig):
         cfg.training.mode == 'scratch',
         cfg
     )
-
-    # Enable gradient checkpointing to save memory
-    if cfg.training.gradient_checkpointing:
-        log.info("Enabling gradient checkpointing.")
-        accelerator.gradient_checkpointing_enable(model)
 
     # Apply LoRA if enabled
     if cfg.peft.enabled:
