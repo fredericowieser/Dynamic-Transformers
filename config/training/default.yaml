@@ -2,7 +2,7 @@
 
 training:
   mode: ??? # Must be specified: scratch or transfer
-  num_epochs: 1
+  num_epochs: 10
   max_steps: -1
   accumulate_grad_batches: 64
   eval_interval: 10000
