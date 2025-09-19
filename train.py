@@ -157,7 +157,7 @@ def main(cfg: DictConfig):
             project_name=cfg.logging.wandb.project,
             config=OmegaConf.to_container(cfg, resolve=True),
             # FIX: Pass wandb entity from config
-            entity=cfg.logging.wandb.entity,
+            # entity=cfg.logging.wandb.entity, # Removed as not supported by Accelerate
         )
 
     # Load tokenizer
