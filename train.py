@@ -3,7 +3,7 @@
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import hydra
 import torch
