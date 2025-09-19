@@ -66,6 +66,10 @@ class DTFForCausalLM(BaseDynamicModel):
         hidden_states = inputs_embeds
         B, T, D = hidden_states.shape
 
+        past_key_values_length = 0
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
+
         # Always prepare a 4D causal attention mask
         causal_mask = _prepare_4d_causal_attention_mask(
             attention_mask, (B, T), hidden_states, past_key_values_length
