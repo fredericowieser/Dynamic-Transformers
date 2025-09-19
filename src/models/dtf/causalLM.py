@@ -250,7 +250,7 @@ class DTFForCausalLM(BaseDynamicModel):
                 for name, param in layer.named_parameters():
                     if not param.requires_grad:
                         continue
-                    if "prior_ffn" in name:
+                    if "prior_network" in name:
                         prior_ffn_params.append(param)
                     else:
                         base_model_params.append(param)

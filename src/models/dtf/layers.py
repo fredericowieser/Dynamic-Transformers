@@ -244,7 +244,7 @@ class DTFDynamicLayer(nn.Module):
             # `processed` contains the output of the second TF-Block for selected tokens.
             # To get TF-Block(H_{post,i}^{(l)}), we subtract the input to that block (which is hidden_states[batch_idx, token_idx]).
             tf_block_output_for_selected = processed - hidden_states[batch_idx, token_idx]
-            weighted_tf_block_output = selected_scores.unsqueeze(-1) * tf_block_output_for_selected
+            weighted_tf_block_output = (selected_scores.unsqueeze(-1) * tf_block_output_for_selected).to(final_hidden_states.dtype)
             final_hidden_states[batch_idx, token_idx] = hidden_states[batch_idx, token_idx] + weighted_tf_block_output
         else:
             # During inference, it's a hard gate: either processed or original H_post
