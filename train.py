@@ -32,13 +32,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 log = logging.getLogger(__name__)
 
 
-def train_step(model: nn.Module, batch: dict) -> Dict[str, Any]:
+def train_step(model: nn.Module, batch: dict, **forward_kwargs) -> Dict[str, Any]:
     """Execute single training step."""
-    outputs = model(**batch)
-    if isinstance(outputs, dict):
-        loss = outputs["loss"]
-    else: # Assume it's a CausalLMOutputWithPast or similar object
-        loss = outputs.loss
+    outputs = model(**batch, **forward_kwargs)
+    loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
     return outputs, loss
 
 
@@ -226,6 +223,38 @@ def main(cfg: DictConfig):
     steps_per_epoch = len(train_loader) // cfg.training.accumulate_grad_batches
     num_training_steps = steps_per_epoch * cfg.training.num_epochs
 
+    if "router" not in cfg.model or "beta_schedule" not in cfg.model.router:
+        raise ValueError("Missing cfg.model.router.beta_schedule")
+    sched_cfg = cfg.model.router.beta_schedule
+    required_sched_keys = ["type", "beta_ce_start", "beta_ce_end", "beta_cu_start", "beta_cu_end", "warmup_steps"]
+    for k in required_sched_keys:
+        if k not in sched_cfg:
+            raise ValueError(f"Missing cfg.model.router.beta_schedule.{k}")
+
+    def compute_beta_values(step: int, total_steps: int) -> Tuple[float, float]:
+        # Warmup then schedule over [warmup_steps, total_steps]
+        warmup = int(sched_cfg.warmup_steps)
+        stype = sched_cfg.type  # 'linear' or 'cosine' (extend as needed)
+
+        if step <= warmup:
+            r = 0.0
+        else:
+            denom = max(1, total_steps - warmup)
+            r = min(1.0, (step - warmup) / denom)
+
+        def slinear(s0, s1):
+            return s0 + r * (s1 - s0)
+
+        def scos(s0, s1):
+            # cosine from s0 to s1
+            import math
+            return s0 + 0.5 * (1.0 - math.cos(math.pi * r)) * (s1 - s0)
+
+        f = slinear if stype == "linear" else scos
+        beta_ce = f(float(sched_cfg.beta_ce_start), float(sched_cfg.beta_ce_end))
+        beta_cu = f(float(sched_cfg.beta_cu_start), float(sched_cfg.beta_cu_end))
+        return beta_ce, beta_cu
+
     optimizer, scheduler = setup_optimizer_and_scheduler(
         model, cfg, num_training_steps
     )
@@ -250,7 +279,16 @@ def main(cfg: DictConfig):
                 break
             
             with accelerator.accumulate(model):
-                outputs, loss = train_step(model, batch)
+                # Compute scheduled β values for this step
+                beta_ce, beta_cu = compute_beta_values(global_step, num_training_steps)
+
+                # Forward with scheduled β (only for tdtf)
+                forward_kwargs = {}
+                if cfg.model.type == "tdtf":
+                    forward_kwargs["beta_ce"] = beta_ce
+                    forward_kwargs["beta_cu"] = beta_cu
+
+                outputs, loss = train_step(model, batch, **forward_kwargs)
                 accelerator.backward(loss)
 
                 if cfg.training.use_gradient_clipping:
@@ -274,6 +312,9 @@ def main(cfg: DictConfig):
                 "train/loss": loss.detach().float().item(),
                 "train/perplexity": perplexity.item(),
             }
+            if cfg.model.type == "tdtf":
+                log_metrics["train/beta_ce"] = beta_ce
+                log_metrics["train/beta_cu"] = beta_cu
 
             current_prior_loss_weight = 0.0
             if cfg.model.get("prior_loss_schedule") and total_prior_loss > 0:

@@ -2,14 +2,14 @@
 
 defaults:
   - _self_
-  - system: default # Pull in system defaults
-  - model: default  # Pull in model defaults
-  - data: default   # Pull in data defaults
-  - training: default # Pull in training defaults
-  - logging: default # Pull in logging defaults
+  - system: default
+  - model: default
+  - data: default
+  - training: default
+  - logging: default
 
 run:
-  name: "qwen2.5-0.5B-dtf-pretrain-${now:%Y-%m-%d_%H-%M-%S}"
+  name: "qwen2.5-0.5B-tdtf-pretrain-${now:%Y-%m-%d_%H-%M-%S}"
   output_dir: "outputs/${run.name}"
   seed: 42
   run_final_evaluation: True
@@ -18,18 +18,36 @@ model:
   type: tdtf
   size: 0.5B
   attn_implementation: "flash_attention_2"
-  # freeze_base_model: False # Default is False in config/model/default.yaml, which is correct for transfer learning where base model is also fine-tuned.
+
+  # Required TDTF hyperparameters (no defaults in code)
+  tpn_loss_weight: 0.05
+  causal_loss_weight: 0.10
+  tdtf_capacity: 0.50
+  ma_window: 100
+  o_ce_init: 1.025
+  m_cu_init: 1.10
+  prior_ffn_intermediate_size_factor: 0.0625
+  student_routing_mode: "topk"  # or "threshold"
+
+  router:
+    beta_schedule:
+      type: "cosine"           # "linear" or "cosine"
+      beta_ce_start: 0.3       # start low (soft gating)
+      beta_ce_end: 6.0         # end higher (hard gating)
+      beta_cu_start: 0.3
+      beta_cu_end: 6.0
+      warmup_steps: 1000       # warmup before ramp
 
 training:
-  mode: finetune # Indicates transfer learning/fine-tuning, not scratch training
+  mode: finetune
   num_epochs: 1
   accumulate_grad_batches: 64
   max_steps: -1
   eval_interval: 100
-  use_gradient_clipping: True # Good practice for finetuning
+  use_gradient_clipping: True
   gradient_clip_val: 1.0
   optimizer:
-    lr: 1.0e-5 # Base learning rate for differential learning rates (base model)
+    lr: 1.0e-5
     weight_decay: 0.01
     warmup_ratio: 0.01
     scheduler: cosine
@@ -42,7 +60,7 @@ system:
   precision: bf16
   use_flash_attention: true
   compile_model: false
-  num_workers: 4 # Increased workers for server environment
+  num_workers: 4
   pin_memory: true
   persistent_workers: true
   torch_dtype: bfloat16
@@ -50,8 +68,8 @@ system:
 logging:
   wandb:
     enabled: true
-    project: "Dynamic-Transformers-Pretrain" # Changed project name for clarity
-    entity: "huawei-noahs-ark" # Assuming this is the correct entity
+    project: "Dynamic-Transformers-Pretrain"
+    entity: "huawei-noahs-ark"
     log_interval: 50
 
 peft:

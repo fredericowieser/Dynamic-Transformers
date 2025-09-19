@@ -4,7 +4,7 @@
 
 The Temporal Dynamic Transformer (TDT) is a conditional computation architecture that gates the execution of entire Transformer (TF) blocks. It operates under a student-teacher framework with two distinct modes: a training-time "teacher" mode and an inference-time "student" mode.
 
-- During training, a powerful, non-causal Predictive Router observes the output of a TF block to make an optimal routing decision. This decision is used as a supervisory signal.
+- During training, a powerful, Predictive Router observes the output of a TF block to make an optimal routing decision. This decision is used as a supervisory signal. We only use this during training as it requires us to have access to the output of the attention mechanism for the previous token at our given
 - During inference, a lightweight, Causal Router predicts this decision using only causally available information, making its choice *before* the TF block is executed.
 
 This document specifies the complete end-to-end logic for implementing the TDT architecture.
@@ -31,8 +31,20 @@ First, compute the full TF block output for the current token $t$. This provides
 
 The residual update is:
 $$
-\Delta x_t^{(l)} = \text{TF-Block}(x_t^{(l-1)}) - x_t^{(l-1)}
+\Delta x_t^{(l)} = \text{TF-Block}(x_t^{(l-1)})
 $$
+
+For a given token \(x_t^{(l-1)}\) (part of the sequence \(X^{(l-1)}\)) at layer \(l\), the \(\text{TF-Block}\) calculates an update \(\Delta x_t^{(l)}\) as:
+
+$$ \Delta x_t^{(l)} = \text{MHA}\left(\text{Norm}\left(X^{(l-1)}\right)\right)_t + \text{FFN}\left(\text{Norm}\left(x_t^{(l-1)} + \text{MHA}\left(\text{Norm}\left(X^{(l-1)}\right)\right)_t\right)\right) $$
+
+Where:
+*   \(\text{Norm}(\cdot)\): Normalization function (e.g., LayerNorm, RMSNorm).
+*   \(\text{MHA}(\cdot)\): Multi-Head Attention function operating on the full sequence.
+*   \(\text{FFN}(\cdot)\): Position-wise Feed-Forward Network (MLP).
+*   \((\cdot)_t\): Denotes extracting the \(t\)-th token's vector from a sequence output.
+*   \(X^{(l-1)}\): The entire sequence of token representations input to layer \(l\).
+*   \(x_t^{(l-1)}\): The representation of token \(t\) within \(X^{(l-1)}\).
 
 The final output state for the layer is:
 $$
