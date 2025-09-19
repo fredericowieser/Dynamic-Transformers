@@ -75,7 +75,9 @@ class TDTFForCausalLM(BaseDynamicModel):
             position_ids = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1)
 
         # Prepare attention mask
-        if attention_mask is not None:
+        if attention_mask is None and self.config.attn_implementation == "flash_attention_2":
+            attention_mask = torch.ones((B, T), device=hidden_states.device, dtype=torch.bool)
+        elif attention_mask is not None:
             if self.config.attn_implementation == "flash_attention_2":
                 # Flash Attention 2 expects a 2D boolean mask (batch_size, sequence_length)
                 # where True means attend and False means pad. Assuming input attention_mask
