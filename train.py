@@ -152,7 +152,6 @@ def main(cfg: DictConfig):
     accelerator = Accelerator(
         mixed_precision=cfg.system.precision,
         gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
-        cpu_offload=True,
     )
 
     # Initialize Weights & Biases
