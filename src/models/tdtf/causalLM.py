@@ -6,6 +6,8 @@ from typing import Optional, Tuple, Union, List, Dict, Any
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+
 from ..base.dynamic_model import BaseDynamicModel
 from .layers import TDTFLayer
 
@@ -33,11 +35,14 @@ class TDTFForCausalLM(BaseDynamicModel):
             self.freeze_main_transformer_blocks()
 
     def _setup_layers(self):
-        """Setup TDTF layers."""
+        """Setup TDTF layers with alternating TF and TDTF layers."""
         self.layers = nn.ModuleList()
 
         for i in range(self.config.num_hidden_layers):
-            self.layers.append(TDTFLayer(self.config, i))
+            if i % 2 == 0: # Even layers are standard TF layers
+                self.layers.append(Qwen2DecoderLayer(self.config, i))
+            else: # Odd layers are TDTF layers
+                self.layers.append(TDTFLayer(self.config, i))
 
     def forward(
         self,
@@ -101,41 +106,56 @@ class TDTFForCausalLM(BaseDynamicModel):
 
             past_key_value = past_key_values[i] if past_key_values is not None else None
 
-            # Forward through TDTF layer
-            layer_output = layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_value,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                position_embeddings=position_embeddings,
-            )
+            # Forward through layer
+            if isinstance(layer, TDTFLayer):
+                layer_output = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_value,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    position_embeddings=position_embeddings,
+                )
+                # Update hidden states
+                hidden_states = layer_output['hidden_states']
 
-            # Update hidden states
-            hidden_states = layer_output['hidden_states']
+                # Accumulate losses (training only)
+                if self.training:
+                    if 'tpn_loss' in layer_output and layer_output['tpn_loss'] is not None:
+                        total_tpn_loss += layer_output['tpn_loss']
+                    if 'causal_loss' in layer_output and layer_output['causal_loss'] is not None:
+                        total_causal_loss += layer_output['causal_loss']
 
-            # Accumulate losses (training only)
-            if self.training:
-                if 'tpn_loss' in layer_output and layer_output['tpn_loss'] is not None:
-                    total_tpn_loss += layer_output['tpn_loss']
-                if 'causal_loss' in layer_output and layer_output['causal_loss'] is not None:
-                    total_causal_loss += layer_output['causal_loss']
+                # Accumulate router stats
+                if 'router_stats' in layer_output:
+                    for k, v in layer_output['router_stats'].items():
+                        if k not in total_router_stats:
+                            total_router_stats[k] = []
+                        total_router_stats[k].append(v)
 
-            # Accumulate router stats
-            if 'router_stats' in layer_output:
-                for k, v in layer_output['router_stats'].items():
-                    if k not in total_router_stats:
-                        total_router_stats[k] = []
-                    total_router_stats[k].append(v)
+                # Handle caching and attention outputs
+                if use_cache and 'past_key_value' in layer_output:
+                    next_decoder_cache += (layer_output['past_key_value'],)
 
-            # Handle caching and attention outputs
-            if use_cache and 'past_key_value' in layer_output:
-                next_decoder_cache += (layer_output['past_key_value'],)
-
-            if output_attentions and 'attention_weights' in layer_output:
-                if layer_output['attention_weights'] is not None:
-                    all_attentions += (layer_output['attention_weights'],)
+                if output_attentions and 'attention_weights' in layer_output:
+                    if layer_output['attention_weights'] is not None:
+                        all_attentions += (layer_output['attention_weights'],)
+            else: # Qwen2DecoderLayer
+                layer_outputs = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    position_embeddings=position_embeddings,
+                )
+                hidden_states = layer_outputs[0]
+                if use_cache:
+                    next_decoder_cache += (layer_outputs[1],)
+                if output_attentions:
+                    all_attentions += (layer_outputs[2],)
 
         # Final norm
         hidden_states = self.norm(hidden_states)
@@ -187,6 +207,9 @@ class TDTFForCausalLM(BaseDynamicModel):
             if isinstance(layer, TDTFLayer):
                 # TDTFLayer contains a standard Qwen2DecoderLayer as its 'transformer_block'
                 layer.transformer_block.load_state_dict(pretrained_layer.state_dict())
+            elif isinstance(layer, Qwen2DecoderLayer):
+                # If it's a direct Qwen2DecoderLayer, copy weights to it directly
+                layer.load_state_dict(pretrained_layer.state_dict())
         log.info("Finished copying weights to TDTF model.")
 
     def get_trainable_parameters(self) -> List[Dict[str, Any]]:

@@ -5,4 +5,4 @@ logging:
     enabled: true
     project: "Dynamic-Transformers"
     entity: "huawei-noahs-ark"
-    log_interval: 50
+    log_interval: 1
