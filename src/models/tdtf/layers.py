@@ -155,8 +155,10 @@ class TDTFLayer(nn.Module):
             selected_hidden_states = hidden_states[selected_batch_indices, selected_token_indices]
             selected_hidden_states = selected_hidden_states.unsqueeze(0) # [1, num_selected_tokens, D]
 
-            selected_attention_mask = _prepare_4d_causal_attention_mask(
-                None, (1, num_selected_tokens), selected_hidden_states, 0
+            selected_attention_mask = torch.ones(
+                1, num_selected_tokens,
+                device=hidden_states.device,
+                dtype=torch.bool
             )
 
             selected_position_ids = None
