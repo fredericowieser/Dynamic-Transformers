@@ -101,7 +101,7 @@ class TDTFLayer(nn.Module):
         causal_probs = torch.sigmoid(causal_scores)
 
         # Causal router loss (BCE with binary targets from teacher)
-        causal_loss = F.binary_cross_entropy(causal_probs, binary_targets.detach())
+        causal_loss = F.binary_cross_entropy_with_logits(causal_scores, binary_targets.detach())
 
         return {
             'hidden_states': x_posterior,  # Use posterior as output
