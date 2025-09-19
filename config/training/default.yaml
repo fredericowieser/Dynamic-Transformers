@@ -8,6 +8,7 @@ training:
   eval_interval: 100
   use_gradient_clipping: False
   gradient_clip_val: 1.0
+  gradient_checkpointing: True
 
   optimizer:
     lr: 1.0e-5

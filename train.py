@@ -213,6 +213,11 @@ def main(cfg: DictConfig):
         cfg
     )
 
+    # Enable gradient checkpointing to save memory
+    if cfg.training.gradient_checkpointing:
+        log.info("Enabling gradient checkpointing.")
+        accelerator.gradient_checkpointing_enable(model)
+
     # Apply LoRA if enabled
     if cfg.peft.enabled:
         log.info("Applying LoRA to the model.")
