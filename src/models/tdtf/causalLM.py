@@ -68,6 +68,7 @@ class TDTFForCausalLM(BaseDynamicModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
+        log.info(f"Initial hidden_states shape: {hidden_states.shape}")
         B, T, D = hidden_states.shape
 
         # Setup position ids
@@ -88,6 +89,7 @@ class TDTFForCausalLM(BaseDynamicModel):
         total_router_stats = {}
 
         for i, layer in enumerate(self.layers):
+            log.info(f"Before layer {i} ({type(layer).__name__}), hidden_states shape: {hidden_states.shape}")
             if all_hidden_states is not None:
                 all_hidden_states += (hidden_states,)
 
@@ -154,6 +156,7 @@ class TDTFForCausalLM(BaseDynamicModel):
                     next_decoder_cache += (layer_outputs[1],)
                 if output_attentions:
                     all_attentions += (layer_outputs[2],)
+            log.info(f"After layer {i} ({type(layer).__name__}), hidden_states shape: {hidden_states.shape}")
 
         # Final norm
         hidden_states = self.norm(hidden_states)
