@@ -12,7 +12,10 @@ model:
   params: {}
 
   dtf_capacity: 0.5
-  prior_loss_weight: 0.05
+  prior_loss_schedule:
+    initial_weight: 0.05
+    final_weight: 0.05
+    decay_steps: 0 # Set to 0 for constant weight, or a positive integer for decay
   causal_loss_weight: 0.01 # This is for TDTF, not DTF. Kept for compatibility.
   base_model_lr_scale: 1.0
   prior_ffn_lr_scale: 100.0 # 1.0e-3 / 1.0e-5
@@ -31,6 +34,8 @@ model:
   ma_window: 100
   o_ce_init: 1.025
   m_cu_init: 1.1
+
+  freeze_base_model: False
 
   scratch_config:
     vocab_size: 151936

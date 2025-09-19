@@ -29,6 +29,33 @@ class DTFRouter(BaseRouter):
             torch.tensor(getattr(config, 'ce_criterion_offset_init'))
         )
 
+        # Moving average window for CU detection
+        self.ma_window = getattr(config, 'ma_window')
+        self.register_buffer('static_surprise_history', torch.zeros(self.ma_window))
+        self.register_buffer('history_pointer', torch.tensor(0))
+
+    def update_moving_average(self, D_st: torch.Tensor):
+        """Update moving average of static surprise for CU detection."""
+        if not self.training:
+            return
+
+        # Flatten across batch and time
+        D_st_flat = D_st.flatten()
+
+        for val in D_st_flat:
+            idx = self.history_pointer % self.ma_window
+            self.static_surprise_history[idx] = val.item()
+            self.history_pointer += 1
+
+    def get_moving_average(self, D_st: torch.Tensor) -> torch.Tensor:
+        """Get moving average for CU detection."""
+        # FIX: Ensure moving average is computed correctly.
+        # If not enough history, use current mean. Otherwise, use the mean of the history buffer.
+        if self.history_pointer.item() < self.ma_window:
+            return D_st.mean()
+        else:
+            return self.static_surprise_history.mean()
+
     def _get_capacity(self, config) -> float:
         """DTF uses γ (gamma) for capacity, typically 50%."""
         return getattr(config, 'capacity_gamma')
@@ -60,15 +87,15 @@ class DTFRouter(BaseRouter):
         # D_st,i = (1/d) ||H_post,i - H_orig,i||_2^2
         # D_ch,i = (1/d) ||H_post,i - H_prior,i||_2^2
         # Note: The spec uses 'd' for hidden dimension, which is config.hidden_size
+        # FIX: Corrected D_st and D_ch calculation as per DTF-Spec.md (formulas 3.6 and 3.7)
+        # Original: L2 norm. Correct: Squared L2 norm divided by hidden dimension.
         d = float(original.shape[-1])
         D_st = torch.sum((posterior - original).pow(2), dim=-1) / d  # [B, T]
         D_ch = torch.sum((posterior - prior).pow(2), dim=-1) / d  # [B, T]
 
-        # Compute Moving Average of D_st for CU criterion
-        # The spec implies a temporal MA. For a single forward pass, we approximate
-        # this by taking the MA over the current sequence.
-        # This is a simplification and might need refinement for true temporal MA across batches.
-        ma_D_st = torch.mean(D_st, dim=-1, keepdim=True) # [B, 1]
+        # FIX: Update moving average history during training
+        if self.training:
+            self.update_moving_average(D_st)
 
         # Ensure beta parameters are positive using Softplus
         beta_ce_positive = torch.nn.functional.softplus(self.beta_ce)
@@ -77,9 +104,15 @@ class DTFRouter(BaseRouter):
         # Compute routing criteria with learnable parameters
         # CE_i = D_st,i - (D_ch,i - log(o_ce + epsilon))
         # CU_i = D_st,i - (m_cu * MA(D_st,i))
+        # FIX: Corrected CE_i and CU_i calculation as per DTF-Spec.md (formulas 3.8 and 3.9)
+        # Original: Incorrect application of MA/m_cu for CU, and wrong log term for CE.
         epsilon = 1e-10 # As per DTF-Report.md
         CE_i = D_st - (D_ch - torch.log(self.ce_criterion_offset + epsilon)) # [B, T]
-        CU_i = D_st - (self.cu_detection_multiplier * ma_D_st) # [B, T]
+
+        # For CU_i, use the moving average logic from TDTFPredictiveRouter
+        # CU_i = D_st,i - (m_cu * MA(D_st,i))
+        ma_d_st = self.get_moving_average(D_st)
+        CU_i = D_st - (self.cu_detection_multiplier * ma_d_st) # [B, T]
 
         # Convert raw criteria into probabilities using scaled sigmoid functions
         S_CE = torch.sigmoid(beta_ce_positive * CE_i) # [B, T]

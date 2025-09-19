@@ -25,6 +25,10 @@ class TDTFForCausalLM(BaseDynamicModel):
 
         self._setup_layers()
 
+        # FIX: Freeze main transformer blocks if configured
+        if getattr(config, 'freeze_base_model', False):
+            self.freeze_main_transformer_blocks()
+
     def _setup_layers(self):
         """Setup TDTF layers."""
         self.layers = nn.ModuleList()
@@ -152,3 +156,21 @@ class TDTFForCausalLM(BaseDynamicModel):
             "causal_loss": total_causal_loss,
             "router_stats": total_router_stats,
         }
+
+    def copy_weights_from_pretrained(self, pretrained_model):
+        """Copy weights from a pretrained Qwen2 model to the TDTF model.
+
+        This method copies weights for shared components (embeddings, norms, LM head)
+        and for the Qwen2DecoderLayer parts within TDTFLayer.
+        TDTFTransitionNetwork, TDTFPredictiveRouter, and TDTFCausalRouter are left
+        with their random initialization.
+        """
+        super().copy_weights_from_pretrained(pretrained_model)
+
+        # Copy weights for each layer
+        for i, layer in enumerate(self.layers):
+            pretrained_layer = pretrained_model.model.layers[i] # Corresponding layer in pretrained model
+
+            if isinstance(layer, TDTFLayer):
+                # TDTFLayer contains a standard Qwen2DecoderLayer as its 'transformer_block'
+                layer.transformer_block.load_state_dict(pretrained_layer.state_dict())

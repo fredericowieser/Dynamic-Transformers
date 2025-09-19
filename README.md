@@ -84,6 +84,7 @@ The `run_training.sh` script provides a unified interface for all training modes
 #   dtf        - Dynamic Transformer
 #   mod        - Mixture of Depths
 #   standard   - Standard Transformer
+#   tdtf       - Temporal Dynamic Transformer (new in this repo)
 ```
 
 ### Training Examples
@@ -100,16 +101,41 @@ The `run_training.sh` script provides a unified interface for all training modes
 ./run_training.sh quick standard
 ```
 
-#### Full Training
+#### Laptop 10M Wikitext Training (CPU-friendly)
+This configuration is designed for quick local testing on a CPU, using a very small model (10M parameters) and a subset of the Wikitext dataset.
+
+```bash
+python train.py --config-name=laptop_10m_wikitext
+```
+
+#### Full Training from Scratch
 ```bash
 # Train DTF from scratch (10 epochs)
 ./run_training.sh scratch dtf
 
-# Train MoD with transfer learning (5 epochs)
-./run_training.sh transfer mod
+# Train MoD from scratch (5 epochs)
+./run_training.sh scratch mod
 
 # Train Standard Transformer from scratch
 ./run_training.sh scratch standard
+```
+
+#### Transfer Learning from Qwen2.5 (0.5B and above)
+This mode allows you to fine-tune DTF, MoD, or TDTF models by initializing their core transformer layers with weights from a pre-trained Qwen2.5 model (e.g., 0.5B, 1.5B, 3B).
+
+```bash
+# Transfer learn DTF from Qwen2.5-0.5B
+./run_training.sh transfer dtf model.size=0.5B
+
+# Transfer learn MoD from Qwen2.5-1.5B
+./run_training.sh transfer mod model.size=1.5B
+
+# Transfer learn TDTF from Qwen2.5-3B
+./run_training.sh transfer tdtf model.size=3B
+
+# Example: Transfer learn DTF from Qwen2.5-0.5B and freeze base transformer blocks
+# This is useful for focusing training on the dynamic components.
+./run_training.sh transfer dtf model.size=0.5B model.freeze_base_model=True
 ```
 
 #### Direct Training with Hydra
@@ -178,12 +204,22 @@ Then run:
 - **Efficiency**: ~12.5% of tokens processed per layer
 - **Details**: See [MoD-Spec.md](MoD-Spec.md)
 
+### Temporal Dynamic Transformer (TDTF)
+- **Innovation**: Teacher-student framework for temporal event detection and conditional computation.
+- **Key Components**:
+  - Transition Network (TPN) predicts residual updates.
+  - Predictive Router (teacher) uses surprise metrics (CE/CU) for optimal routing decisions during training.
+  - Causal Router (student) learns to predict teacher's decisions for efficient inference.
+- **Efficiency**: Conditional computation based on temporal events.
+- **Details**: See [TDTF-Spec.md](docs/TDTF-Spec.md)
+
 ## 🎛️ Configuration
 
 ### Model Parameters
-- `model.type`: Architecture type (`standard`/`dtf`/`mod`)
-- `model.size`: Model size (`0.5B`/`1.5B`/`3B`)
+- `model.type`: Architecture type (`standard`/`dtf`/`mod`/`tdtf`)
+- `model.size`: Model size (`0.5B`/`1.5B`/`3B`/`10M`)
 - `training.from_scratch`: Train from scratch vs transfer learning
+- `model.freeze_base_model`: (New) Set to `True` to freeze the weights of the main Qwen2.5 transformer blocks during transfer learning.
 
 ### DTF-Specific Parameters
 - `dtf_capacity`: Fraction of tokens to process (default: 0.125)
@@ -194,12 +230,21 @@ Then run:
 - `mod_capacity`: Fraction of tokens to process (default: 0.125)
 - `mod_aux_loss_weight`: Load balancing weight (default: 0.01)
 
+### TDTF-Specific Parameters
+- `tdtf_capacity`: Fraction of tokens to process (default: 0.5)
+- `tpn_loss_weight`: Weight for the Transition Network (TPN) auxiliary loss (default: 0.05)
+- `causal_loss_weight`: Weight for the Causal Router auxiliary loss (default: 0.01)
+- `ma_window`: Window size for the Moving Average calculation in the Predictive Router (default: 100)
+- `o_ce_init`: Initial offset for the Expected Change (CE) criterion (default: 1.025)
+- `m_cu_init`: Initial multiplier for the Unexpected Change (CU) criterion (default: 1.1)
+
+
 ## 💾 Platform Support
 
 The training script automatically detects and optimizes for:
 
 - **CUDA GPUs**: BF16, AMP, Flash Attention
-- **Apple Silicon**: Metal Performance Shaders (MPS), FP32
+- **Apple Silicon**: Metal Performance Schedulers (MPS), FP32
 - **CPU**: Fallback with appropriate settings
 
 ## 📊 Monitoring
@@ -234,6 +279,7 @@ class MyModel(BaseDynamicModel):
 - **[DTF-Spec.md](DTF-Spec.md)**: Dynamic Transformer architecture details
 - **[MoD-Spec.md](MoD-Spec.md)**: Mixture of Depths architecture details
 - **[Qwen-Spec.md](Qwen-Spec.md)**: Qwen2.5 baseline architecture details
+- **[TDTF-Spec.md](TDTF-Spec.md)**: Temporal Dynamic Transformer architecture details
 - **[TRAINING_GUIDE.md](TRAINING_GUIDE.md)**: Comprehensive training guide
 
 ## 🚀 Performance
@@ -243,11 +289,13 @@ All models are optimized for efficiency:
 - **Standard Transformer**: Full computational baseline
 - **DTF**: ~7-8x computational savings with comparable performance
 - **MoD**: ~7-8x computational savings with learned routing
+- **TDTF**: Designed for efficient temporal processing.
 
 Memory usage scales with model size:
 - **0.5B models**: ~3-4GB GPU memory
 - **1.5B models**: ~8-10GB GPU memory
 - **3B models**: ~16-20GB GPU memory
+- **10M models**: Minimal memory usage, suitable for CPU.
 
 ## 📄 License
 

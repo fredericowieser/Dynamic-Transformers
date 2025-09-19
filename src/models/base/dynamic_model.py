@@ -137,3 +137,16 @@ class BaseDynamicModel(nn.Module):
     def enable_input_require_grads(self):
         """Enable gradients for input embeddings (needed for gradient checkpointing)."""
         self.embed_tokens.requires_grad_(True)
+
+    def freeze_main_transformer_blocks(self):
+        """Freezes the parameters of the main transformer blocks.
+        This method should be called after model initialization and weight copying.
+        Parameters that are part of the dynamic components (PriorFFN, Routers)
+        should be explicitly unfrozen by their respective get_trainable_parameters methods
+        or by setting requires_grad=True after this call.
+        """
+        for name, param in self.named_parameters():
+            # Freeze all parameters by default
+            param.requires_grad = False
+            # Log which parameters are being frozen
+            # print(f"Frozen: {name}")

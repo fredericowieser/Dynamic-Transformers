@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, Dict, Any
 
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
 from .priors import TDTFTransitionNetwork
 from .routers import TDTFPredictiveRouter, TDTFCausalRouter
@@ -142,51 +143,52 @@ class TDTFLayer(nn.Module):
         processed_tokens = 0
 
         # Process each token based on routing decision
-        for t in range(T):
-            for b in range(B):
-                if routing_decisions[b, t] == 1.0:
-                    # Process this token through TF block
-                    token_input = hidden_states[b:b+1, t:t+1, :]  # [1, 1, D]
+        # FIX: Vectorized token processing for efficiency
+        selected_batch_indices, selected_token_indices = routing_decisions.nonzero(as_tuple=True)
+        num_selected_tokens = selected_batch_indices.numel()
 
-                    # Prepare attention mask for single token
-                    token_mask = None
-                    if attention_mask is not None:
-                        token_mask = attention_mask[b:b+1, :, t:t+1, :t+1]  # Causal mask up to position t
+        if num_selected_tokens > 0:
+            selected_hidden_states = hidden_states[selected_batch_indices, selected_token_indices]
+            selected_hidden_states = selected_hidden_states.unsqueeze(0) # [1, num_selected_tokens, D]
 
-                    # Prepare position info
-                    token_pos_ids = None
-                    if position_ids is not None:
-                        token_pos_ids = position_ids[b:b+1, t:t+1]
+            selected_attention_mask = _prepare_4d_causal_attention_mask(
+                None, (1, num_selected_tokens), selected_hidden_states, 0
+            )
 
-                    token_pos_emb = None
-                    if position_embeddings is not None:
-                        cos, sin = position_embeddings
-                        token_pos_emb = (cos[b:b+1, t:t+1], sin[b:b+1, t:t+1])
+            selected_position_ids = None
+            if position_ids is not None:
+                selected_position_ids = position_ids[selected_batch_indices, selected_token_indices].unsqueeze(0)
 
-                    # Process through TF block
-                    layer_outputs = self.transformer_block(
-                        token_input,
-                        attention_mask=token_mask,
-                        position_ids=token_pos_ids,
-                        past_key_value=past_key_values,
-                        use_cache=use_cache,
-                        output_attentions=output_attentions,
-                        position_embeddings=token_pos_emb,
-                    )
+            selected_position_embeddings = None
+            if position_embeddings is not None:
+                cos, sin = position_embeddings
+                selected_cos = cos[selected_batch_indices, selected_token_indices].unsqueeze(0)
+                selected_sin = sin[selected_batch_indices, selected_token_indices].unsqueeze(0)
+                selected_position_embeddings = (selected_cos, selected_sin)
 
-                    if isinstance(layer_outputs, tuple):
-                        processed_token = layer_outputs[0]  # [1, 1, D]
-                        if cache is None and layer_outputs[1] is not None:
-                            cache = layer_outputs[1]
-                        if attn_weights is None and len(layer_outputs) > 2:
-                            attn_weights = layer_outputs[2]
-                    else:
-                        processed_token = layer_outputs
+            layer_outputs = self.transformer_block(
+                selected_hidden_states,
+                attention_mask=selected_attention_mask,
+                position_ids=selected_position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                position_embeddings=selected_position_embeddings,
+            )
 
-                    # Update output
-                    output_states[b, t, :] = processed_token[0, 0, :]
-                    processed_tokens += 1
-                # else: token passes through unchanged (residual connection)
+            if isinstance(layer_outputs, tuple):
+                processed_tokens = layer_outputs[0].squeeze(0)
+                cache = layer_outputs[1] if len(layer_outputs) > 1 else None
+                attn_weights = layer_outputs[2] if len(layer_outputs) > 2 else None
+            else:
+                processed_tokens = layer_outputs.squeeze(0)
+                cache = None
+                attn_weights = None
+
+            output_states[selected_batch_indices, selected_token_indices] = processed_tokens
+
+        processed_tokens = num_selected_tokens # Update processed_tokens count
+
 
         causal_stats['processed_tokens'] = processed_tokens
         causal_stats['total_tokens'] = B * T

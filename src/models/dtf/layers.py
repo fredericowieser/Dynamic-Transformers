@@ -236,17 +236,18 @@ class DTFDynamicLayer(nn.Module):
         # Re-merge selected tokens back into the original sequence
         final_hidden_states = hidden_states.clone()
 
+        # FIX: Corrected undefined 'g_bin' variable and applied G_cont weighting as per spec.
+        # Use batch_idx and token_idx from self.router.select_tokens for indexing.
         if self.training:
             # Apply G_cont weighting to the TF-Block output for selected tokens
             # The spec formula is H_i^(l+1) = H_{post,i}^{(l)} + G_{cont,i} * TF-Block(H_{post,i}^{(l)}) if i in S
-            # Here, `processed` contains H_{post,i}^{(l)} + TF-Block(H_{post,i}^{(l)}) for selected tokens
-            # So, we need to subtract H_{post,i}^{(l)} to get TF-Block(H_{post,i}^{(l)}),
-            # multiply by G_cont, and then add H_{post,i}^{(l)} back.
-            tf_block_output_for_selected = processed - hidden_states[g_bin]
-            weighted_tf_block_output = scores[g_bin].unsqueeze(-1) * tf_block_output_for_selected
-            final_hidden_states[g_bin] = hidden_states[g_bin] + weighted_tf_block_output
+            # `processed` contains the output of the second TF-Block for selected tokens.
+            # To get TF-Block(H_{post,i}^{(l)}), we subtract the input to that block (which is hidden_states[batch_idx, token_idx]).
+            tf_block_output_for_selected = processed - hidden_states[batch_idx, token_idx]
+            weighted_tf_block_output = selected_scores.unsqueeze(-1) * tf_block_output_for_selected
+            final_hidden_states[batch_idx, token_idx] = hidden_states[batch_idx, token_idx] + weighted_tf_block_output
         else:
             # During inference, it's a hard gate: either processed or original H_post
-            final_hidden_states[g_bin] = processed
+            final_hidden_states[batch_idx, token_idx] = processed
 
         return final_hidden_states, aux_loss, stats, cache, attn_weights

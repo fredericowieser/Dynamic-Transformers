@@ -19,7 +19,7 @@ from accelerate.utils import set_seed
 import wandb
 from peft import LoraConfig, get_peft_model
 
-from src.data.datasets import get_dataloader
+from src.data.mixed_dataset import MixedDataset # Changed import
 from src.training.utils import (
     create_model,
     save_checkpoint,
@@ -97,7 +97,8 @@ def evaluate(model, dataloader, accelerator, cfg, tokenizer):
 
                     with torch.no_grad():
                         outputs = self.model(input_ids=input_ids, labels=labels)
-                        neg_log_likelihood = outputs.loss
+                        # FIX: Access loss using dictionary key for consistency with model outputs
+                        neg_log_likelihood = outputs["loss"]
                     res.append((neg_log_likelihood.item(), True)) # (loglikelihood, is_greedy)
                 return res
 
@@ -155,6 +156,8 @@ def main(cfg: DictConfig):
         accelerator.init_trackers(
             project_name=cfg.logging.wandb.project,
             config=OmegaConf.to_container(cfg, resolve=True),
+            # FIX: Pass wandb entity from config
+            entity=cfg.logging.wandb.entity,
         )
 
     # Load tokenizer
@@ -164,10 +167,39 @@ def main(cfg: DictConfig):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Create data module (replaces get_dataloader)
+    log.info("Setting up data module...")
+    datamodule = MixedDataset(
+        dataset_configs=cfg.data.dataset_configs,
+        tokenizer_name=cfg.data.tokenizer_name,
+        block_size=cfg.data.block_size,
+        batch_size=cfg.data.batch_size, # Passed for Hydra compatibility
+        validation_split_percentage=cfg.data.validation_split_percentage,
+    )
+    datamodule.setup() # Process and load datasets
+
     # Create data loaders
     log.info("Creating data loaders...")
-    train_loader = get_dataloader(cfg, tokenizer, split='train')
-    eval_loader = get_dataloader(cfg, tokenizer, split='validation')
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False) # Define data_collator here
+
+    train_loader = torch.utils.data.DataLoader(
+        datamodule.train_dataset,
+        shuffle=True,
+        collate_fn=data_collator,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.system.num_workers, # Use num_workers from system config
+        pin_memory=cfg.system.pin_memory,
+        drop_last=True,
+    )
+    eval_loader = torch.utils.data.DataLoader(
+        datamodule.val_dataset,
+        shuffle=False, # No need to shuffle validation data
+        collate_fn=data_collator,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.system.num_workers, # Use num_workers from system config
+        pin_memory=cfg.system.pin_memory,
+        drop_last=False, # Don't drop last batch for evaluation
+    )
 
     # Create model
     log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.training.mode == 'scratch'})")
@@ -214,6 +246,9 @@ def main(cfg: DictConfig):
         optimizer.zero_grad()
 
         for step, batch in enumerate(train_loader):
+            if progress_bar.n >= num_training_steps:
+                break
+            
             with accelerator.accumulate(model):
                 outputs, loss = train_step(model, batch)
                 accelerator.backward(loss)
@@ -226,7 +261,7 @@ def main(cfg: DictConfig):
                 optimizer.zero_grad()
 
             # Extract auxiliary losses and router stats
-            prior_loss = outputs.get("prior_loss", torch.tensor(0.0, device=loss.device)).detach().float()
+            total_prior_loss = outputs.get("prior_loss", torch.tensor(0.0, device=loss.device)).detach().float()
             causal_loss = outputs.get("causal_loss", torch.tensor(0.0, device=loss.device)).detach().float()
             aux_loss = outputs.get("aux_loss", torch.tensor(0.0, device=loss.device)).detach().float() # For MoD
             router_stats = outputs.get("router_stats", {})
@@ -240,16 +275,49 @@ def main(cfg: DictConfig):
                 "train/perplexity": perplexity.item(),
             }
 
-            log_metrics["train/prior_loss"] = prior_loss.item()
+            current_prior_loss_weight = 0.0
+            if cfg.model.get("prior_loss_schedule") and total_prior_loss > 0:
+                schedule_cfg = cfg.model.prior_loss_schedule
+                initial_w = schedule_cfg.initial_weight
+                final_w = schedule_cfg.final_weight
+                decay_steps = schedule_cfg.decay_steps
+
+                if decay_steps > 0 and global_step < decay_steps:
+                    progress = global_step / decay_steps
+                    current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
+                else:
+                    current_prior_loss_weight = final_w
+                
+                loss = loss + total_prior_loss * current_prior_loss_weight
+            
+            log_metrics["train/prior_loss"] = total_prior_loss.item()
+            log_metrics["train/prior_loss_weight"] = current_prior_loss_weight
             log_metrics["train/causal_loss"] = causal_loss.item()
             log_metrics["train/mod_aux_loss"] = aux_loss.item() # For MoD
+
 
             # Process and add router stats
             def process_router_stats(stats: Dict[str, Any], model_type: str) -> Dict[str, float]:
                 processed = {}
                 if model_type == "dtf":
-                    for k, v in stats.items():
-                        processed[f"train/router_stats/{k}"] = v
+                    # Log VPR signals
+                    if "S_CE_mean" in stats:
+                        processed["train_vpr_signals/S_CE_mean"] = stats["S_CE_mean"]
+                    if "S_CU_mean" in stats:
+                        processed["train_vpr_signals/S_CU_mean"] = stats["S_CU_mean"]
+                    if "G_cont_mean" in stats:
+                        processed["train_vpr_signals/G_cont_mean"] = stats["G_cont_mean"]
+                    
+                    # Log VPR router parameters
+                    if "beta_ce" in stats:
+                        processed["train_vpr_router/beta_ce"] = stats["beta_ce"]
+                    if "beta_cu" in stats:
+                        processed["train_vpr_router/beta_cu"] = stats["beta_cu"]
+                    if "o_ce" in stats:
+                        processed["train_vpr_router/o_ce"] = stats["o_ce"]
+                    if "m_cu" in stats:
+                        processed["train_vpr_router/m_cu"] = stats["m_cu"]
+
                 elif model_type == "mod":
                     for i, layer_stats in enumerate(stats):
                         for k, v in layer_stats.items():

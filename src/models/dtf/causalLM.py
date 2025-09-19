@@ -22,6 +22,10 @@ class DTFForCausalLM(BaseDynamicModel):
         self.causal_loss_weight = getattr(config, 'causal_loss_weight')
         self._setup_layers()
 
+        # FIX: Freeze main transformer blocks if configured
+        if getattr(config, 'freeze_base_model', False):
+            self.freeze_main_transformer_blocks()
+
     def _setup_layers(self):
         """Setup alternating decision and dynamic layers."""
         self.layers = nn.ModuleList()

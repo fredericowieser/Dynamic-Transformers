@@ -19,6 +19,10 @@ class MoDForCausalLM(BaseDynamicModel):
         self.causal_loss_weight = getattr(config, 'causal_loss_weight')
         self._setup_layers()
 
+        # FIX: Freeze main transformer blocks if configured
+        if getattr(config, 'freeze_base_model', False):
+            self.freeze_main_transformer_blocks()
+
     def _setup_layers(self):
         """Setup MoD layers - apply to every other layer as per paper."""
         self.layers = nn.ModuleList()
@@ -158,3 +162,23 @@ class MoDForCausalLM(BaseDynamicModel):
             "aux_loss": total_aux_loss,
             "router_stats": total_router_stats,
         }
+
+    def copy_weights_from_pretrained(self, pretrained_model):
+        """Copy weights from a pretrained Qwen2 model to the MoD model.
+
+        This method copies weights for shared components (embeddings, norms, LM head)
+        and for the Qwen2DecoderLayer parts within MoDLayer and standard Qwen2DecoderLayers.
+        MoDRouter and CausalMoDRouter are left with their random initialization.
+        """
+        super().copy_weights_from_pretrained(pretrained_model)
+
+        # Copy weights for each layer
+        for i, layer in enumerate(self.layers):
+            pretrained_layer = pretrained_model.model.layers[i] # Corresponding layer in pretrained model
+
+            if isinstance(layer, MoDLayer):
+                # MoDLayer contains a standard Qwen2DecoderLayer as its 'block'
+                layer.block.load_state_dict(pretrained_layer.state_dict())
+            elif isinstance(layer, Qwen2DecoderLayer):
+                # Standard Qwen2DecoderLayer
+                layer.load_state_dict(pretrained_layer.state_dict())
