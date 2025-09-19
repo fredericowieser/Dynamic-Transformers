@@ -79,18 +79,6 @@ class DTFForCausalLM(BaseDynamicModel):
         if position_ids is None:
             position_ids = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1)
 
-        # Prepare attention mask
-        if attention_mask is not None:
-            current_attention_mask = attention_mask
-            if current_attention_mask is not None:
-                if self.config.attn_implementation != "flash_attention_2":
-                    current_attention_mask = _prepare_4d_causal_attention_mask(
-                        current_attention_mask, (B, T), hidden_states, 0
-                    )
-                else:
-                    # Temporarily set attention_mask to None for Flash Attention 2 debugging
-                    current_attention_mask = None
-
         # Get rotary embeddings
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         position_embeddings = (cos, sin)
@@ -115,7 +103,7 @@ class DTFForCausalLM(BaseDynamicModel):
                 # Process decision layer
                 decision_output = layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=causal_mask, # Use causal_mask
                     position_ids=position_ids,
                     past_key_values=past_key_value,
                     use_cache=use_cache,
@@ -141,7 +129,7 @@ class DTFForCausalLM(BaseDynamicModel):
                 hidden_states, aux_loss, stats, cache, attn_weights = layer(
                     hidden_states,
                     decision_output,
-                    attention_mask=attention_mask,
+                    attention_mask=causal_mask, # Use causal_mask
                     position_ids=position_ids,
                     past_key_values=past_key_value,
                     use_cache=use_cache,
