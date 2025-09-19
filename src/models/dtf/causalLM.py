@@ -56,6 +56,10 @@ class DTFForCausalLM(BaseDynamicModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
+        # Temporarily disable use_cache during training for Flash Attention 2 debugging
+        if self.training:
+            use_cache = False
+
         # Get embeddings
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
