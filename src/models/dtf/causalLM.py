@@ -56,6 +56,13 @@ class DTFForCausalLM(BaseDynamicModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
+        if input_ids is None and inputs_embeds is None:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        # Get embeddings
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
         hidden_states = inputs_embeds
         B, T, D = hidden_states.shape
 
