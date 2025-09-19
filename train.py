@@ -336,8 +336,8 @@ def main(cfg: DictConfig):
                 loss_causal_router = causal_loss_weight * causal_loss_scaled
 
                 # Perform backward passes for each loss
-                accelerator.backward(loss_base_tf)
-                accelerator.backward(loss_tpn_router)
+                accelerator.backward(loss_base_tf, retain_graph=True)
+                accelerator.backward(loss_tpn_router, retain_graph=True)
                 accelerator.backward(loss_causal_router)
 
                 if accelerator.sync_gradients:
