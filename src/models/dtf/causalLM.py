@@ -69,9 +69,15 @@ class DTFForCausalLM(BaseDynamicModel):
 
         # Prepare attention mask
         if attention_mask is not None:
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask, (B, T), hidden_states, 0
-            )
+            current_attention_mask = attention_mask
+            if current_attention_mask is not None:
+                if self.config.attn_implementation != "flash_attention_2":
+                    current_attention_mask = _prepare_4d_causal_attention_mask(
+                        current_attention_mask, (B, T), hidden_states, 0
+                    )
+                else:
+                    # For Flash Attention 2, ensure the mask is a boolean padding mask
+                    current_attention_mask = current_attention_mask.bool()
 
         # Get rotary embeddings
         cos, sin = self.rotary_emb(hidden_states, position_ids)
