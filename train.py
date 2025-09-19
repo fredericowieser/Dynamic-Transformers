@@ -126,7 +126,7 @@ def evaluate(model, dataloader, accelerator, cfg, tokenizer):
                 for metric, value in task_results.items():
                     if isinstance(value, (int, float)):
                         lm_eval_log["lm_eval"][f"{task_name}/{metric}"] = value
-            accelerator.log(lm_eval_log, step=accelerator.num_steps)
+            wandb.log(lm_eval_log, step=accelerator.num_steps)
 
         # Unmerge LoRA weights if they were merged
         if cfg.peft.enabled and cfg.lm_eval.merge_lora_for_eval:
@@ -152,12 +152,12 @@ def main(cfg: DictConfig):
     )
 
     # Initialize Weights & Biases
-    if cfg.logging.wandb.enabled:
-        accelerator.init_trackers(
-            project_name=cfg.logging.wandb.project,
-            config=OmegaConf.to_container(cfg, resolve=True),
-            # FIX: Pass wandb entity from config
-            # entity=cfg.logging.wandb.entity, # Removed as not supported by Accelerate
+    if cfg.logging.wandb.enabled and accelerator.is_main_process:
+        wandb.init(
+            project=cfg.logging.wandb.project,
+            entity=cfg.logging.wandb.entity,
+            name=cfg.run.name,
+            config=OmegaConf.to_container(cfg, resolve=True)
         )
 
     # Load tokenizer
@@ -332,7 +332,7 @@ def main(cfg: DictConfig):
             log_metrics.update(processed_router_stats)
 
             if accelerator.is_main_process and (global_step + 1) % cfg.logging.wandb.log_interval == 0:
-                accelerator.log(log_metrics, step=global_step)
+                wandb.log(log_metrics, step=global_step)
                 accelerator.print(
                     f"Epoch {epoch}, Step {global_step+1}: "
                     f"Loss = {loss.detach().float():.4f}, "
@@ -353,7 +353,7 @@ def main(cfg: DictConfig):
                 eval_loss = evaluate(unwrapped_model, eval_loader, accelerator, cfg, tokenizer)
                 eval_perplexity = torch.exp(torch.tensor(eval_loss))
 
-                accelerator.log({
+                wandb.log({
                     "val/loss": eval_loss,
                     "val/perplexity": eval_perplexity.item(),
                 }, step=global_step)

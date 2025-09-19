@@ -62,5 +62,5 @@ push_to_hub:
 lm_eval:
   enabled: false
   tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
-  batch_size: 2
+  batch_size: 1
   merge_lora_for_eval: True
