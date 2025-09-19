@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union, List, Dict, Any
@@ -187,28 +188,44 @@ class DTFForCausalLM(BaseDynamicModel):
         PriorFFN and DTFRouter are left with their random initialization.
         """
         super().copy_weights_from_pretrained(pretrained_model)
+        logging.info("Starting weight copying from pretrained model to DTF model.")
 
         # Copy weights for each layer
         for i, layer in enumerate(self.layers):
+            # Determine the corresponding pretrained layer index
+            # Both Decision and Dynamic layers map to the same original Qwen2 layer for weight copying
+            pretrained_layer_idx = i // 2
+            pretrained_layer = pretrained_model.model.layers[pretrained_layer_idx]
+
+            logging.info(
+                f"  DTF Layer {i} ({type(layer).__name__}) will copy weights from "
+                f"Pretrained Layer {pretrained_layer_idx} ({type(pretrained_layer).__name__})."
+            )
+
             if isinstance(layer, DTFDecisionLayer):
                 # Decision layer contains a standard Qwen2DecoderLayer's components
                 # and a PriorFFN (which should be randomly initialized).
                 layer.block.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                logging.info(f"    Copied self_attn weights for DTF Layer {i}.")
                 layer.block.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                logging.info(f"    Copied mlp weights for DTF Layer {i}.")
                 layer.block.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                logging.info(f"    Copied input_layernorm weights for DTF Layer {i}.")
                 layer.block.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+                logging.info(f"    Copied post_attention_layernorm weights for DTF Layer {i}.")
 
             elif isinstance(layer, DTFDynamicLayer):
                 # Dynamic layer contains a second standard Qwen2DecoderLayer's components
                 # and a DTFRouter (which should be randomly initialized).
-                # The index for the pretrained model needs to account for the alternating structure.
-                # If DecisionLayer is at i, DynamicLayer is at i+1, so original layer index is (i+1)//2
-                pretrained_layer = pretrained_model.model.layers[(i - 1) // 2] # Original Qwen2 layers
-
                 layer.block.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                logging.info(f"    Copied self_attn weights for DTF Layer {i}.")
                 layer.block.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                logging.info(f"    Copied mlp weights for DTF Layer {i}.")
                 layer.block.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                logging.info(f"    Copied input_layernorm weights for DTF Layer {i}.")
                 layer.block.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+                logging.info(f"    Copied post_attention_layernorm weights for DTF Layer {i}.")
+        logging.info("Finished copying weights to DTF model.")
 
     def get_trainable_parameters(self) -> List[Dict[str, Any]]:
         """Returns parameter groups for differential learning rates.
