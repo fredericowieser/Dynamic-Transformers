@@ -237,31 +237,19 @@ class DTFForCausalLM(BaseDynamicModel):
         prior_ffn_params = []
         router_params = []
 
-        # Parameters from BaseDynamicModel (embeddings, final norm, lm_head)
         for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
-            if "embed_tokens" in name or "norm" in name or "lm_head" in name:
-                base_model_params.append(param)
 
-        # Parameters from Decision and Dynamic Layers
-        for i, layer in enumerate(self.layers):
-            if isinstance(layer, DTFDecisionLayer):
-                for name, param in layer.named_parameters():
-                    if not param.requires_grad:
-                        continue
-                    if "prior_network" in name:
-                        prior_ffn_params.append(param)
-                    else:
-                        base_model_params.append(param)
-            elif isinstance(layer, DTFDynamicLayer):
-                for name, param in layer.named_parameters():
-                    if not param.requires_grad:
-                        continue
-                    if "router" in name:
-                        router_params.append(param)
-                    else:
-                        base_model_params.append(param)
+            # Check for PriorFFN parameters
+            if "prior_network" in name:
+                prior_ffn_params.append(param)
+            # Check for Router parameters
+            elif "router" in name:
+                router_params.append(param)
+            # All other trainable parameters go to base_model_params
+            else:
+                base_model_params.append(param)
 
         # Define learning rate scales as per Feature-Spec.md
         # These scales will be multiplied by the base_lr from the config.
