@@ -76,8 +76,8 @@ class DTFForCausalLM(BaseDynamicModel):
                         current_attention_mask, (B, T), hidden_states, 0
                     )
                 else:
-                    # For Flash Attention 2, ensure the mask is a boolean padding mask
-                    current_attention_mask = current_attention_mask.bool()
+                    # Temporarily set attention_mask to None for Flash Attention 2 debugging
+                    current_attention_mask = None
 
         # Get rotary embeddings
         cos, sin = self.rotary_emb(hidden_states, position_ids)
