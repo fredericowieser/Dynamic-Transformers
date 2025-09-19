@@ -28,11 +28,14 @@ from src.training.utils import (
 
 from typing import Dict, Any # Added Dict, Any
 
-logging.basicConfig(level=cfg.logging.level, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-
 def train_step(model: nn.Module, batch: dict, **forward_kwargs) -> Dict[str, Any]:
+
+
+@hydra.main(config_path="config", config_name="train", version_base="1.3")
+def main(cfg: DictConfig):
+    logging.basicConfig(level=cfg.logging.level, format='%(asctime)s - %(levelname)s - %(message)s')
     """Execute single training step."""
     outputs = model(**batch, **forward_kwargs)
     loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
