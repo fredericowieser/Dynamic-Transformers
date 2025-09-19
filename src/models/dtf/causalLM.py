@@ -56,9 +56,25 @@ class DTFForCausalLM(BaseDynamicModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-        # Temporarily disable use_cache during training for Flash Attention 2 debugging
-        if self.training:
-            use_cache = False
+        # Always prepare a 4D causal attention mask
+        causal_mask = _prepare_4d_causal_attention_mask(
+            attention_mask, (B, T), hidden_states, past_key_values_length
+        )
+
+        # ... (rest of the forward method)
+
+        for i, layer in enumerate(self.layers):
+            # ...
+            layer_output = layer(
+                hidden_states,
+                attention_mask=causal_mask, # Pass the 4D mask
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                position_embeddings=position_embeddings,
+                # ...
+            )
 
         # Get embeddings
         if inputs_embeds is None:
