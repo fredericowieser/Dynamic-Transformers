@@ -152,7 +152,6 @@ def main(cfg: DictConfig):
     accelerator = Accelerator(
         mixed_precision=cfg.system.precision,
         gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
-        gradient_checkpointing=cfg.training.gradient_checkpointing,
     )
 
     # Initialize Weights & Biases
@@ -225,6 +224,13 @@ def main(cfg: DictConfig):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info(f"Model: {total_params/1e6:.1f}M params ({trainable_params/1e6:.1f}M trainable)")
+
+    # Enable gradient checkpointing if configured
+    if cfg.training.gradient_checkpointing:
+        log.info("Enabling gradient checkpointing on the model.")
+        model.gradient_checkpointing_enable()
+        # This is crucial for gradient checkpointing to work with PEFT models
+        model.enable_input_require_grads()
 
     # Setup training
     steps_per_epoch = len(train_loader) // cfg.training.accumulate_grad_batches
