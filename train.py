@@ -11,7 +11,7 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from lm_eval import evaluator, tasks
 
 from accelerate import Accelerator
