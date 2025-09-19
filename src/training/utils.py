@@ -218,17 +218,28 @@ def setup_optimizer_and_scheduler(
         )
         schedulers[group_name] = scheduler
 
+    # If causal router is not trained, remove its entries
+    if not getattr(cfg.training, 'train_causal_router', True):
+        optimizers.pop('causal_router', None)
+        schedulers.pop('causal_router', None)
+
     # Return optimizers and schedulers in a consistent order
     return (
-        optimizers['base_model'], optimizers['tpn'], optimizers['predictive_router'], optimizers['causal_router'],
-        schedulers['base_model'], schedulers['tpn'], schedulers['predictive_router'], schedulers['causal_router']
+        optimizers['base_model'],
+        optimizers['tpn'],
+        optimizers['predictive_router'],
+        optimizers.get('causal_router', None),
+        schedulers['base_model'],
+        schedulers['tpn'],
+        schedulers['predictive_router'],
+        schedulers.get('causal_router', None)
     )
 
 
 def save_checkpoint(
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: Any,
+    optimizers: List[Optional[torch.optim.Optimizer]],
+    schedulers: List[Optional[Any]],
     epoch: int,
     step: int,
     best_loss: float,
@@ -243,9 +254,12 @@ def save_checkpoint(
 
     # Save training state
     state_path = save_path / "training_state.pt"
+    optimizer_states = {f"optimizer_{i}": opt.state_dict() for i, opt in enumerate(optimizers) if opt is not None}
+    scheduler_states = {f"scheduler_{i}": sch.state_dict() for i, sch in enumerate(schedulers) if sch is not None}
+
     torch.save({
-        'optimizer': optimizer.state_dict(),
-        'scheduler': scheduler.state_dict() if scheduler else None,
+        'optimizer_states': optimizer_states,
+        'scheduler_states': scheduler_states,
         'epoch': epoch,
         'step': step,
         'best_loss': best_loss,
@@ -256,8 +270,8 @@ def save_checkpoint(
 
 def load_checkpoint(
     model: torch.nn.Module,
-    optimizer: Optional[torch.optim.Optimizer],
-    scheduler: Optional[Any],
+    optimizers: List[Optional[torch.optim.Optimizer]],
+    schedulers: List[Optional[Any]],
     load_path: Path
 ) -> Dict[str, Any]:
     """Load training checkpoint."""
@@ -269,11 +283,21 @@ def load_checkpoint(
 
     # Load training state
     state_path = load_path / "training_state.pt"
-    if state_path.exists() and optimizer is not None:
+    if state_path.exists():
         state = torch.load(state_path, map_location='cpu')
-        optimizer.load_state_dict(state['optimizer'])
-        if scheduler and state.get('scheduler'):
-            scheduler.load_state_dict(state['scheduler'])
+        
+        # Load optimizer states
+        optimizer_states = state.get('optimizer_states', {})
+        for i, opt in enumerate(optimizers):
+            if opt is not None and f"optimizer_{i}" in optimizer_states:
+                opt.load_state_dict(optimizer_states[f"optimizer_{i}"])
+
+        # Load scheduler states
+        scheduler_states = state.get('scheduler_states', {})
+        for i, sch in enumerate(schedulers):
+            if sch is not None and f"scheduler_{i}" in scheduler_states:
+                sch.load_state_dict(scheduler_states[f"scheduler_{i}"])
+
         log.info(f"Training state loaded from {state_path}")
         return state
 

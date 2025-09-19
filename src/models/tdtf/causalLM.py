@@ -218,7 +218,7 @@ class TDTFForCausalLM(BaseDynamicModel):
                 'lr_scale': getattr(self.config, 'predictive_router_lr_scale', 1.0),
                 'name': 'predictive_router'
             })
-        if causal_router_params:
+        if getattr(self.config, 'train_causal_router', True) and causal_router_params:
             param_groups.append({
                 'params': causal_router_params,
                 'lr_scale': getattr(self.config, 'causal_router_lr_scale', 1.0),

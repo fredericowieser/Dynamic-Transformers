@@ -272,17 +272,39 @@ def main(cfg: DictConfig):
      scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
     ) = setup_optimizer_and_scheduler(model, cfg, num_training_steps)
 
+    # Filter out None optimizers/schedulers for accelerator.prepare
+    optimizers_to_prepare = [opt for opt in [optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router] if opt is not None]
+    schedulers_to_prepare = [sch for sch in [scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router] if sch is not None]
+
     # Prepare for distributed training
-    (model,
-     optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router,
-     train_loader, eval_loader,
-     scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
-    ) = accelerator.prepare(
+    prepared_items = accelerator.prepare(
         model,
-        optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router,
+        *optimizers_to_prepare,
         train_loader, eval_loader,
-        scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
+        *schedulers_to_prepare
     )
+
+    # Unpack prepared items. The order is model, then optimizers, then loaders, then schedulers.
+    model = prepared_items[0]
+    current_idx = 1
+    optimizer_base_tf = prepared_items[current_idx] ; current_idx += 1
+    optimizer_tpn = prepared_items[current_idx] ; current_idx += 1
+    optimizer_predictive_router = prepared_items[current_idx] ; current_idx += 1
+    if cfg.training.train_causal_router:
+        optimizer_causal_router = prepared_items[current_idx] ; current_idx += 1
+    else:
+        optimizer_causal_router = None
+
+    train_loader = prepared_items[current_idx] ; current_idx += 1
+    eval_loader = prepared_items[current_idx] ; current_idx += 1
+
+    scheduler_base_tf = prepared_items[current_idx] ; current_idx += 1
+    scheduler_tpn = prepared_items[current_idx] ; current_idx += 1
+    scheduler_predictive_router = prepared_items[current_idx] ; current_idx += 1
+    if cfg.training.train_causal_router:
+        scheduler_causal_router = prepared_items[current_idx] ; current_idx += 1
+    else:
+        scheduler_causal_router = None
 
     # Training loop
     log.info("Starting training...")
@@ -332,41 +354,36 @@ def main(cfg: DictConfig):
                 tpn_loss_scaled = tpn_loss / denom
                 causal_loss_scaled = causal_loss / denom
 
-                # Define the three loss terms for backward pass
-                # Loss for Base TF blocks
-                loss_base_tf = lm_loss
+                # Define the loss for the combined group (Base TF blocks + TPN + Predictive Router)
+                # This is LM CE + lambda * MSE_TPN
+                combined_loss = lm_loss + tpn_loss_weight * tpn_loss_scaled
 
-                # Loss for TPN and Predictive Router
-                loss_tpn_router = lm_loss + tpn_loss_weight * tpn_loss_scaled
-
-                # Loss for Causal Router
-                loss_causal_router = causal_loss_weight * causal_loss_scaled
-
-                # Perform backward passes for each loss
-                accelerator.backward(loss_base_tf, retain_graph=True)
-                accelerator.backward(loss_tpn_router, retain_graph=True)
-                accelerator.backward(loss_causal_router)
+                # Perform backward pass for the combined loss
+                accelerator.backward(combined_loss)
 
                 if accelerator.sync_gradients:
                     if cfg.training.use_gradient_clipping:
                         # Clip gradients for all optimizers
                         accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
 
-                    # Step and zero gradients for all optimizers
+                    # Step and zero gradients for the active optimizers
                     optimizer_base_tf.step()
                     optimizer_tpn.step()
                     optimizer_predictive_router.step()
-                    optimizer_causal_router.step()
 
                     scheduler_base_tf.step()
                     scheduler_tpn.step()
                     scheduler_predictive_router.step()
-                    scheduler_causal_router.step()
 
                     optimizer_base_tf.zero_grad()
                     optimizer_tpn.zero_grad()
                     optimizer_predictive_router.zero_grad()
-                    optimizer_causal_router.zero_grad()
+
+                    # If causal router is trained, step and zero its optimizer
+                    if optimizer_causal_router is not None:
+                        optimizer_causal_router.step()
+                        scheduler_causal_router.step()
+                        optimizer_causal_router.zero_grad()
 
             # Extract auxiliary losses and router stats for logging
             # Use the raw (unscaled, un-averaged) losses from model outputs for logging
@@ -386,9 +403,7 @@ def main(cfg: DictConfig):
                 "train/tpn_loss": total_prior_loss_log.item(),
                 "train/causal_loss": causal_loss_log.item(),
                 "train/mod_aux_loss": aux_loss.item(), # For MoD
-                "train/total_loss_base_tf": loss_base_tf.detach().float().item(),
-                "train/total_loss_tpn_router": loss_tpn_router.detach().float().item(),
-                "train/total_loss_causal_router": loss_causal_router.detach().float().item(),
+                "train/combined_loss": combined_loss.detach().float().item(), # New combined loss
             }
             if cfg.model.type == "tdtf":
                 log_metrics["train/beta_ce"] = beta_ce
@@ -480,8 +495,8 @@ def main(cfg: DictConfig):
                     # Save checkpoint needs to be updated to save all optimizers/schedulers
                     save_checkpoint(
                         unwrapped_model,
-                        optimizer_base_tf, # Pass base_tf optimizer
-                        scheduler_base_tf, # Pass base_tf scheduler
+                        [optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router],
+                        [scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router],
                         epoch,
                         global_step,
                         best_eval_loss,
@@ -500,8 +515,10 @@ def main(cfg: DictConfig):
 
     # Save final model
     save_path = Path(cfg.run.output_dir) / "final_model"
-    # Save checkpoint needs to be updated to save all optimizers/schedulers
-    save_checkpoint(accelerator.unwrap_model(model), optimizer_base_tf, scheduler_base_tf, epoch, global_step, best_eval_loss, save_path)
+    save_checkpoint(accelerator.unwrap_model(model), 
+                    [optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router],
+                    [scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router],
+                    epoch, global_step, best_eval_loss, save_path)
 
     # Push to Hugging Face Hub if enabled
     if cfg.push_to_hub.enabled and accelerator.is_main_process:
