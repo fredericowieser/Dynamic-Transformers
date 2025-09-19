@@ -41,7 +41,7 @@ model:
 training:
   mode: finetune
   num_epochs: 1
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 16
   max_steps: -1
   eval_interval: 10000
   use_gradient_clipping: True
@@ -83,5 +83,5 @@ push_to_hub:
 lm_eval:
   enabled: false
   tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
-  batch_size: 1
+  batch_size: 8
   merge_lora_for_eval: True
