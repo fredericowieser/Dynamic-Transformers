@@ -17,6 +17,7 @@ run:
 model:
   type: tdtf
   size: 0.5B
+  attn_implementation: "flash_attention_2"
   # freeze_base_model: False # Default is False in config/model/default.yaml, which is correct for transfer learning where base model is also fine-tuned.
 
 training:
