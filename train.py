@@ -41,6 +41,7 @@ def train_step(model: nn.Module, batch: dict, **forward_kwargs) -> Dict[str, Any
 @hydra.main(config_path="config", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
     logging.basicConfig(level=cfg.logging.level, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.getLogger('src.models.tdtf.layers').setLevel(logging.DEBUG)
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
 
