@@ -54,7 +54,14 @@ class TDTFPredictiveRouter(nn.Module):
         B, T = D_st.shape
         W = min(self.ma_window, T)
         x = D_st.unsqueeze(1)  # [B,1,T]
-        ma = F.avg_pool1d(x, kernel_size=W, stride=1, padding=W - 1, count_include_pad=False)
+
+        # Manual causal padding: pad only on the left
+        # F.avg_pool1d expects padding as (padding_left, padding_right) for the last dimension.
+        # We need W-1 padding on the left.
+        padded_x = F.pad(x, (W - 1, 0), 'constant', 0)
+
+        # Apply avg_pool1d with no internal padding, as we've already padded
+        ma = F.avg_pool1d(padded_x, kernel_size=W, stride=1, count_include_pad=False)
         return ma.squeeze(1)  # [B, T]
 
     def compute_vpr_criteria(
