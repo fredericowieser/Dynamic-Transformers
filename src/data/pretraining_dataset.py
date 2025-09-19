@@ -1,3 +1,4 @@
+import itertools
 import logging
 import os
 from typing import Any
@@ -44,7 +45,7 @@ class PretrainingDataset:
 
     def _group_texts(self, examples: dict[str, list]) -> dict[str, list]:
         """Concatenate and group texts into blocks for next-token prediction."""
-        concatenated = {k: sum(examples[k], []) for k in examples.keys()}
+        concatenated = {k: list(itertools.chain.from_iterable(examples[k])) for k in examples.keys()}
         total_length = len(concatenated[list(examples.keys())[0]])
         total_length = (total_length // self.block_size) * self.block_size
         result = {
