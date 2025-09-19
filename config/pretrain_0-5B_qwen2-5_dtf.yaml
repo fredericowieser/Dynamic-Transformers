@@ -1,0 +1,66 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - system: default # Pull in system defaults
+  - model: default  # Pull in model defaults
+  - data: default   # Pull in data defaults
+  - training: default # Pull in training defaults
+  - logging: default # Pull in logging defaults
+
+run:
+  name: "qwen2.5-0.5B-dtf-pretrain-${now:%Y-%m-%d_%H-%M-%S}"
+  output_dir: "outputs/${run.name}"
+  seed: 42
+  run_final_evaluation: True
+
+model:
+  type: dtf
+  size: 0.5B
+  # freeze_base_model: False # Default is False in config/model/default.yaml, which is correct for transfer learning where base model is also fine-tuned.
+
+training:
+  mode: finetune # Indicates transfer learning/fine-tuning, not scratch training
+  num_epochs: 1
+  accumulate_grad_batches: 16
+  max_steps: -1
+  eval_interval: 100
+  use_gradient_clipping: True # Good practice for finetuning
+  gradient_clip_val: 1.0
+  optimizer:
+    lr: 1.0e-5 # Base learning rate for differential learning rates (base model)
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    scheduler: cosine
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1.0e-8
+
+system:
+  device: cuda
+  precision: bf16
+  use_flash_attention: true
+  compile_model: false
+  num_workers: 4 # Increased workers for server environment
+  pin_memory: true
+  persistent_workers: true
+  torch_dtype: bfloat16
+
+logging:
+  wandb:
+    enabled: true
+    project: "Dynamic-Transformers-Pretrain" # Changed project name for clarity
+    entity: "huawei-noahs-ark" # Assuming this is the correct entity
+    log_interval: 50
+
+peft:
+  enabled: false
+
+push_to_hub:
+  enabled: false
+
+lm_eval:
+  enabled: false
+  tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
+  batch_size: 8
+  merge_lora_for_eval: True
