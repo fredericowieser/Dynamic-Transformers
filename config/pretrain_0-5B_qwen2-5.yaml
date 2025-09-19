@@ -43,7 +43,7 @@ training:
   num_epochs: 1
   accumulate_grad_batches: 4
   max_steps: -1
-  eval_interval: 100
+  eval_interval: 10000
   use_gradient_clipping: True
   gradient_clip_val: 1.0
   optimizer:
