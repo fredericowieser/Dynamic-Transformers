@@ -194,7 +194,7 @@ class DTFForCausalLM(BaseDynamicModel):
         for i, layer in enumerate(self.layers):
             # Determine the corresponding pretrained layer index
             # Both Decision and Dynamic layers map to the same original Qwen2 layer for weight copying
-            pretrained_layer_idx = i // 2
+            pretrained_layer_idx = i
             pretrained_layer = pretrained_model.model.layers[pretrained_layer_idx]
 
             logging.info(
