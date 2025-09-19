@@ -5,7 +5,7 @@ model:
   size: 0.5B # 0.5B, 1.5B, or 3B
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
   use_flash_attention_2: ${system.use_flash_attention}
-  attn_implementation: "flash_attention_2" if ${model.use_flash_attention_2} else "eager"
+  attn_implementation: ${'flash_attention_2' if model.use_flash_attention_2 else 'eager'}
   use_cache: True
   tie_word_embeddings: True
 
