@@ -51,8 +51,14 @@ def create_model_config(
         config = Qwen2Config.from_pretrained(pretrained_name)
         log.info(f"create_model_config: intermediate_size after from_pretrained: {config.intermediate_size}")
 
-    # Ensure _attn_implementation is set
-    config._attn_implementation = cfg.model.get('attn_implementation', 'eager')
+    # Determine attention implementation based on system config
+    if cfg.system.get('use_flash_attention', False):
+        config.attn_implementation = cfg.model.get('attn_implementation', 'flash_attention_2')
+    else:
+        config.attn_implementation = 'sdpa' # Fallback to PyTorch's native SDPA
+
+    # Ensure _attn_implementation is consistent with the public one
+    config._attn_implementation = config.attn_implementation
 
     # Add model-type specific configurations from the provided config
     # Copy all relevant model parameters from cfg.model to the Qwen2Config object
@@ -69,8 +75,7 @@ def create_model_config(
     config.use_cache = cfg.model.get('use_cache', True)
     config.tie_word_embeddings = cfg.model.get('tie_word_embeddings', True)
 
-    # Platform-specific settings
-    config.use_flash_attention = cfg.system.get('use_flash_attention', False)
+    # Platform-specific settings (use_flash_attention is now handled above for attn_implementation)
     config.torch_dtype = cfg.system.get('torch_dtype', 'float32')
 
     return config
