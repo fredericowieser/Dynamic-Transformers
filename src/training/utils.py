@@ -120,21 +120,22 @@ def create_model(
             del base_model  # Free memory
         return model
 
-            elif model_type == "dtf":
-                from ..models.dtf.model import DTFForCausalLM
-                if from_scratch:
-                    log.info(f"Initializing DTF model from scratch with {model_size} config")
-                    model = DTFForCausalLM(config)
-                else:
-                    log.info(f"Initializing DTF model from pretrained {pretrained_name}")
-                    log.info(f"Config intermediate_size before DTFForCausalLM init: {config.intermediate_size}")
-                    base_model = Qwen2ForCausalLM.from_pretrained(
-                        pretrained_name,
-                        torch_dtype=torch_dtype
-                    )
-                    model = DTFForCausalLM(config)
-                    model.copy_weights_from_pretrained(base_model)
-                    del base_model  # Free memory        return model
+    elif model_type == "dtf":
+        from ..models.dtf.model import DTFForCausalLM
+        if from_scratch:
+            log.info(f"Initializing DTF model from scratch with {model_size} config")
+            model = DTFForCausalLM(config)
+        else:
+            log.info(f"Initializing DTF model from pretrained {pretrained_name}")
+            log.info(f"Config intermediate_size before DTFForCausalLM init: {config.intermediate_size}")
+            base_model = Qwen2ForCausalLM.from_pretrained(
+                pretrained_name,
+                torch_dtype=torch_dtype
+            )
+            model = DTFForCausalLM(config)
+            model.copy_weights_from_pretrained(base_model)
+            del base_model  # Free memory
+        return model
 
     elif model_type == "tdtf":
         from ..models.tdtf.model import TDTFForCausalLM
