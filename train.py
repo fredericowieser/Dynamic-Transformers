@@ -51,8 +51,8 @@ def evaluate(model, dataloader, accelerator, cfg, tokenizer):
     for step, batch in enumerate(dataloader):
         with torch.no_grad():
             outputs = model(**batch)
-        loss = outputs["loss"]
-        losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
+        lm_loss = outputs["lm_loss"]
+        losses.append(accelerator.gather(lm_loss.repeat(batch["input_ids"].shape[0])))
 
     losses = torch.cat(losses)
     val_loss = torch.mean(losses).item()
