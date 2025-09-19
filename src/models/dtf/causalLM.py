@@ -18,7 +18,6 @@ class DTFForCausalLM(BaseDynamicModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.prior_loss_weight = getattr(config, 'prior_loss_weight')
         self.causal_loss_weight = getattr(config, 'causal_loss_weight')
         self._setup_layers()
 
@@ -156,9 +155,9 @@ class DTFForCausalLM(BaseDynamicModel):
         # Compute loss
         loss = self.compute_loss(logits, labels)
 
-        # Add prior loss
-        if loss is not None and total_prior_loss > 0:
-            loss = loss + self.prior_loss_weight * total_prior_loss
+        # Add prior loss (handled in training loop based on schedule)
+        # if loss is not None and total_prior_loss > 0:
+        #     loss = loss + self.prior_loss_weight * total_prior_loss
 
         # Calculate averaged router stats
         averaged_router_stats = {}

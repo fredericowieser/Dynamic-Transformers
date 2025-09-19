@@ -16,9 +16,6 @@ from huggingface_hub import HfApi
 log = logging.getLogger(__name__)
 
 
-
-
-
 def create_model_config(
     model_size: str,
     from_scratch: bool,
