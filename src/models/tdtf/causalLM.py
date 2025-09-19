@@ -71,9 +71,16 @@ class TDTFForCausalLM(BaseDynamicModel):
 
         # Prepare attention mask
         if attention_mask is not None:
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask, (B, T), hidden_states, 0
-            )
+            if self.config.attn_implementation == "flash_attention_2":
+                # Flash Attention 2 expects a 2D boolean mask (batch_size, sequence_length)
+                # where True means attend and False means pad. Assuming input attention_mask
+                # is already in this format or can be converted.
+                # For causal attention, Flash Attention handles causality internally.
+                pass # attention_mask is already 2D and will be used as is
+            else:
+                attention_mask = _prepare_4d_causal_attention_mask(
+                    attention_mask, (B, T), hidden_states, 0
+                )
 
         # Get rotary embeddings
         cos, sin = self.rotary_emb(hidden_states, position_ids)
