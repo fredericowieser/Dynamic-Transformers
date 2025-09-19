@@ -193,12 +193,10 @@ class DTFForCausalLM(BaseDynamicModel):
             if isinstance(layer, DTFDecisionLayer):
                 # Decision layer contains a standard Qwen2DecoderLayer's components
                 # and a PriorFFN (which should be randomly initialized).
-                pretrained_layer = pretrained_model.model.layers[i // 2] # Original Qwen2 layers
-
-                layer.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
-                layer.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
-                layer.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
-                layer.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+                layer.block.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                layer.block.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                layer.block.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                layer.block.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
 
             elif isinstance(layer, DTFDynamicLayer):
                 # Dynamic layer contains a second standard Qwen2DecoderLayer's components
@@ -207,10 +205,10 @@ class DTFForCausalLM(BaseDynamicModel):
                 # If DecisionLayer is at i, DynamicLayer is at i+1, so original layer index is (i+1)//2
                 pretrained_layer = pretrained_model.model.layers[(i - 1) // 2] # Original Qwen2 layers
 
-                layer.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
-                layer.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
-                layer.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
-                layer.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
+                layer.block.self_attn.load_state_dict(pretrained_layer.self_attn.state_dict())
+                layer.block.mlp.load_state_dict(pretrained_layer.mlp.state_dict())
+                layer.block.input_layernorm.load_state_dict(pretrained_layer.input_layernorm.state_dict())
+                layer.block.post_attention_layernorm.load_state_dict(pretrained_layer.post_attention_layernorm.state_dict())
 
     def get_trainable_parameters(self) -> List[Dict[str, Any]]:
         """Returns parameter groups for differential learning rates.
