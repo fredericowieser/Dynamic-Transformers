@@ -167,10 +167,61 @@ class TDTFForCausalLM(BaseDynamicModel):
         """
         super().copy_weights_from_pretrained(pretrained_model)
 
+        log.info("Starting weight copying from pretrained model to TDTF model.")
         # Copy weights for each layer
         for i, layer in enumerate(self.layers):
             pretrained_layer = pretrained_model.model.layers[i] # Corresponding layer in pretrained model
 
+            log.info(f"  TDTF Layer {i} ({type(layer).__name__}) will copy weights from Pretrained Layer {i} ({type(pretrained_layer).__name__}).")
+
             if isinstance(layer, TDTFLayer):
                 # TDTFLayer contains a standard Qwen2DecoderLayer as its 'transformer_block'
                 layer.transformer_block.load_state_dict(pretrained_layer.state_dict())
+        log.info("Finished copying weights to TDTF model.")
+
+    def get_trainable_parameters(self) -> List[Dict[str, Any]]:
+        """Returns parameter groups for differential learning rates.
+
+        Groups parameters into: base model, TPN, and Predictive Router.
+        Only includes parameters where requires_grad is True.
+        """
+        base_model_params = []
+        tpn_params = []
+        predictive_router_params = []
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            # Check for TPN parameters
+            if "transition_network" in name:
+                tpn_params.append(param)
+            # Check for Predictive Router parameters
+            elif "predictive_router" in name:
+                predictive_router_params.append(param)
+            # All other trainable parameters go to base_model_params
+            else:
+                base_model_params.append(param)
+
+        # Define learning rate scales
+        param_groups = []
+        if base_model_params:
+            param_groups.append({
+                'params': base_model_params,
+                'lr_scale': getattr(self.config, 'base_model_lr_scale', 1.0),
+                'name': 'base_model'
+            })
+        if tpn_params:
+            param_groups.append({
+                'params': tpn_params,
+                'lr_scale': getattr(self.config, 'tpn_lr_scale', 1.0),
+                'name': 'tpn'
+            })
+        if predictive_router_params:
+            param_groups.append({
+                'params': predictive_router_params,
+                'lr_scale': getattr(self.config, 'predictive_router_lr_scale', 1.0),
+                'name': 'predictive_router'
+            })
+
+        return param_groups
