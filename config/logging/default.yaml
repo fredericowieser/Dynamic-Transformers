@@ -1,6 +1,7 @@
 # @package _global_
 
 logging:
+  level: INFO # Default logging level (e.g., INFO, DEBUG, WARNING, ERROR)
   wandb:
     enabled: true
     project: "Dynamic-Transformers"
