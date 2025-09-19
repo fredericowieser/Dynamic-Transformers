@@ -74,21 +74,6 @@ class TDTFForCausalLM(BaseDynamicModel):
         if position_ids is None:
             position_ids = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1)
 
-        # Prepare attention mask
-        if attention_mask is None and self.config.attn_implementation == "flash_attention_2":
-            attention_mask = torch.ones((B, T), device=hidden_states.device, dtype=torch.bool)
-        elif attention_mask is not None:
-            if self.config.attn_implementation == "flash_attention_2":
-                # Flash Attention 2 expects a 2D boolean mask (batch_size, sequence_length)
-                # where True means attend and False means pad. Assuming input attention_mask
-                # is already in this format or can be converted.
-                # For causal attention, Flash Attention handles causality internally.
-                pass # attention_mask is already 2D and will be used as is
-            else:
-                attention_mask = _prepare_4d_causal_attention_mask(
-                    attention_mask, (B, T), hidden_states, 0
-                )
-
         # Get rotary embeddings
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         position_embeddings = (cos, sin)
@@ -108,11 +93,22 @@ class TDTFForCausalLM(BaseDynamicModel):
 
             past_key_value = past_key_values[i] if past_key_values is not None else None
 
+            # Prepare attention mask for the current layer
+            current_attention_mask = attention_mask
+            if current_attention_mask is None and self.config.attn_implementation == "flash_attention_2":
+                current_attention_mask = torch.ones((B, T), device=hidden_states.device, dtype=torch.bool)
+            elif current_attention_mask is not None:
+                if self.config.attn_implementation != "flash_attention_2":
+                    current_attention_mask = _prepare_4d_causal_attention_mask(
+                        current_attention_mask, (B, T), hidden_states, 0
+                    )
+                # else: current_attention_mask is already 2D and will be used as is for Flash Attention 2
+
             # Forward through layer
             if isinstance(layer, TDTFLayer):
                 layer_output = layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=current_attention_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_value,
                     use_cache=use_cache,
@@ -146,7 +142,7 @@ class TDTFForCausalLM(BaseDynamicModel):
             else: # Qwen2DecoderLayer
                 layer_outputs = layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=current_attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_value,
                     use_cache=use_cache,
