@@ -49,6 +49,7 @@ def create_model_config(
     else:
         # Load full config from pretrained
         config = Qwen2Config.from_pretrained(pretrained_name)
+        log.info(f"create_model_config: intermediate_size after from_pretrained: {config.intermediate_size}")
 
     # Ensure _attn_implementation is set
     config._attn_implementation = cfg.model.get('attn_implementation', 'eager')
@@ -58,9 +59,11 @@ def create_model_config(
     for key, value in cfg.model.items():
         if key not in ['scratch_config', 'params', 'size', 'type', 'pretrained_model_name_or_path', 'use_flash_attention_2', 'attn_implementation', 'use_cache', 'tie_word_embeddings', 'intermediate_size']:
             setattr(config, key, value)
+    log.info(f"create_model_config: intermediate_size after cfg.model.items() loop: {config.intermediate_size}")
     if 'model' in cfg and 'params' in cfg.model: # Keep existing params copy logic
         for key, value in cfg.model.params.items():
             setattr(config, key, value)
+    log.info(f"create_model_config: intermediate_size after cfg.model.params loop: {config.intermediate_size}")
 
     # Common settings for all models
     config.use_cache = cfg.model.get('use_cache', True)
