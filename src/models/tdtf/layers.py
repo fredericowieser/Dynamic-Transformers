@@ -86,6 +86,11 @@ class TDTFLayer(nn.Module):
         )
         predicted_residual = self.transition_network(prev_final_states)
 
+        # Debugging: Log magnitudes of residuals
+        if self.training:
+            log.debug(f"Layer {self.layer_idx} - actual_residual shape: {actual_residual.shape}, mean: {actual_residual.mean().item():.6f}, std: {actual_residual.std().item():.6f}")
+            log.debug(f"Layer {self.layer_idx} - predicted_residual shape: {predicted_residual.shape}, mean: {predicted_residual.mean().item():.6f}, std: {predicted_residual.std().item():.6f}")
+
         # TPN loss (1/d-scaled via MSE on vectors)
         tpn_loss = F.mse_loss(predicted_residual, actual_residual.detach())
 
