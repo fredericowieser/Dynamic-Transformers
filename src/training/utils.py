@@ -56,7 +56,7 @@ def create_model_config(
     # Add model-type specific configurations from the provided config
     # Copy all relevant model parameters from cfg.model to the Qwen2Config object
     for key, value in cfg.model.items():
-        if key not in ['scratch_config', 'params', 'size', 'type', 'pretrained_model_name_or_path', 'use_flash_attention_2', 'attn_implementation', 'use_cache', 'tie_word_embeddings']:
+        if key not in ['scratch_config', 'params', 'size', 'type', 'pretrained_model_name_or_path', 'use_flash_attention_2', 'attn_implementation', 'use_cache', 'tie_word_embeddings', 'intermediate_size']:
             setattr(config, key, value)
     if 'model' in cfg and 'params' in cfg.model: # Keep existing params copy logic
         for key, value in cfg.model.params.items():
