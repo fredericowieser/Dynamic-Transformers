@@ -169,46 +169,60 @@ def setup_optimizer_and_scheduler(
     model: torch.nn.Module,
     cfg: DictConfig,
     num_training_steps: int,
-) -> Tuple[torch.optim.Optimizer, Any]:
-    """Setup optimizer with parameter groups and scheduler."""
+) -> Tuple[torch.optim.Optimizer, torch.optim.Optimizer, torch.optim.Optimizer, Any, Any, Any]:
+    """Setup multiple optimizers with parameter groups and schedulers."""
 
     # Get parameter groups from model
-    if hasattr(model, 'get_trainable_parameters'):
-        param_groups = model.get_trainable_parameters()
-    else:
-        param_groups = [{'params': model.parameters(), 'lr_scale': 1.0, 'name': 'all'}]
+    param_groups = model.get_trainable_parameters()
 
-    # Apply learning rate scales
-    base_lr = cfg.training.optimizer.lr
-    optimizer_groups = []
+    optimizers = {}
+    schedulers = {}
+
+    # Define common optimizer arguments
+    optimizer_kwargs = {
+        "betas": (cfg.training.optimizer.adam_beta1, cfg.training.optimizer.adam_beta2),
+        "eps": cfg.training.optimizer.adam_epsilon,
+        "weight_decay": cfg.training.optimizer.weight_decay,
+    }
 
     for group in param_groups:
-        optimizer_groups.append({
-            'params': group['params'],
-            'lr': base_lr * group['lr_scale'],
-            'weight_decay': cfg.training.optimizer.weight_decay,
-        })
+        group_name = group['name']
+        # Get specific learning rate for this group
+        if group_name == 'base_model':
+            lr = cfg.training.optimizer.base_model_lr
+        elif group_name == 'tpn': # TPN parameters
+            lr = cfg.training.optimizer.tpn_router_lr
+        elif group_name == 'predictive_router': # Predictive Router parameters
+            lr = cfg.training.optimizer.tpn_router_lr # Use same LR as TPN
+        elif group_name == 'causal_router': # Causal Router parameters
+            lr = cfg.training.optimizer.causal_router_lr
+        else:
+            raise ValueError(f"Unknown parameter group name: {group_name}")
 
-        log.info(f"  {group['name']}: {sum(p.numel() for p in group['params'])} params, "
-                f"lr={base_lr * group['lr_scale']:.2e}")
+        log.info(f"  {group_name}: {sum(p.numel() for p in group['params'])} params, "
+                 f"lr={lr:.2e}")
 
-    # Create optimizer
-    optimizer = torch.optim.AdamW(
-        optimizer_groups,
-        betas=(cfg.training.optimizer.adam_beta1, cfg.training.optimizer.adam_beta2),
-        eps=cfg.training.optimizer.adam_epsilon,
+        optimizer = torch.optim.AdamW(
+            [{'params': group['params'], "lr": lr}], # Pass as a list of dicts
+            **optimizer_kwargs
+        )
+        optimizers[group_name] = optimizer
+
+        # Create scheduler for each optimizer
+        num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
+        scheduler = get_scheduler(
+            cfg.training.optimizer.scheduler,
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        schedulers[group_name] = scheduler
+
+    # Return optimizers and schedulers in a consistent order
+    return (
+        optimizers['base_model'], optimizers['tpn'], optimizers['predictive_router'], optimizers['causal_router'],
+        schedulers['base_model'], schedulers['tpn'], schedulers['predictive_router'], schedulers['causal_router']
     )
-
-    # Create scheduler
-    num_warmup_steps = int(num_training_steps * cfg.training.optimizer.warmup_ratio)
-    scheduler = get_scheduler(
-        cfg.training.optimizer.scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps,
-    )
-
-    return optimizer, scheduler
 
 
 def save_checkpoint(

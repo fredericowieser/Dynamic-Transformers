@@ -261,13 +261,20 @@ def main(cfg: DictConfig):
         beta_cu = f(float(sched_cfg.beta_cu_start), float(sched_cfg.beta_cu_end))
         return beta_ce, beta_cu
 
-    optimizer, scheduler = setup_optimizer_and_scheduler(
-        model, cfg, num_training_steps
-    )
+    (optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router, 
+     scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
+    ) = setup_optimizer_and_scheduler(model, cfg, num_training_steps)
 
     # Prepare for distributed training
-    model, optimizer, train_loader, eval_loader, scheduler = accelerator.prepare(
-        model, optimizer, train_loader, eval_loader, scheduler
+    (model,
+     optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router,
+     train_loader, eval_loader,
+     scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
+    ) = accelerator.prepare(
+        model,
+        optimizer_base_tf, optimizer_tpn, optimizer_predictive_router, optimizer_causal_router,
+        train_loader, eval_loader,
+        scheduler_base_tf, scheduler_tpn, scheduler_predictive_router, scheduler_causal_router
     )
 
     # Training loop
@@ -278,7 +285,12 @@ def main(cfg: DictConfig):
     for epoch in range(cfg.training.num_epochs):
         model.train()
         progress_bar = tqdm(range(len(train_loader)), disable=not accelerator.is_main_process)
-        optimizer.zero_grad()
+        
+        # Zero gradients for all optimizers at the start of each epoch
+        optimizer_base_tf.zero_grad()
+        optimizer_tpn.zero_grad()
+        optimizer_predictive_router.zero_grad()
+        optimizer_causal_router.zero_grad()
 
         for step, batch in enumerate(train_loader):
             if progress_bar.n >= num_training_steps:
@@ -294,36 +306,90 @@ def main(cfg: DictConfig):
                     forward_kwargs["beta_ce"] = beta_ce
                     forward_kwargs["beta_cu"] = beta_cu
 
-                outputs, loss = train_step(model, batch, **forward_kwargs)
-                accelerator.backward(loss)
+                outputs = model(**batch, **forward_kwargs) # Get all outputs
 
-                if cfg.training.use_gradient_clipping:
-                    accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
+                lm_loss = outputs["lm_loss"]
+                tpn_loss = outputs["tpn_loss"]
+                causal_loss = outputs["causal_loss"]
 
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
+                # Get loss weights from model config
+                # These are attributes of the model now, not from cfg directly
+                tpn_loss_weight = model.tpn_loss_weight
+                causal_loss_weight = model.causal_loss_weight
 
-            # Extract auxiliary losses and router stats
-            total_prior_loss = outputs.get("prior_loss", torch.tensor(0.0, device=loss.device)).detach().float()
-            causal_loss = outputs.get("causal_loss", torch.tensor(0.0, device=loss.device)).detach().float()
-            aux_loss = outputs.get("aux_loss", torch.tensor(0.0, device=loss.device)).detach().float() # For MoD
+                # Average aux losses across TDTF layers to stabilize magnitude
+                # TDTFLayer is imported from .layers, so it should be available
+                from src.models.tdtf.layers import TDTFLayer
+                tdtf_layers = sum(isinstance(l, TDTFLayer) for l in model.layers)
+                denom = max(1, tdtf_layers) # Avoid division by zero
+                tpn_loss_scaled = tpn_loss / denom
+                causal_loss_scaled = causal_loss / denom
+
+                # Define the three loss terms for backward pass
+                # Loss for Base TF blocks
+                loss_base_tf = lm_loss
+
+                # Loss for TPN and Predictive Router
+                loss_tpn_router = lm_loss + tpn_loss_weight * tpn_loss_scaled
+
+                # Loss for Causal Router
+                loss_causal_router = causal_loss_weight * causal_loss_scaled
+
+                # Perform backward passes for each loss
+                accelerator.backward(loss_base_tf)
+                accelerator.backward(loss_tpn_router)
+                accelerator.backward(loss_causal_router)
+
+                if accelerator.sync_gradients:
+                    if cfg.training.use_gradient_clipping:
+                        # Clip gradients for all optimizers
+                        accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
+
+                    # Step and zero gradients for all optimizers
+                    optimizer_base_tf.step()
+                    optimizer_tpn.step()
+                    optimizer_predictive_router.step()
+                    optimizer_causal_router.step()
+
+                    scheduler_base_tf.step()
+                    scheduler_tpn.step()
+                    scheduler_predictive_router.step()
+                    scheduler_causal_router.step()
+
+                    optimizer_base_tf.zero_grad()
+                    optimizer_tpn.zero_grad()
+                    optimizer_predictive_router.zero_grad()
+                    optimizer_causal_router.zero_grad()
+
+            # Extract auxiliary losses and router stats for logging
+            # Use the raw (unscaled, un-averaged) losses from model outputs for logging
+            total_prior_loss_log = outputs["tpn_loss"].detach().float()
+            causal_loss_log = outputs["causal_loss"].detach().float()
+            # aux_loss is for MoD, keep as is if MoD is still supported
+            aux_loss = outputs.get("aux_loss", torch.tensor(0.0, device=lm_loss.device)).detach().float()
             router_stats = outputs.get("router_stats", {})
 
-            # Calculate perplexity
-            perplexity = torch.exp(loss.detach().float())
+            # Calculate perplexity based on LM loss
+            perplexity = torch.exp(lm_loss.detach().float())
 
             # Prepare metrics for logging
             log_metrics = {
-                "train/loss": loss.detach().float().item(),
+                "train/lm_loss": lm_loss.detach().float().item(),
                 "train/perplexity": perplexity.item(),
+                "train/tpn_loss": total_prior_loss_log.item(),
+                "train/causal_loss": causal_loss_log.item(),
+                "train/mod_aux_loss": aux_loss.item(), # For MoD
+                "train/total_loss_base_tf": loss_base_tf.detach().float().item(),
+                "train/total_loss_tpn_router": loss_tpn_router.detach().float().item(),
+                "train/total_loss_causal_router": loss_causal_router.detach().float().item(),
             }
             if cfg.model.type == "tdtf":
                 log_metrics["train/beta_ce"] = beta_ce
                 log_metrics["train/beta_cu"] = beta_cu
 
+            # Prior loss weight calculation (if applicable, for logging only)
             current_prior_loss_weight = 0.0
-            if cfg.model.get("prior_loss_schedule") and total_prior_loss > 0:
+            if cfg.model.get("prior_loss_schedule") and total_prior_loss_log > 0:
                 schedule_cfg = cfg.model.prior_loss_schedule
                 initial_w = schedule_cfg.initial_weight
                 final_w = schedule_cfg.final_weight
@@ -334,14 +400,7 @@ def main(cfg: DictConfig):
                     current_prior_loss_weight = initial_w - progress * (initial_w - final_w)
                 else:
                     current_prior_loss_weight = final_w
-                
-                loss = loss + total_prior_loss * current_prior_loss_weight
-            
-            log_metrics["train/prior_loss"] = total_prior_loss.item()
             log_metrics["train/prior_loss_weight"] = current_prior_loss_weight
-            log_metrics["train/causal_loss"] = causal_loss.item()
-            log_metrics["train/mod_aux_loss"] = aux_loss.item() # For MoD
-
 
             # Process and add router stats
             def process_router_stats(stats: Dict[str, Any], model_type: str) -> Dict[str, float]:
@@ -382,11 +441,10 @@ def main(cfg: DictConfig):
                 wandb.log(log_metrics, step=global_step)
                 accelerator.print(
                     f"Epoch {epoch}, Step {global_step+1}: "
-                    f"Loss = {loss.detach().float():.4f}, "
+                    f"LM Loss = {lm_loss.detach().float():.4f}, "
                     f"Perplexity = {perplexity:.2f}, "
-                    f"Prior Loss = {log_metrics['train/prior_loss']:.4f}, "
-                    f"Causal Loss = {log_metrics['train/causal_loss']:.4f}, "
-                    f"MoD Aux Loss = {log_metrics['train/mod_aux_loss']:.4f}, "
+                    f"TPN Loss = {total_prior_loss_log:.4f}, "
+                    f"Causal Loss = {causal_loss_log:.4f}, "
                     f"Router Stats Logged: {bool(processed_router_stats)}"
                 )
 
@@ -397,6 +455,10 @@ def main(cfg: DictConfig):
             if (global_step) % cfg.training.eval_interval == 0:
                 accelerator.wait_for_everyone()
                 unwrapped_model = accelerator.unwrap_model(model)
+                # For evaluation, we need to pass the correct optimizer and scheduler
+                # Currently, evaluate function only takes one optimizer/scheduler
+                # This needs to be updated to handle multiple optimizers/schedulers
+                # For now, we'll pass the base_tf optimizer/scheduler for evaluation
                 eval_loss = evaluate(unwrapped_model, eval_loader, accelerator, cfg, tokenizer)
                 eval_perplexity = torch.exp(torch.tensor(eval_loss))
 
@@ -408,10 +470,11 @@ def main(cfg: DictConfig):
 
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
+                    # Save checkpoint needs to be updated to save all optimizers/schedulers
                     save_checkpoint(
                         unwrapped_model,
-                        optimizer,
-                        scheduler,
+                        optimizer_base_tf, # Pass base_tf optimizer
+                        scheduler_base_tf, # Pass base_tf scheduler
                         epoch,
                         global_step,
                         best_eval_loss,
@@ -430,7 +493,8 @@ def main(cfg: DictConfig):
 
     # Save final model
     save_path = Path(cfg.run.output_dir) / "final_model"
-    save_checkpoint(accelerator.unwrap_model(model), optimizer, scheduler, epoch, global_step, best_eval_loss, save_path)
+    # Save checkpoint needs to be updated to save all optimizers/schedulers
+    save_checkpoint(accelerator.unwrap_model(model), optimizer_base_tf, scheduler_base_tf, epoch, global_step, best_eval_loss, save_path)
 
     # Push to Hugging Face Hub if enabled
     if cfg.push_to_hub.enabled and accelerator.is_main_process:

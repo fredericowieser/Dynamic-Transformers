@@ -154,27 +154,77 @@ class TDTFForCausalLM(BaseDynamicModel):
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
-        loss = self.compute_loss(logits, labels)
-
-        # Average aux losses across TDTF layers to stabilize magnitude, then apply weights
-        if loss is not None and self.training:
-            tdtf_layers = sum(isinstance(l, TDTFLayer) for l in self.layers)
-            denom = max(1, tdtf_layers)
-            if total_tpn_loss > 0:
-                loss = loss + self.tpn_loss_weight * (total_tpn_loss / denom)
-            if total_causal_loss > 0:
-                loss = loss + self.causal_loss_weight * (total_causal_loss / denom)
+        loss = self.compute_loss(logits, labels) # This is now lm_loss
 
         if all_hidden_states is not None:
             all_hidden_states += (hidden_states,)
 
         return {
-            "loss": loss,
+            "lm_loss": loss,
             "logits": logits,
             "past_key_values": next_decoder_cache,
             "hidden_states": all_hidden_states,
             "attentions": all_attentions,
-            "tpn_loss": total_tpn_loss.detach(),
-            "causal_loss": total_causal_loss.detach(),
+            "tpn_loss": total_tpn_loss,
+            "causal_loss": total_causal_loss,
             "router_stats": total_router_stats,
         }
+
+    def get_trainable_parameters(self) -> List[Dict[str, Any]]:
+        """Returns parameter groups for differential learning rates.
+
+        Groups parameters into: base model, TPN, Predictive Router, and Causal Router.
+        Only includes parameters where requires_grad is True.
+        """
+        base_model_params = []
+        tpn_params = []
+        predictive_router_params = []
+        causal_router_params = []
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            # Check for TPN parameters
+            if "transition_network" in name:
+                tpn_params.append(param)
+            # Check for Predictive Router parameters
+            elif "predictive_router" in name:
+                predictive_router_params.append(param)
+            # Check for Causal Router parameters
+            elif "causal_router" in name:
+                causal_router_params.append(param)
+            # All other trainable parameters go to base_model_params
+            else:
+                base_model_params.append(param)
+
+        # Define learning rate scales
+        param_groups = []
+        if base_model_params:
+            param_groups.append({
+                'params': base_model_params,
+                'lr_scale': getattr(self.config, 'base_model_lr_scale', 1.0),
+                'name': 'base_model'
+            })
+        if tpn_params:
+            param_groups.append({
+                'params': tpn_params,
+                'lr_scale': getattr(self.config, 'tpn_lr_scale', 1.0),
+                'name': 'tpn'
+            })
+        if predictive_router_params:
+            param_groups.append({
+                'params': predictive_router_params,
+                'lr_scale': getattr(self.config, 'predictive_router_lr_scale', 1.0),
+                'name': 'predictive_router'
+            })
+        if causal_router_params:
+            param_groups.append({
+                'params': causal_router_params,
+                'lr_scale': getattr(self.config, 'causal_router_lr_scale', 1.0),
+                'name': 'causal_router'
+            })
+
+        return param_groups
+
+    def copy_weights_from_pretrained(self, pretrained_model):
