@@ -1,3 +1,4 @@
+import copy
 import torch.nn as nn
 from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP
 
@@ -12,7 +13,7 @@ class TDTFTransitionNetwork(nn.Module):
     def __init__(self, config):
         super().__init__()
         # Create a new config for the MLP with a reduced intermediate size
-        mlp_config = config
+        mlp_config = copy.deepcopy(config)
         mlp_config.intermediate_size = int(config.hidden_size * getattr(config, 'prior_ffn_intermediate_size_factor'))
 
         self.mlp = Qwen2MLP(mlp_config)
