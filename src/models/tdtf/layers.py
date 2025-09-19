@@ -26,8 +26,8 @@ class TDTFLayer(nn.Module):
         self.training_mode = True  # Track if we're in training vs inference mode
 
         # Ensure config has attention implementation
-        if not hasattr(config, '_attn_implementation'):
-            config._attn_implementation = 'eager'
+        if not hasattr(config, 'attn_implementation'):
+            config.attn_implementation = config._attn_implementation if hasattr(config, '_attn_implementation') else 'eager'
 
         # Standard transformer block
         self.transformer_block = Qwen2DecoderLayer(config, layer_idx)
