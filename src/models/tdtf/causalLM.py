@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union, List, Dict, Any
@@ -7,6 +8,8 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_m
 
 from ..base.dynamic_model import BaseDynamicModel
 from .layers import TDTFLayer
+
+log = logging.getLogger(__name__)
 
 
 class TDTFForCausalLM(BaseDynamicModel):
