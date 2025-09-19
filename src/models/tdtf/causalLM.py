@@ -146,16 +146,20 @@ class TDTFForCausalLM(BaseDynamicModel):
                     hidden_states,
                     attention_mask=current_attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_value,
+                    past_key_values=past_key_value,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
                     position_embeddings=position_embeddings,
                 )
-                hidden_states = layer_outputs[0]
-                if use_cache:
-                    next_decoder_cache += (layer_outputs[1],)
-                if output_attentions:
-                    all_attentions += (layer_outputs[2],)
+                if isinstance(layer_outputs, tuple):
+                    hidden_states = layer_outputs[0]
+                    if use_cache:
+                        next_decoder_cache += (layer_outputs[1],)
+                    if output_attentions:
+                        all_attentions += (layer_outputs[2],)
+                else:
+                    hidden_states = layer_outputs # Qwen2DecoderLayer returned hidden_states directly
+
             log.info(f"After layer {i} ({type(layer).__name__}), hidden_states shape: {hidden_states.shape}")
 
         # Final norm
