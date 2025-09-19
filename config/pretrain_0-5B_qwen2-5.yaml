@@ -15,7 +15,7 @@ run:
   run_final_evaluation: True
 
 model:
-  type: tdtf
+  type: dtf
   size: 0.5B
   attn_implementation: "flash_attention_2"
 
