@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,6 +9,8 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_m
 
 from .priors import TDTFTransitionNetwork
 from .routers import TDTFPredictiveRouter, TDTFCausalRouter
+
+log = logging.getLogger(__name__)
 
 
 class TDTFLayer(nn.Module):
@@ -28,6 +31,7 @@ class TDTFLayer(nn.Module):
 
         # Standard transformer block
         self.transformer_block = Qwen2DecoderLayer(config, layer_idx)
+        log.info(f"TDTFLayer {layer_idx}: Qwen2DecoderLayer attention implementation: {config._attn_implementation}")
 
         # Training components (teacher model)
         self.transition_network = TDTFTransitionNetwork(config)
