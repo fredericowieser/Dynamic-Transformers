@@ -1,3 +1,4 @@
+import copy
 from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
@@ -15,7 +16,7 @@ class DTFPriorNetwork(nn.Module):
     def __init__(self, config):
         super().__init__()
         # Create a new config for the MLP with a reduced intermediate size
-        mlp_config = Qwen2Config.from_dict(OmegaConf.to_container(config, resolve=True))
+        mlp_config = copy.deepcopy(config)
         mlp_config.intermediate_size = int(config.hidden_size * getattr(config, 'prior_ffn_intermediate_size_factor'))
 
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
