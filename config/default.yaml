@@ -160,4 +160,6 @@ push_to_hub:
   enabled: False
 
 lm_eval:
-  enabled: False
+  enabled: true
+  tasks: "quick_test" # Comma-separated list of tasks or suites
+  batch_size: 8

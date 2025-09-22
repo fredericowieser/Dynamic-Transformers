@@ -1,3 +1,4 @@
+import json
 import os
 import torch
 import logging
@@ -278,3 +279,18 @@ def evaluate_perplexity(model, dataloader, accelerator):
     
     model.train() # Reset model to training mode
     return avg_loss.item(), perplexity.item()
+
+def save_wandb_info(wandb_run, save_path: Path):
+    """Saves essential wandb run info to a file."""
+    if wandb_run is None:
+        return
+    info = {
+        "project": wandb_run.project,
+        "entity": wandb_run.entity,
+        "run_id": wandb_run.id,
+        "run_name": wandb_run.name,
+    }
+    info_path = save_path / "wandb_info.json"
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=2)
+    log.info(f"Wandb info saved to {info_path}")

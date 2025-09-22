@@ -268,6 +268,33 @@ def main(cfg: DictConfig):
                     schedulers_dict,
                     epoch, global_step, best_eval_loss, save_path)
 
+    # Run final evaluation if enabled
+    if accelerator.is_main_process and cfg.run.run_final_evaluation:
+        log.info("Saving final model in Hugging Face format for evaluation...")
+        unwrapped_model = accelerator.unwrap_model(model)
+        unwrapped_model.save_pretrained(save_path)
+        tokenizer.save_pretrained(save_path)
+
+        if cfg.logging.wandb.enabled and wandb.run is not None:
+            from src.training.utils import save_wandb_info
+            save_wandb_info(wandb.run, save_path)
+
+        if cfg.lm_eval.enabled:
+            log.info("Starting final benchmark evaluation...")
+            import subprocess
+            eval_command = [
+                "python",
+                "run_benchmark_eval.py",
+                "--model_path", str(save_path),
+                "--tasks", cfg.lm_eval.tasks,
+                "--batch_size", str(cfg.lm_eval.batch_size),
+            ]
+            log.info(f"Running evaluation command: {' '.join(eval_command)}")
+            try:
+                subprocess.run(eval_command, check=True)
+            except subprocess.CalledProcessError as e:
+                log.error(f"Benchmark evaluation script failed with error: {e}")
+
     # Push to Hugging Face Hub if enabled
     if cfg.push_to_hub.enabled and accelerator.is_main_process:
         from src.training.utils import push_to_hub
