@@ -226,21 +226,55 @@ def push_to_hub(
     import shutil
     shutil.rmtree(model_dir)
 
+def calculate_metrics(model, batch, global_step=0, max_steps=1):
+    """Performs a forward pass and returns a dictionary of metrics."""
+    outputs = model(
+        input_ids=batch.get("input_ids"),
+        attention_mask=batch.get("attention_mask"),
+        labels=batch.get("labels"),
+        global_step=global_step,
+        max_steps=max_steps
+    )
+    
+    metrics = {}
+    
+    loss = outputs.get('loss')
+    lm_loss = outputs.get('lm_loss')
+    
+    if loss is None:
+        loss = lm_loss
+    
+    if lm_loss is None:
+        lm_loss = loss
+        
+    metrics['loss'] = loss
+    metrics['lm_loss'] = lm_loss
+    
+    # Add other metrics from outputs
+    for key, value in outputs.items():
+        if key not in ['loss', 'lm_loss', 'logits']:
+            metrics[key] = value
+            
+    return metrics
+
+
 def evaluate_perplexity(model, dataloader, accelerator):
     """Calculates validation loss and perplexity."""
     model.eval()
     losses = []
     for batch in dataloader:
         with torch.no_grad():
-            outputs = model(**batch)
+            metrics = calculate_metrics(model, batch)
         
-        loss_key = "lm_loss" if "lm_loss" in outputs else "loss"
-        loss = outputs[loss_key]
-        losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
+        loss = metrics.get("lm_loss")
+        if loss is not None:
+            losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
+
+    if not losses:
+        return 0.0, 1.0
 
     avg_loss = torch.mean(torch.cat(losses))
     perplexity = torch.exp(avg_loss)
     
     model.train() # Reset model to training mode
-    return avg_loss.item(), perplexity.item()
     return avg_loss.item(), perplexity.item()

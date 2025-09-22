@@ -171,14 +171,8 @@ def main(cfg: DictConfig):
                 break
             
             with accelerator.accumulate(model):
-                outputs = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    labels=batch["labels"],
-                    global_step=global_step,
-                    max_steps=num_training_steps
-                )
-                loss = outputs['loss']
+                metrics = calculate_metrics(model, batch, global_step, num_training_steps)
+                loss = metrics['loss']
                 
                 accelerator.backward(loss)
 
