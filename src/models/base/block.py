@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 from typing import Tuple
-from .custom_decoder_layer import CustomQwen2DecoderLayer # Import custom decoder layer
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 class DynamicBlock(nn.Module):
     """
@@ -12,7 +13,8 @@ class DynamicBlock(nn.Module):
     """
     def __init__(self, config, layer_idx: int):
         super().__init__()
-        self.layer = CustomQwen2DecoderLayer(config, layer_idx) # Use CustomQwen2DecoderLayer
+        self.layer = Qwen2DecoderLayer(config, layer_idx)
+        # self.layer = Qwen2DecoderLayer(config, layer_idx) # Use standard Qwen2DecoderLayer
 
     def forward(self, hidden_states: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, ...]:
         """Standard forward pass for use as a dense layer."""

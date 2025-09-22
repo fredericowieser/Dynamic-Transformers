@@ -20,6 +20,10 @@ class BaseForCausalLM(PreTrainedModel):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList()
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # ————————————————
+        # Mirror Qwen2Model: own a single rotary embedding
+        self.rotary_emb = Qwen2RotaryEmbedding(config)
+        # ————————————————
         
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -52,7 +56,14 @@ class BaseForCausalLM(PreTrainedModel):
         
         causal_mask = _prepare_4d_causal_attention_mask(attention_mask, (B, T), hidden_states, 0)
         
-        layer_kwargs = {**kwargs, "attention_mask": causal_mask, "position_ids": position_ids}
+        # compute RoPE once (partial dims) and share to every layer
+        cos, sin = self.rotary_emb(hidden_states, position_ids)
+        layer_kwargs = {
+            **kwargs,
+            "attention_mask": causal_mask,
+            "position_ids": position_ids,
+            "position_embeddings": (cos, sin),
+        }
         
         layer_outputs = self._forward_layers(hidden_states, **layer_kwargs)
         
