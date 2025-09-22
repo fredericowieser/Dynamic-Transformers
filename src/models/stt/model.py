@@ -56,13 +56,13 @@ class STTLayer(nn.Module):
 
     def forward(self, hidden_states, **kwargs):
         original_hidden = hidden_states
-        # The block processes the hidden states. Note that the output may be a tuple.
-        out = self.block(hidden_states, **kwargs)
-        processed_hidden = out[0] if isinstance(out, tuple) else out
-
-        aux_loss = None
         router_stats = {}
+
         if self.training:
+            # In training, STT processes all tokens to compute residuals for router training
+            out = self.block(hidden_states, **kwargs)
+            processed_hidden = out[0] if isinstance(out, tuple) else out
+            
             actual_residual = processed_hidden - original_hidden
 
             prev_final_states = torch.cat(
@@ -71,9 +71,8 @@ class STTLayer(nn.Module):
             predicted_residual = self.transition_network(prev_final_states)
             tpn_loss = F.mse_loss(predicted_residual, actual_residual.detach())
 
-            # Get beta values from the scheduler passed in kwargs
-            beta_ce = kwargs.get('beta_ce', 1.0) # Default value if not provided
-            beta_cu = kwargs.get('beta_cu', 1.0) # Default value if not provided
+            beta_ce = kwargs.get('beta_ce', 1.0)
+            beta_cu = kwargs.get('beta_cu', 1.0)
 
             g_cont, binary_targets, pred_stats = self.predictive_router(
                 actual_residual, predicted_residual, beta_ce=beta_ce, beta_cu=beta_cu
@@ -84,15 +83,29 @@ class STTLayer(nn.Module):
             router_stats.update(causal_stats)
             causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
 
-            aux_loss = (self.config.tpn_loss_weight * tpn_loss) + (self.config.causal_loss_weight * causal_loss)
+            aux_loss = (self.model_params.get('stt', {}).get('tpn_loss_weight', 0.05) * tpn_loss) + \
+                       (self.model_params.get('stt', {}).get('causal_loss_weight', 0.01) * causal_loss)
+            
+            # In training, we don't skip tokens, just calculate loss
             final_hidden_states = processed_hidden
-        else:
+        
+        else: # Inference
+            # Use the causal router to select tokens, then process only those tokens
             causal_logits, _, causal_stats = self.causal_router(original_hidden)
             router_stats.update(causal_stats)
+            
             k = max(1, int(hidden_states.shape[1] * self.causal_router.capacity))
-            _, topk_indices = causal_logits.topk(k, dim=-1)
-            mask = torch.zeros_like(causal_logits, dtype=torch.bool).scatter_(1, topk_indices, True)
-            final_hidden_states = torch.where(mask.unsqueeze(-1), processed_hidden, original_hidden)
+            gating_scores, topk_indices = causal_logits.topk(k, dim=-1)
+
+            # process_selected will handle the gather-process-scatter efficiently
+            final_hidden_states, _, _ = self.block.process_selected(
+                original_hidden,
+                topk_indices=topk_indices,
+                gating_scores=gating_scores, # Not used in hard gating, but good to pass
+                use_soft_gating=False,
+                **kwargs
+            )
+            aux_loss = None
 
         return final_hidden_states, aux_loss, router_stats
 

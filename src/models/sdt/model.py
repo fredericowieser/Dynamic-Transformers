@@ -71,13 +71,11 @@ class SDTPair(nn.Module):
         B, T, D = hidden_states.shape
         k = max(1, int(T * self.router.capacity))
         gating_scores, topk_idx = g_cont.topk(k, dim=-1)
-        batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
 
         final_hidden_states, _, _ = self.dynamic.process_selected(
             processed_hidden, 
-            batch_idx.reshape(-1), 
-            topk_idx.reshape(-1), 
-            gating_scores.reshape(-1),
+            topk_indices=topk_idx,
+            gating_scores=gating_scores,
             use_soft_gating=self.training,
             **kwargs
         )

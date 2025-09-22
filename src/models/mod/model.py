@@ -21,7 +21,7 @@ class MoDRouter(BaseRouter):
         if k > T:
             k = T
             
-        _, topk_idx = logits.topk(k, dim=-1)
+        gating_scores, topk_idx = logits.topk(k, dim=-1)
         
         binary_targets = torch.zeros_like(logits)
         binary_targets.scatter_(1, topk_idx, 1.0)
@@ -33,7 +33,7 @@ class MoDRouter(BaseRouter):
         # The equation is: L_aux = BCE(logits, topk_mask) * weight
         aux_loss = F.binary_cross_entropy_with_logits(logits, binary_targets) * self.aux_loss_weight
         
-        return logits, aux_loss, binary_targets
+        return logits, aux_loss, binary_targets, gating_scores, topk_idx
 
 class MoDCausalRouter(nn.Module):
     """
@@ -70,7 +70,7 @@ class MoDLayer(nn.Module):
 
         if training:
             # Main router pass (non-causal top-k)
-            scores, main_aux_loss, binary_targets = self.router(hidden_states)
+            scores, main_aux_loss, binary_targets, gating_scores, topk_idx = self.router(hidden_states)
             total_aux_loss += main_aux_loss
             
             # Causal router (predictor) pass to train it for inference
@@ -80,10 +80,12 @@ class MoDLayer(nn.Module):
             total_aux_loss += predictor_loss * self.predictor_loss_weight
 
             # Gather tokens based on main router for the forward pass
-            _, batch_idx, token_idx, gating_scores = self.router.select_tokens(scores, hidden_states)
-            
             new_states, _, _ = self.block.process_selected(
-                hidden_states, batch_idx, token_idx, gating_scores, use_soft_gating=True, **kwargs
+                hidden_states,
+                topk_indices=topk_idx,
+                gating_scores=gating_scores,
+                use_soft_gating=True,
+                **kwargs
             )
             
             # Logging metrics from the training router
@@ -105,8 +107,13 @@ class MoDLayer(nn.Module):
             
             batch_idx, token_idx = is_selected.nonzero(as_tuple=True)
 
-            new_states, _, _ = self.block.process_selected(
-                hidden_states, batch_idx, token_idx, gating_scores=None, use_soft_gating=False, **kwargs
+            new_states, _, _ = self.block._process_selected_packed(
+                hidden_states,
+                batch_indices=batch_idx,
+                token_indices=token_idx,
+                gating_scores=None,
+                use_soft_gating=False,
+                **kwargs
             )
             
             # Logging metrics from the inference predictor
