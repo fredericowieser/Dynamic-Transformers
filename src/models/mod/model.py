@@ -74,16 +74,20 @@ class MoDLayer(nn.Module):
             total_aux_loss += main_aux_loss
             
             # Causal router (predictor) pass to train it for inference
-            # Use .detach() on inputs/targets to not affect the main model's gradients
             predictor_logits = self.causal_router(hidden_states.detach())
             predictor_loss = F.binary_cross_entropy_with_logits(predictor_logits, binary_targets.detach())
             total_aux_loss += predictor_loss * self.predictor_loss_weight
 
             # Gather tokens based on main router for the forward pass
+            B, T, D = hidden_states.shape
+            k = topk_idx.shape[1]
+            batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
+
             new_states, _, _ = self.block.process_selected(
                 hidden_states,
-                topk_indices=topk_idx,
-                gating_scores=gating_scores,
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores.reshape(-1),
                 use_soft_gating=True,
                 **kwargs
             )
@@ -107,7 +111,7 @@ class MoDLayer(nn.Module):
             
             batch_idx, token_idx = is_selected.nonzero(as_tuple=True)
 
-            new_states, _, _ = self.block._process_selected_packed(
+            new_states, _, _ = self.block.process_selected(
                 hidden_states,
                 batch_indices=batch_idx,
                 token_indices=token_idx,

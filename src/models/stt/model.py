@@ -94,14 +94,17 @@ class STTLayer(nn.Module):
             causal_logits, _, causal_stats = self.causal_router(original_hidden)
             router_stats.update(causal_stats)
             
-            k = max(1, int(hidden_states.shape[1] * self.causal_router.capacity))
-            gating_scores, topk_indices = causal_logits.topk(k, dim=-1)
+            B, T, D = hidden_states.shape
+            k = max(1, int(T * self.causal_router.capacity))
+            gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
+            
+            batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
 
-            # process_selected will handle the gather-process-scatter efficiently
             final_hidden_states, _, _ = self.block.process_selected(
                 original_hidden,
-                topk_indices=topk_indices,
-                gating_scores=gating_scores, # Not used in hard gating, but good to pass
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores.reshape(-1),
                 use_soft_gating=False,
                 **kwargs
             )
