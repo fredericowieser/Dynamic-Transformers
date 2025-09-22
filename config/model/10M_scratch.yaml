@@ -8,8 +8,8 @@ model:
   attn_implementation: "eager"
   use_cache: True
   tie_word_embeddings: True
-  params: {}
-  dtf_capacity: 0.5
+
+  sdt_capacity: 0.5
   prior_loss_weight: 0.05
   causal_loss_weight: 0.01
   beta_ce_init: -0.3
@@ -32,6 +32,6 @@ model:
     10M:
       hidden_size: 32
       intermediate_size: 128
-      num_hidden_layers: 1
+      num_hidden_layers: 2
       num_attention_heads: 4
       num_key_value_heads: 2

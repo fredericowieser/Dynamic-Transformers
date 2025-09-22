@@ -59,8 +59,7 @@ def _generate_eval_section(eval_results: Dict[str, Any]) -> str:
         return ""
 
     header = "\n## Evaluation\nResults on standard benchmarks:\n\n"
-    table_header = "| Task | Metric | Value |\n|---|---|---|
-"
+    table_header = "| Task | Metric | Value |\n|---|---|---|"
     table_rows = []
     for task, metrics in sorted(eval_results.items()):
         for metric, value in sorted(metrics.items()):
@@ -157,7 +156,7 @@ print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 ```
 {_generate_training_section(training_config)}
 {_generate_eval_section(eval_results)}
-""
+"""
 
 
 def main():

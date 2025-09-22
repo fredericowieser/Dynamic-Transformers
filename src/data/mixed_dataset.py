@@ -39,45 +39,44 @@ class MixedDataset:
 
     def setup(self, stage: str = None) -> None:
         """
-        Loads, processes, and concatenates all specified datasets using the
-        appropriate handler for each.
+        Loads and concatenates all specified datasets using a handler mapping.
         """
         log.info("Setting up mixed dataset...")
+        
+        handler_map = {
+            "sft": HuggingFaceDataset,
+            "pretrain": PretrainingDataset
+        }
+        
         all_train_datasets, all_val_datasets = [], []
 
         for cfg in self.dataset_configs:
-            # Select handler by type
             dataset_type = cfg.get("type", "sft")
-            log.info(f"Processing dataset '{cfg['dataset_name']}' with handler: '{dataset_type}'")
+            handler_class = handler_map.get(dataset_type)
 
-            if dataset_type == "sft":
-                handler_class = HuggingFaceDataset
-            elif dataset_type == "pretrain":
-                handler_class = PretrainingDataset
-            else:
-                raise ValueError(f"Unknown dataset type '{dataset_type}' in config for '{cfg['dataset_name']}'.")
+            if not handler_class:
+                raise ValueError(f"Unknown dataset type '{dataset_type}' in config. "
+                                 f"Available types are: {list(handler_map.keys())}")
 
-            # Create handler instance
-            single_dataset_handler = handler_class(
+            log.info(f"Processing dataset '{cfg.dataset_name}' with handler: '{dataset_type}'")
+
+            handler = handler_class(
                 tokenizer=self.tokenizer,
-                dataset_name=cfg["dataset_name"],
-                text_column=cfg["text_column"],
+                dataset_name=cfg.dataset_name,
+                text_column=cfg.text_column,
                 block_size=self.block_size,
                 dataset_config=cfg.get("dataset_config"),
                 validation_split_percentage=self.validation_split_percentage,
                 train_subset_ratio=cfg.get("train_subset_ratio"),
             )
             
-            train_data, val_data = single_dataset_handler.load_and_process()
+            train_data, val_data = handler.load_and_process()
 
-            if len(train_data) > 0:
-                all_train_datasets.append(train_data)
-            if len(val_data) > 0:
-                all_val_datasets.append(val_data)
+            if train_data: all_train_datasets.append(train_data)
+            if val_data: all_val_datasets.append(val_data)
 
         self.train_dataset = ConcatDataset(all_train_datasets) if all_train_datasets else []
         self.val_dataset = ConcatDataset(all_val_datasets) if all_val_datasets else []
-        self.test_dataset = self.val_dataset
 
         log.info(f"Total mixed training samples: {len(self.train_dataset):,}")
         log.info(f"Total mixed validation samples: {len(self.val_dataset):,}")

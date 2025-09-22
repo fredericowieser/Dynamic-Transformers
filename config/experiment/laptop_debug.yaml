@@ -1,0 +1,13 @@
+# config/experiment/laptop_debug.yaml
+
+defaults:
+  - override /: train.yaml # Start from the base
+  - override /system: mac   # Choose the hardware
+  - override /model: mod    # Choose the model
+
+# You can add any other overrides here, e.g.:
+training:
+  batch_size: 2
+logging:
+  wandb:
+    enabled: false

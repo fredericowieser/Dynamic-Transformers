@@ -1,159 +1,126 @@
-import argparse
-import json
 import logging
-import os
 import torch
-import numpy as np
+from pathlib import Path
+import hydra
+from omegaconf import DictConfig, OmegaConf
+from accelerate import Accelerator
 import wandb
-from lm_eval import simple_evaluate
+from lm_eval import evaluator, tasks
 
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from src.data.mixed_dataset import MixedDataset
+from src.training.utils import create_model
+from src.training.eval_utils import LMEvalAdaptor
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
-# Import custom model and config classes from the new repo structure
-from src.models.dtf.causalLM import DTFForCausalLM
-from src.models.mod.causalLM import MoDForCausalLM
-from src.models.tdtf.causalLM import TDTFForCausalLM
-from src.models.standard.causalLM import StandardTransformerForCausalLM
-from transformers import Qwen2Config # Use Qwen2Config as the base config
-
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Register custom architectures with transformers Auto classes
-# This is crucial for AutoModelForCausalLM.from_pretrained to correctly load custom models
-AutoConfig.register("dtf", Qwen2Config) # Register DTF with Qwen2Config
-AutoModelForCausalLM.register(Qwen2Config, DTFForCausalLM)
+def calculate_perplexity(model, dataloader, accelerator, limit_batches=50):
+    """Calculates perplexity on a given dataloader."""
+    model.eval()
+    losses = []
+    for step, batch in enumerate(dataloader):
+        if step >= limit_batches:
+            break
+        with torch.no_grad():
+            outputs = model(**batch)
+        
+        # Use 'lm_loss' if available, otherwise fall back to 'loss'
+        loss_key = "lm_loss" if "lm_loss" in outputs else "loss"
+        loss = outputs[loss_key]
+        losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
 
-AutoConfig.register("mod", Qwen2Config) # Register MoD with Qwen2Config
-AutoModelForCausalLM.register(Qwen2Config, MoDForCausalLM)
+    losses = torch.cat(losses)
+    avg_loss = torch.mean(losses)
+    perplexity = torch.exp(avg_loss).item()
+    log.info(f"Validation Loss: {avg_loss:.4f}, Perplexity: {perplexity:.4f}")
+    return perplexity
 
-AutoConfig.register("tdtf", Qwen2Config) # Register TDTF with Qwen2Config
-AutoModelForCausalLM.register(Qwen2Config, TDTFForCausalLM)
+def run_lm_eval(model, tokenizer, accelerator, cfg):
+    """Runs the lm-eval harness."""
+    log.info("Running lm_eval benchmarks...")
+    unwrapped_model = accelerator.unwrap_model(model)
 
-AutoConfig.register("standard", Qwen2Config) # Register Standard with Qwen2Config
-AutoModelForCausalLM.register(Qwen2Config, StandardTransformerForCausalLM)
+    if cfg.peft.enabled and cfg.lm_eval.merge_lora_for_eval:
+        log.info("Merging LoRA weights for lm-eval...")
+        unwrapped_model = unwrapped_model.merge_and_unload()
 
+    lm_eval_model = LMEvalAdaptor(unwrapped_model, tokenizer, accelerator.device)
+    
+    task_names = list(cfg.lm_eval.tasks)
+    results = evaluator.simple_evaluate(
+        model=lm_eval_model,
+        tasks=task_names,
+        batch_size=cfg.lm_eval.batch_size,
+        device=str(accelerator.device),
+        no_cache=True,
+    )
 
-# Task groups
-TASK_SUITES = {
-    "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
-    "math": ["gsm8k", "math_qa"],
-    "code": ["humaneval", "mbpp"],
-    "quick_test": ["arc_challenge", "hellaswag"]
-}
+    log.info(f"lm-eval results:\n{OmegaConf.to_yaml(results)}")
+    return results
 
-def _make_json_serializable(obj):
-    if isinstance(obj, dict):
-        return {k: _make_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_make_json_serializable(elem) for elem in obj]
-    elif isinstance(obj, torch.dtype):
-        return str(obj)
-    elif isinstance(obj, torch.Tensor):
-        return obj.tolist()
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.float32, np.float64, np.int32, np.int64)):
-        return obj.item()
-    return obj
+@hydra.main(config_path="config", config_name="eval", version_base="1.3")
+def main(cfg: DictConfig):
+    logging.basicConfig(level=cfg.logging.level, format='%(asctime)s - %(levelname)s - %(message)s')
+    log.info(f"Configuration for evaluation:\n{OmegaConf.to_yaml(cfg)}")
 
-def get_wandb_run_dir(model_path: str) -> str | None:
-    wandb_info_path = os.path.join(model_path, "wandb_info.json")
-    if not os.path.exists(wandb_info_path):
-        log.warning("wandb_info.json not found.")
-        return None
-    with open(wandb_info_path, "r") as f:
-        wandb_info = json.load(f)
-    try:
-        run = wandb.init(
-            project=wandb_info["project"],
-            entity=wandb_info["entity"],
-            id=wandb_info["run_id"],
-            resume="must"
+    accelerator = Accelerator()
+
+    if cfg.logging.wandb.enabled and accelerator.is_main_process:
+        wandb.init(
+            project=cfg.logging.wandb.project,
+            entity=cfg.logging.wandb.entity,
+            name=f"eval-{cfg.run.name}",
+            config=OmegaConf.to_container(cfg, resolve=True)
         )
-        log.info(f"Successfully resumed wandb run '{run.name}' (ID: {run.id}).")
-        return run.dir
-    except Exception as e:
-        log.error(f"Failed to resume wandb run. Error: {e}")
-        return None
 
-def main():
-    parser = argparse.ArgumentParser(description="Run benchmarks on a custom Qwen model.")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
-    parser.add_argument("--tasks", type=str, default="quick_test", help=f"Tasks or suites. Available: {list(TASK_SUITES.keys())}")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
-    parser.add_argument("--output_dir", type=str, default="./eval_results", help="Fallback directory to save results.")
-    args = parser.parse_args()
+    # Load Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.pretrained_model_name_or_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     
-    task_names = sorted(list(set(
-        task for suite in args.tasks.split(',') for task in TASK_SUITES.get(suite, [suite])
-    )))
-    log.info(f"Running evaluation on tasks: {task_names}")
+    # Load Model
+    log.info(f"Loading model checkpoint from: {cfg.checkpoint_path}")
+    model = create_model(
+        cfg.model.type,
+        cfg.model.size,
+        from_scratch=False, # Always loading a trained model for eval
+        cfg=cfg
+    )
+    # Load the state dict from the checkpoint
+    state_dict = torch.load(Path(cfg.checkpoint_path) / "model.pt", map_location="cpu")
+    model.load_state_dict(state_dict)
 
-    # Configure model loading
-    model_args_dict = {
-        "pretrained": args.model_path,
-        "trust_remote_code": True, # Keep this for custom model loading
-    }
+    # Prepare Data
+    datamodule = MixedDataset(**cfg.data, tokenizer_name=cfg.model.pretrained_model_name_or_path)
+    datamodule.setup()
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    eval_loader = torch.utils.data.DataLoader(
+        datamodule.val_dataset,
+        collate_fn=data_collator,
+        batch_size=cfg.data.batch_size,
+    )
+
+    model, eval_loader = accelerator.prepare(model, eval_loader)
+
+    # --- Run Evaluations ---
     
-    try:
-        # Attempt to load config to check for flash attention support
-        # AutoConfig will use the registered classes
-        model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
-        if getattr(model_config, "use_flash_attention_2", False):
-            log.info("Enabling Flash Attention 2 for evaluation based on model config.")
-            model_args_dict["attn_implementation"] = "flash_attention_2"
-            model_args_dict["torch_dtype"] = "bfloat16" # Assuming bfloat16 for flash attention
-    except Exception as e:
-        log.warning(f"Could not determine Flash Attention support from config: {e}")
+    # 1. Perplexity
+    perplexity = calculate_perplexity(model, eval_loader, accelerator)
+    if cfg.logging.wandb.enabled and accelerator.is_main_process:
+        wandb.log({"eval/perplexity": perplexity})
 
-    # Shot counts per task
-    shot_counts = {
-        "mmlu": 5,
-        "arc_challenge": 25,
-        "truthfulqa_mc2": 0,
-        "winogrande": 5,
-        "hellaswag": 10,
-    }
+    # 2. LM-Eval
+    if cfg.lm_eval.enabled and accelerator.is_main_process:
+        lm_eval_results = run_lm_eval(model, tokenizer, accelerator, cfg)
+        if cfg.logging.wandb.enabled:
+            # Log lm_eval results to wandb
+            lm_eval_log = {}
+            for task, res in lm_eval_results["results"].items():
+                for metric, value in res.items():
+                    if isinstance(value, (int, float)):
+                        lm_eval_log[f"lm_eval/{task}/{metric}"] = value
+            wandb.log(lm_eval_log)
 
-    all_results = {}
-    for task_name in task_names:
-        num_fewshot = shot_counts.get(task_name, 0)
-        log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
-
-        # Run evaluation
-        results = simple_evaluate(
-            model="hf",
-            model_args=model_args_dict,
-            tasks=[task_name],
-            num_fewshot=num_fewshot,
-            batch_size=args.batch_size,
-            device="auto", # Use "auto" to let lm_eval pick the best device
-        )
-        all_results.update(results.get("results", {}))
-    
-    serializable_results = _make_json_serializable(all_results)
-
-    output_dir = get_wandb_run_dir(args.model_path)
-    if output_dir is None:
-        output_dir = args.output_dir
-        os.makedirs(output_dir, exist_ok=True)
-    
-    model_name = os.path.basename(args.model_path.rstrip('/'))
-    output_filename = f"{model_name}_eval_results.json"
-    output_path = os.path.join(output_dir, output_filename)
-
-    with open(output_path, "w") as f:
-        json.dump(serializable_results, f, indent=2)
-
-    log.info("--- Evaluation Results ---")
-    print(json.dumps(serializable_results, indent=2))
-    log.info(f"Results saved to {output_path}")
-
-    if wandb.run is not None:
-        log.info("Uploading results to wandb as an artifact...")
-        wandb.save(output_path)
+    if cfg.logging.wandb.enabled and accelerator.is_main_process:
         wandb.finish()
-
-if __name__ == "__main__":
-    main()
+    log.info("Evaluation complete.")

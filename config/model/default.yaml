@@ -1,68 +1,42 @@
 # @package _global_
 
 model:
-  type: ??? # Must be specified: standard, mod, dtf, tdtf
-  size: 0.5B # 0.5B, 1.5B, or 3B
+  type: ??? # Must be specified: standard, mod, sdt, stt
+  size: 0.5B
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
   use_cache: True
   tie_word_embeddings: True
-
-  params: {}
-
-  dtf_capacity: 0.5
-  prior_loss_schedule:
-    initial_weight: 0.05
-    final_weight: 0.05
-    decay_steps: 0 # Set to 0 for constant weight, or a positive integer for decay
-  causal_loss_weight: 0.01 # This is for TDTF, not DTF. Kept for compatibility.
-  base_model_lr_scale: 1.0
-  prior_ffn_lr_scale: 100.0 # 1.0e-3 / 1.0e-5
-  router_lr_scale: 1000.0 # 1.0e-2 / 1.0e-5
-  tpn_lr_scale: 100.0 # Similar to prior_ffn_lr_scale
-  predictive_router_lr_scale: 1000.0 # Similar to router_lr_scale
-  beta_ce_init: -0.3
-  beta_cu_init: -0.6
-  cu_detection_multiplier_init: 1.1
-  ce_criterion_offset_init: 1.025
-  prior_ffn_intermediate_size_factor: 0.5
-
-  mod_capacity: 0.125
-  mod_aux_loss_weight: 0.01
-
-  tdtf_capacity: 0.5
-  tpn_loss_weight: 0.05
-  ma_window: 100
-  o_ce_init: 1.025
-  m_cu_init: 1.1
-
   freeze_base_model: False
+  prior_ffn_intermediate_size_factor: 0.25
 
+  # Unified block for all model-specific hyperparameters
+  params:
+    mod_capacity: 0.5
+    mod_aux_loss_weight: 0.01
+
+    sdt_capacity: 0.5
+    prior_loss_weight: 0.05
+    beta_ce_init: -0.3
+    beta_cu_init: -0.6
+    
+    stt_capacity: 0.5
+    tpn_loss_weight: 0.05
+    causal_loss_weight: 0.10
+    
+    # Shared params for SDT and STT
+    o_ce_init: 1.025
+    m_cu_init: 1.1
+    ma_window: 100
+
+  # STT-specific schedule
+  beta_schedule:
+    type: "cosine"
+    beta_ce_start: 0.3
+    beta_ce_end: 6.0
+    beta_cu_start: 0.3
+    beta_cu_end: 6.0
+    warmup_steps: 1000
+
+  # Scratch config remains the same
   scratch_config:
-    vocab_size: 151936
-    max_position_embeddings: 2048
-    rope_theta: 1000000.0
-    sliding_window: 131072
-    0.5B:
-      hidden_size: 896
-      intermediate_size: 4864
-      num_hidden_layers: 24
-      num_attention_heads: 14
-      num_key_value_heads: 2
-    1.5B:
-      hidden_size: 1536
-      intermediate_size: 8960
-      num_hidden_layers: 28
-      num_attention_heads: 12
-      num_key_value_heads: 2
-    3B:
-      hidden_size: 2048
-      intermediate_size: 11008
-      num_hidden_layers: 36
-      num_attention_heads: 16
-      num_key_value_heads: 2
-    10M:
-      hidden_size: 32
-      intermediate_size: 128
-      num_hidden_layers: 1
-      num_attention_heads: 4
-      num_key_value_heads: 2
+    # ...

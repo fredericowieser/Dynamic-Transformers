@@ -1,0 +1,11 @@
+# config/model/mod.yaml
+
+defaults:
+  - /component/causal_router # Inherit causal router defaults
+
+type: mod
+size: 0.5B
+
+# MoD-specific parameters
+mod_capacity: 0.5
+mod_aux_loss_weight: 0.01

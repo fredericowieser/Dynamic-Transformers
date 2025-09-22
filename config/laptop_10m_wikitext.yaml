@@ -6,7 +6,6 @@ defaults:
   - model: 10M_scratch  # Use 10M scratch model config
   - data: laptop_10m_data   # Use laptop-specific data config
   - training: default # Pull in training defaults
-  - logging: default # Pull in logging defaults
 
 run:
   name: "laptop-10M-wikitext-${now:%Y-%m-%d_%H-%M-%S}"
@@ -16,20 +15,28 @@ run:
 
 training:
   mode: scratch
-  num_epochs: 1
-  accumulate_grad_batches: 16
+  num_epochs: 10
+  accumulate_grad_batches: 64
   max_steps: -1
-  eval_interval: 100
+  eval_interval: 10000
   use_gradient_clipping: False
   gradient_clip_val: 1.0
   optimizer:
-    lr: 1.0e-5
+    lr: 1.0e-05
     weight_decay: 0.01
     warmup_ratio: 0.01
     scheduler: cosine
     adam_beta1: 0.9
     adam_beta2: 0.95
-    adam_epsilon: 1.0e-8
+    adam_epsilon: 1.0e-08
+    lrs:
+      base_model: 1.0e-04
+      router: 0.001
+      prior: 0.001
+      transition_network: 0.001
+      predictive_router: 0.01
+      causal_router: 0.01
+  gradient_checkpointing: False
 
 system:
   device: cpu
@@ -40,15 +47,50 @@ system:
   pin_memory: false
   persistent_workers: false
   torch_dtype: "float32"
-logging:
-  wandb:
-    enabled: false
-    project: "Dynamic-Transformers"
-    entity: "huawei-noahs-ark"
-    log_interval: 50
 
 model:
-  type: dtf # Options: standard, mod, dtf, tdtf
+  type: stt # Changed from sdt to stt
+  beta_schedule:
+    type: cosine
+    beta_ce_start: 0.3
+    beta_ce_end: 6.0
+    beta_cu_start: 0.3
+    beta_cu_end: 6.0
+    warmup_steps: 1000
+  size: 10M
+  pretrained_model_name_or_path: null
+  use_flash_attention_2: ${system.use_flash_attention}
+  attn_implementation: eager
+  use_cache: False
+  tie_word_embeddings: True
+  
+  params: # Moved model-specific parameters into a 'params' block
+    sdt_capacity: 0.5
+    prior_loss_weight: 0.05 # This is for SDT, but keeping it for now as it might be used in a generic way or removed later
+    causal_loss_weight: 0.01
+    beta_ce_init: -0.3
+    beta_cu_init: -0.6
+    cu_detection_multiplier_init: 1.1
+    ce_criterion_offset_init: 1.025
+    prior_ffn_intermediate_size_factor: 0.5
+    mod_capacity: 0.5 # This is for MoD, keeping for now
+    mod_aux_loss_weight: 0.01 # This is for MoD, keeping for now
+    stt_capacity: 0.5 # This is for TDTF, keeping for now
+    tpn_loss_weight: 0.05
+    ma_window: 100
+    o_ce_init: 1.025
+    m_cu_init: 1.1
+  scratch_config:
+    vocab_size: 151936
+    max_position_embeddings: 32768
+    rope_theta: 1000000.0
+    sliding_window: 131072
+    10M:
+      hidden_size: 32
+      intermediate_size: 128
+      num_hidden_layers: 2
+      num_attention_heads: 4
+      num_key_value_heads: 2
 
 peft:
   enabled: false
@@ -61,3 +103,11 @@ lm_eval:
   tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
   batch_size: 8
   merge_lora_for_eval: True
+
+logging:
+  level: DEBUG
+  wandb:
+    enabled: false
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
+    log_interval: 50

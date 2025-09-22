@@ -1,12 +1,12 @@
-# @package _global_
+# config/train.yaml
 
 defaults:
   - _self_
-  - system: default
-  - model: default
-  - data: default
-  - training: default
-  - logging: default
+  - system: gpu # Default system config
+  - model: sdt # Default model config
+  - data: default # Default data config
+  - training: default # Default training config
+  - logging: default # Default logging config
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
@@ -15,10 +15,87 @@ hydra:
     dir: outputs/${run.name}
 
 run:
-  name: "qwen2.5-${model.size}-${model.type}-${training.mode}-${now:%Y-%m-%d_%H-%M-%S}"
+  name: "qwen2.5-${model.size}-${model.type}-${now:%Y-%m-%d_%H-%M-%S}"
   output_dir: "outputs/${run.name}"
   seed: 42
   run_final_evaluation: True
+
+# Data config (remains here for now, can be moved to data/default.yaml if desired)
+data:
+  name: "pretrain_mix"
+  batch_size: 16
+  tokenizer_name: "Qwen/Qwen2.5-${model.size}"
+  block_size: 1024
+  validation_split_percentage: 2
+  dataset_configs:
+    - type: "pretrain"
+      dataset_name: "wikitext"
+      dataset_config: "wikitext-103-raw-v1"
+      text_column: "text"
+      train_subset_ratio: 1.0
+    - type: "pretrain"
+      dataset_name: "cnn_dailymail"
+      dataset_config: "3.0.0"
+      text_column: "article"
+      train_subset_ratio: 0.2
+    - type: "pretrain"
+      dataset_name: "storytracer/US-PD-Books"
+      text_column: "text"
+      train_subset_ratio: 0.5
+    - type: "pretrain"
+      dataset_name: "HuggingFaceTB/cosmopedia"
+      dataset_config: "openstax"
+      text_column: "text"
+      train_subset_ratio: 0.1
+    - type: "pretrain"
+      dataset_name: "sciq"
+      text_column: "support"
+      train_subset_ratio: 1.0
+    - type: "pretrain"
+      dataset_name: "codeparrot/codeparrot-clean-valid"
+      text_column: "content"
+      train_subset_ratio: 1.0
+    - type: "pretrain"
+      dataset_name: "roneneldan/TinyStories"
+      text_column: "text"
+      train_subset_ratio: 1.0
+
+# Training config (remains here for now, can be moved to training/default.yaml if desired)
+training:
+  mode: ???
+  num_epochs: 10
+  max_steps: -1
+  accumulate_grad_batches: 64
+  eval_interval: 10000
+  use_gradient_clipping: False
+  gradient_clip_val: 1.0
+  gradient_checkpointing: True
+  train_causal_router: True
+
+  optimizer:
+    scheduler: cosine
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_epsilon: 1e-8
+
+    # --- NEW UNIFIED LR CONFIG ---
+    # Default LR for any group not specified below
+    lr: 1.0e-5
+
+    # Learning rates per parameter group (must match names from get_trainable_parameters)
+    lrs:
+      base_model: 1.0e-5
+      # MoD
+      router: 1.0e-3
+      # SDT
+      prior: 1.0e-3
+      # STT
+      transition_network: 1.0e-3
+      predictive_router: 1.0e-2
+      # Common
+      causal_router: 1.0e-2
 
 # PEFT (LoRA) configuration
 peft:
@@ -55,3 +132,12 @@ lm_eval:
   tasks: ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"]
   batch_size: 8
   merge_lora_for_eval: True
+
+# Logging config (remains here for now, can be moved to logging/default.yaml if desired)
+logging:
+  level: INFO # Default logging level (e.g., INFO, DEBUG, WARNING, ERROR)
+  wandb:
+    enabled: true
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
+    log_interval: 1

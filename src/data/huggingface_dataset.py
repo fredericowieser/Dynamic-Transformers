@@ -1,18 +1,10 @@
 import json
-import logging
 import re
-from typing import Any
-import os
-
-import torch
-from datasets import Dataset, DatasetDict, load_dataset
-from torch.utils.data import random_split
-from transformers import PreTrainedTokenizerBase
-
-log = logging.getLogger(__name__)
+from typing import Any, Dict
+from .base_dataset import BaseDatasetHandler
 
 def _dict_list_to_chat(tokenizer, conv: list[dict[str, Any]]) -> dict[str, str]:
-    """Convert conversation list to formatted text."""
+    """Helper function to convert a list of dicts to a chat string."""
     norm = []
     for turn in conv:
         role = (turn.get("role") or turn.get("from") or "").lower()
@@ -32,30 +24,16 @@ def _dict_list_to_chat(tokenizer, conv: list[dict[str, Any]]) -> dict[str, str]:
         joined = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in norm)
         return {"text": joined}
 
-class HuggingFaceDataset:
+class HuggingFaceDataset(BaseDatasetHandler):
     """
-    A class to load, process, and prepare a single Hugging Face dataset for language model training.
+    Handles chat and instruction-formatted datasets (SFT).
+    Inherits all processing logic from BaseDatasetHandler.
     """
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        dataset_name: str,
-        text_column: str,
-        block_size: int,
-        dataset_config: str = None,
-        validation_split_percentage: int = 5,
-        train_subset_ratio: float | None = None,
-    ):
-        self.tokenizer = tokenizer
-        self.dataset_name = dataset_name
-        self.text_column = text_column
-        self.block_size = block_size
-        self.dataset_config = dataset_config
-        self.validation_split_percentage = validation_split_percentage
-        self.train_subset_ratio = train_subset_ratio
-
-    def _format_text(self, examples):
-        """Normalize various chat and instruction formats."""
+    def _process_text_column(self, examples: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Normalizes various chat and instruction formats into a single 'text' field.
+        This is the specialized logic for this handler.
+        """
         preferred = self.text_column
         raw = examples.get(preferred)
 
@@ -75,7 +53,7 @@ class HuggingFaceDataset:
             return _dict_list_to_chat(self.tokenizer, raw) or {"text": ""}
 
         if isinstance(raw, str):
-            if raw.strip().startswith(("{", "[")):
+            if raw.strip().startswith(("{ ", "[")):
                 try:
                     obj = json.loads(raw)
                     if isinstance(obj, list):
@@ -98,61 +76,3 @@ class HuggingFaceDataset:
                 return _dict_list_to_chat(self.tokenizer, conv) or {"text": ""}
 
         return {"text": str(raw).strip() if raw is not None else ""}
-
-    def _group_texts(self, examples):
-        """Group texts into fixed-size blocks."""
-        concatenated = {k: sum(examples[k], []) for k in examples.keys()}
-        total_length = len(concatenated[list(examples.keys())[0]])
-        total_length = (total_length // self.block_size) * self.block_size
-        result = {
-            k: [t[i : i + self.block_size] for i in range(0, total_length, self.block_size)]
-            for k, t in concatenated.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
-
-    def load_and_process(self):
-        """Download, process, and split the dataset."""
-        log.info(f"Loading and processing dataset: {self.dataset_name}")
-        raw_datasets = load_dataset(self.dataset_name, self.dataset_config, trust_remote_code=True)
-
-        if isinstance(raw_datasets, Dataset):
-            raw_datasets = DatasetDict({"train": raw_datasets})
-        if "train" not in raw_datasets:
-            first_key = next(iter(raw_datasets.keys()))
-            log.warning(f"No 'train' split found. Using '{first_key}' as the training split.")
-            raw_datasets["train"] = raw_datasets.pop(first_key)
-
-        num_proc = os.cpu_count()
-        log.info(f"Using {num_proc} cores for data processing.")
-
-        formatted_datasets = raw_datasets.map(self._format_text, batched=False, num_proc=num_proc)
-        formatted_datasets = formatted_datasets.filter(lambda x: x.get("text") and len(x["text"]) > 10, num_proc=num_proc)
-        
-        tokenized_datasets = formatted_datasets.map(
-            lambda e: self.tokenizer(e["text"]),
-            batched=True,
-            remove_columns=formatted_datasets["train"].column_names,
-            num_proc=num_proc
-        )
-        
-        lm_datasets = tokenized_datasets.map(self._group_texts, batched=True, num_proc=num_proc)
-        full_dataset = lm_datasets["train"]
-
-        if self.train_subset_ratio and 0.0 < self.train_subset_ratio < 1.0:
-            num_samples = int(len(full_dataset) * self.train_subset_ratio)
-            full_dataset = full_dataset.select(range(num_samples))
-            log.info(f"Subsetting '{self.dataset_name}' to {num_samples} samples.")
-
-        val_size = int(len(full_dataset) * (self.validation_split_percentage / 100))
-        train_size = len(full_dataset) - val_size
-        
-        if train_size == 0 or val_size == 0 and len(full_dataset) > 1:
-            log.warning("Train or validation split is zero. Adjusting to ensure both are non-empty.")
-            val_size = max(1, val_size)
-            train_size = len(full_dataset) - val_size
-
-        train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
-        log.info(f"Finished processing '{self.dataset_name}': {len(train_dataset)} train, {len(val_dataset)} val samples.")
-        
-        return train_dataset, val_dataset
