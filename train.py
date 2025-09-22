@@ -124,7 +124,14 @@ def main(cfg: DictConfig):
 
     # Setup training
     steps_per_epoch = len(train_loader) // cfg.training.accumulate_grad_batches
-    num_training_steps = steps_per_epoch * cfg.training.num_epochs
+    num_training_steps_from_epochs = steps_per_epoch * cfg.training.num_epochs
+
+    if cfg.training.max_steps > 0:
+        num_training_steps = min(num_training_steps_from_epochs, cfg.training.max_steps)
+        log.info(f"Training will run for {num_training_steps} steps (capped by max_steps).")
+    else:
+        num_training_steps = num_training_steps_from_epochs
+        log.info(f"Training will run for {num_training_steps} steps ({cfg.training.num_epochs} epochs).")
 
     optimizers_dict, schedulers_dict = setup_optimizer_and_scheduler(model, cfg, num_training_steps, accelerator)
 
@@ -257,9 +264,7 @@ def main(cfg: DictConfig):
                             )
                     accelerator.wait_for_everyone()
 
-                    if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
-                        log.info(f"Reached max steps ({cfg.training.max_steps})")
-                        break
+
 
     # Save final model
     save_path = Path(cfg.run.output_dir) / "final_model"
