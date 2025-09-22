@@ -111,7 +111,7 @@ data:
 training:
   mode: finetune # finetune or scratch
   num_epochs: 1
-  max_steps: -1
+  max_steps: 10
   accumulate_grad_batches: 16
   eval_interval: 100
   use_gradient_clipping: False
