@@ -216,6 +216,11 @@ def main(cfg: DictConfig):
                             log_metrics["train/router_stats/o_ce_pos"] = metrics["router_stats"]["o_ce_pos"]
                             log_metrics["train/router_stats/m_cu_pos"] = metrics["router_stats"]["m_cu_pos"]
 
+                    # Log learning rates for each parameter group
+                    for name, opt in optimizers_dict.items():
+                        if opt.param_groups: # Ensure there are param groups
+                            log_metrics[f"lr/{name}"] = opt.param_groups[0]['lr']
+
                     if cfg.logging.wandb.enabled and wandb.run is not None:
                         wandb.log(log_metrics, step=global_step)
                     accelerator.print(
