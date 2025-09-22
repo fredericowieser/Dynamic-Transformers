@@ -125,6 +125,8 @@ class BaseForCausalLM(PreTrainedModel):
         out = {"logits": logits, "lm_loss": loss, "loss": loss}
         if aux:
             out.update(aux)
+            if loss is not None and 'aux_loss' in aux and aux['aux_loss'] is not None:
+                out['loss'] = out['loss'] + aux['aux_loss']
         return out
 
     def _run_layers(

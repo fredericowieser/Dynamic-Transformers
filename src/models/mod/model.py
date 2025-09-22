@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, Any
 from ..base.causal_lm import BaseForCausalLM
 from ..base.block import DynamicBlock
-from ..base.routers import CausalRouter, BaseRouter
+from ..base.routers import BaseRouter
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 class MoDRouter(BaseRouter):
@@ -26,24 +26,96 @@ class MoDRouter(BaseRouter):
         binary_targets = torch.zeros_like(logits)
         binary_targets.scatter_(1, topk_idx, 1.0)
 
+        # Auxiliary loss to train the router, as described in MoD paper, Section 3.5.
+        # This loss encourages the router to produce high scores for tokens that are
+        # selected (top-k) and low scores for those that are not. This makes the
+        # router's behavior more predictable for causal inference.
+        # The equation is: L_aux = BCE(logits, topk_mask) * weight
         aux_loss = F.binary_cross_entropy_with_logits(logits, binary_targets) * self.aux_loss_weight
         
-        return logits, aux_loss, {}
+        return logits, aux_loss, binary_targets
+
+class MoDCausalRouter(nn.Module):
+    """
+    A small MLP to predict the top-k selection of the main router for causal inference,
+    as described in the MoD paper (Section 3.5, Method 2).
+    It takes the same input as the main router.
+    """
+    def __init__(self, config):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        # A simple 2-layer MLP
+        self.fc1 = nn.Linear(self.hidden_size, self.hidden_size // 4)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(self.hidden_size // 4, 1)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        x = self.fc1(hidden_states)
+        x = self.act(x)
+        x = self.fc2(x)
+        return x.squeeze(-1)
 
 class MoDLayer(nn.Module):
     def __init__(self, hf_layer: Qwen2DecoderLayer, config, model_params: Dict):
         super().__init__()
         self.block = DynamicBlock(hf_layer)
         self.router = MoDRouter(config, layer_idx=0, model_params=model_params)
-        self.causal_router = CausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
+        self.causal_router = MoDCausalRouter(config)
+        self.predictor_loss_weight = model_params.get('mod', {}).get('predictor_loss_weight', 0.01)
+
 
     def forward(self, hidden_states, training: bool, **kwargs):
-        scores, aux_loss, _ = (self.router(hidden_states) if training else self.causal_router(hidden_states))
-        _, batch_idx, token_idx, gating_scores = self.router.select_tokens(scores, hidden_states)
-        new_states, _, _ = self.block.process_selected(
-            hidden_states, batch_idx, token_idx, gating_scores, use_soft_gating=training, **kwargs
-        )
-        return new_states, aux_loss if aux_loss is not None else torch.tensor(0.0, device=hidden_states.device)
+        total_aux_loss = torch.tensor(0.0, device=hidden_states.device)
+        layer_metrics = {}
+
+        if training:
+            # Main router pass (non-causal top-k)
+            scores, main_aux_loss, binary_targets = self.router(hidden_states)
+            total_aux_loss += main_aux_loss
+            
+            # Causal router (predictor) pass to train it for inference
+            # Use .detach() on inputs/targets to not affect the main model's gradients
+            predictor_logits = self.causal_router(hidden_states.detach())
+            predictor_loss = F.binary_cross_entropy_with_logits(predictor_logits, binary_targets.detach())
+            total_aux_loss += predictor_loss * self.predictor_loss_weight
+
+            # Gather tokens based on main router for the forward pass
+            _, batch_idx, token_idx, gating_scores = self.router.select_tokens(scores, hidden_states)
+            
+            new_states, _, _ = self.block.process_selected(
+                hidden_states, batch_idx, token_idx, gating_scores, use_soft_gating=True, **kwargs
+            )
+            
+            # Logging metrics from the training router
+            router_probs = torch.sigmoid(scores)
+            num_selected = int(self.router.capacity * scores.shape[1])
+            layer_metrics = {
+                'router_logits_mean': scores.mean().item(),
+                'router_logits_std': scores.std().item(),
+                'router_probs_mean': router_probs.mean().item(),
+                'router_probs_std': router_probs.std().item(),
+                'selected_tokens_proportion': num_selected / scores.shape[1],
+                'predictor_loss': predictor_loss.item(),
+            }
+
+        else: # Inference
+            # Use the trained causal router for causal routing
+            predictor_logits = self.causal_router(hidden_states)
+            is_selected = predictor_logits > 0
+            
+            batch_idx, token_idx = is_selected.nonzero(as_tuple=True)
+
+            new_states, _, _ = self.block.process_selected(
+                hidden_states, batch_idx, token_idx, gating_scores=None, use_soft_gating=False, **kwargs
+            )
+            
+            # Logging metrics from the inference predictor
+            layer_metrics = {
+                'inferred_selected_tokens_proportion': (is_selected.sum() / is_selected.numel()).item()
+            }
+
+        return new_states, total_aux_loss, layer_metrics
+
 
 class MoDForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
@@ -56,10 +128,12 @@ class MoDForCausalLM(BaseForCausalLM):
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
         total_aux = torch.tensor(0.0, device=hidden_states.device)
+        all_mod_metrics = []
+        
         for i, layer in enumerate(self.model.layers):
             attn_mask = mask_mapping[layer.attention_type]
-            if i in self._mod_wrappers:
-                hidden_states, aux = self._mod_wrappers[i](
+            if str(i) in self._mod_wrappers:
+                hidden_states, aux, mod_metrics = self._mod_wrappers[str(i)](
                     hidden_states, training=self.training,
                     attention_mask=attn_mask,
                     position_ids=position_ids,
@@ -67,6 +141,8 @@ class MoDForCausalLM(BaseForCausalLM):
                     use_cache=use_cache,
                 )
                 total_aux += aux
+                if self.training: # Only collect metrics during training
+                    all_mod_metrics.append(mod_metrics)
             else:
                 hidden_states = layer(
                     hidden_states=hidden_states,
@@ -77,18 +153,29 @@ class MoDForCausalLM(BaseForCausalLM):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                 )
+                
         aux = {'aux_loss': total_aux} if self.training else {}
+        
+        if all_mod_metrics:
+            agg_metrics = {}
+            # Get keys from the first layer's metrics
+            metric_keys = all_mod_metrics[0].keys()
+            for key in metric_keys:
+                # Average the metric across all MoD layers
+                agg_metrics[f"mod/{key}"] = torch.tensor([m[key] for m in all_mod_metrics]).mean().item()
+            aux['router_stats'] = agg_metrics
+            
         return hidden_states, aux
 
     def get_trainable_parameters(self):
-        params_map = {'router': [], 'causal_router': [], 'base_model': []}
+        params_map = {'mod_router': [], 'mod_causal_router': [], 'base_model': []}
         for n, p in self.named_parameters():
             if not p.requires_grad:
                 continue
-            if 'router' in n and 'causal_router' not in n:
-                params_map['router'].append(p)
-            elif 'causal_router' in n:
-                params_map['causal_router'].append(p)
+            if 'causal_router' in n:
+                params_map['mod_causal_router'].append(p)
+            elif 'router' in n:
+                params_map['mod_router'].append(p)
             else:
                 params_map['base_model'].append(p)
         return [{'name': k, 'params': v} for k, v in params_map.items() if v]

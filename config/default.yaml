@@ -36,6 +36,7 @@ model:
 
   mod:
     aux_loss_weight: 0.01
+    predictor_loss_weight: 0.01
 
   # Beta schedule for SDT and STT routers
   beta_schedule:
@@ -98,11 +99,11 @@ training:
     lr: 1.0e-5 # Default learning rate
     lrs: # Learning rates per parameter group
       base_model: 1.0e-5
-      router: 1.0e-3
+      mod_router: 1.0e-3
+      mod_causal_router: 1.0e-3
       prior: 1.0e-3
       transition_network: 1.0e-3
       predictive_router: 1.0e-2
-      causal_router: 1.0e-2
 
 system:
   device: "auto" # auto, cuda, mps, cpu
