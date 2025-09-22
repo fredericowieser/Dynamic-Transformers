@@ -1,12 +1,3 @@
-"""
-A robust script to upload a custom DynamicQwen model, tokenizer, and a
-generated model card to the Hugging Face Hub.
-
-This script handles the registration of the custom architecture, generation
-of a detailed README.md from training and evaluation artifacts, and the
-final upload process.
-"""
-
 import argparse
 import json
 import logging
@@ -16,7 +7,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 from huggingface_hub import HfApi, HfFolder
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 # Ensure project root is in Python path for imports
 try:
@@ -24,9 +15,12 @@ try:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from src.models.qwen.causal_lm import DynamicQwenForCausalLM
-    from src.models.qwen.config import DynamicQwenConfig
-    from src.models.qwen.tokenizer import DynamicQwenTokenizer
+    # Import custom model classes from the new repo structure
+    from src.models.dtf.causalLM import DTFForCausalLM
+    from src.models.mod.causalLM import MoDForCausalLM
+    from src.models.tdtf.causalLM import TDTFForCausalLM
+    from src.models.standard.causalLM import StandardTransformerForCausalLM
+    from transformers import Qwen2Config # Use Qwen2Config as the base config
 except ImportError as e:
     print("❌ Error: Could not import custom model classes from 'src'.")
     print(f"   (Details: {e})")
@@ -44,10 +38,19 @@ log = logging.getLogger(__name__)
 
 def _register_custom_architecture():
     """Registers the custom DynamicQwen model with the AutoModel classes."""
-    log.info("Registering custom 'dynamic_qwen' architecture...")
-    AutoConfig.register("dynamic_qwen", DynamicQwenConfig)
-    AutoModelForCausalLM.register(DynamicQwenConfig, DynamicQwenForCausalLM)
-    log.info("✅ Architecture registered successfully.")
+    log.info("Registering custom architectures...")
+    AutoConfig.register("dtf", Qwen2Config) 
+    AutoModelForCausalLM.register(Qwen2Config, DTFForCausalLM)
+
+    AutoConfig.register("mod", Qwen2Config) 
+    AutoModelForCausalLM.register(Qwen2Config, MoDForCausalLM)
+
+    AutoConfig.register("tdtf", Qwen2Config) 
+    AutoModelForCausalLM.register(Qwen2Config, TDTFForCausalLM)
+
+    AutoConfig.register("standard", Qwen2Config) 
+    AutoModelForCausalLM.register(Qwen2Config, StandardTransformerForCausalLM)
+    log.info("✅ Architectures registered successfully.")
 
 
 def _generate_eval_section(eval_results: Dict[str, Any]) -> str:
@@ -56,7 +59,7 @@ def _generate_eval_section(eval_results: Dict[str, Any]) -> str:
         return ""
 
     header = "\n## Evaluation\nResults on standard benchmarks:\n\n"
-    table_header = "| Task | Metric | Value |\n|---|---|---|\n"
+    table_header = "| Task | Metric | Value |\n|---|---|---|"
     table_rows = []
     for task, metrics in sorted(eval_results.items()):
         for metric, value in sorted(metrics.items()):
@@ -84,7 +87,7 @@ def _generate_training_section(training_config: Dict[str, Any]) -> str:
     # Extract a relevant subset of the config to display
     rel_config = {
         "run_name": training_config.get("run", {}).get("name"),
-        "model": training_config.get("model", {}).get("model_cfg"),
+        "model": training_config.get("model", {}),
         "training": training_config.get("training"),
     }
     config_yaml = yaml.dump(rel_config, indent=2, sort_keys=False, default_flow_style=False)
@@ -102,16 +105,19 @@ def generate_model_card(
     """
     Generates a complete README.md model card from available artifacts.
     """
-    arch = model_config.dynamic_architecture.upper()
-    gamma = model_config.capacity_gamma
-    base_model = model_config._name_or_path
+    # Extract dynamic_architecture and capacity_gamma from model_config
+    # These are now directly attributes of the Qwen2Config object
+    arch = getattr(model_config, "dynamic_architecture", "standard").upper()
+    gamma = getattr(model_config, "capacity_gamma", "N/A")
+    base_model = model_config._name_or_path if hasattr(model_config, '_name_or_path') else "Unknown Base Model"
 
-    return f"""---
+    return f"""
+---
 license: apache-2.0
 tags:
 - qwen
 - dynamic-transformer
-- {model_config.dynamic_architecture}
+- {arch.lower()} # Use lower case for tags
 ---
 
 # Model Card for {repo_id.split('/')[-1]}

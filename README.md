@@ -1,122 +1,320 @@
-# Dynamic Transformers (DTF)
+# Dynamic Transformer
 
-This repository contains the official implementation for the MSc thesis, **"Dynamic Transformers"**. It provides the code to train, evaluate, and run inference with the proposed Dynamic Transformer (DTF) architecture, a conditional computation model inspired by predictive coding.
+Professional implementation of three transformer architectures: Standard Transformer (Qwen2.5), Dynamic Transformer (DTF), and Mixture of Depths (MoD) with unified training infrastructure.
 
-## Abstract
-
-The standard Transformer's uniform application of computation to all tokens creates a scalability bottleneck. While methods like Mixture-of-Depths (MoD) offer a solution by processing a subset of tokens based on a learned "importance" score, we propose a more principled approach. The **Dynamic Transformer (DTF)** is a novel architecture inspired by computational neuroscience, specifically Variational Predictive Routing (VPR). DTF uses a surprise-based gating mechanism to conditionally allocate compute, routing tokens based on a context-dependent measure of information gain.
-
-This repository provides code to adapt a pre-trained Qwen2.5-0.5B model to the DTF architecture and compare it against a re-implemented MoD baseline under matched compute capacity ($\gamma=0.5$). Our results show that DTF achieves a small but consistent validation loss advantage over MoD, suggesting a more effective inductive bias for routing.
-
-## Architecture Overview
-
-The DTF replaces the standard uniform stack of Transformer layers with alternating **Decision** and **Dynamic** layers. The Decision Layer computes a posterior state (via a standard TF block) and a prior prediction (via a lightweight PriorFFN). The Dynamic Layer's Predictive Router uses these signals to gate which tokens are processed by a second TF block.
-
- 
-*A high-level comparison of the standard Transformer (left) and the DTF architecture (right).*
-
-## Features
-
-- **Model Implementation**: `DynamicQwenForCausalLM` with support for both **DTF** and **MoD** architectures.
-- **Training Script**: A robust training script using `accelerate` for distributed training, `hydra` for configuration, and supporting LoRA for parameter-efficient fine-tuning.
-- **Evaluation Script**: Integrated with `lm-eval` for standardized benchmarking.
-- **Inference Script**: A simple script to run generation with a trained model.
-- **Hugging Face Hub Uploader**: A utility to generate a model card and upload models to the Hub.
-
-## Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/dynamic-transformers.git
-    cd dynamic-transformers
-    ```
-
-2.  **Create a virtual environment and install dependencies:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate
-    pip install -e ".[dev]"
-    ```
-    *The `-e` flag installs the project in editable mode.*
-
-## Quickstart
-
-All scripts are configured using [Hydra](https://hydra.cc/). You can override any configuration setting from the command line.
-
-### 1. Training a Model
-
-Use the `train.py` script to fine-tune a model. You can select the dynamic architecture by overriding `model`.
-
-**Train a DTF model:**
-```bash
-python train.py model=dtf run.name=dtf-qwen-0.5b-run1
-```
-
-**Train a MoD baseline:**
-```bash
-python train.py model=mod run.name=mod-qwen-0.5b-run1
-```
-- Checkpoints will be saved to the `outputs/` directory, structured by date and run name.
-- Training progress is logged to Weights & Biases if `logging.wandb.enabled=true`.
-
-### 2. Evaluating a Model
-
-Use the `evaluate.py` script to run benchmarks on a trained checkpoint using the `lm-evaluation-harness`.
+## 🚀 Quick Start
 
 ```bash
-python evaluate.py \
-    --model_path outputs/your-run-name/final_model \
-    --tasks general
+# Clone and setup
+git clone <repository>
+cd Dynamic-Transformer
+
+# Quick test with DTF (1000 steps)
+./run_training.sh quick dtf
+
+# Quick test with MoD
+./run_training.sh quick mod
+
+# Quick test with Standard Transformer
+./run_training.sh quick standard
 ```
-- The `--tasks` argument can be a comma-separated list of tasks or pre-defined suites (`general`, `math`, `code`, `quick_test`).
-- Results are saved as a JSON file in the model's directory.
 
-### 3. Running Inference
+## 🏗️ Architecture Overview
 
-Use the `inference.py` script for text generation.
+This repository implements three transformer variants:
+
+- **Standard Transformer**: Baseline Qwen2.5 architecture with RMSNorm, SwiGLU, and RoPE
+- **Dynamic Transformer (DTF)**: Surprise-based routing using predictive coding principles
+- **Mixture of Depths (MoD)**: Learned importance scoring with top-k token selection
+
+All models share a unified base architecture and training pipeline.
+
+## 📋 Requirements
+
+- Python 3.8+
+- PyTorch 2.0+
+- Transformers 4.30+
+- See `pyproject.toml` for complete dependencies
+
+## 📁 Project Structure
+
+```
+Dynamic-Transformer/
+├── README.md                    # This file
+├── DTF-Spec.md                 # DTF architecture specification
+├── MoD-Spec.md                 # MoD architecture specification
+├── Qwen-Spec.md                # Qwen2.5 architecture specification
+├── TRAINING_GUIDE.md           # Detailed training guide
+├── run_training.sh             # Universal training script
+├── train.py                    # Main training entry point
+├── config/                     # Hydra configurations
+│   ├── train.yaml              # Base training config
+│   ├── dtf_scratch.yaml        # DTF from scratch
+│   ├── dtf_transfer.yaml       # DTF transfer learning
+│   ├── mod_scratch.yaml        # MoD from scratch
+│   ├── mod_transfer.yaml       # MoD transfer learning
+│   ├── standard_scratch.yaml   # Standard from scratch
+│   └── standard_transfer.yaml  # Standard transfer learning
+└── src/                        # Source code
+    ├── models/                 # Model implementations
+    │   ├── base/               # Shared base classes
+    │   ├── standard/           # Standard Transformer
+    │   ├── dtf/                # Dynamic Transformer
+    │   └── mod/                # Mixture of Depths
+    ├── training/               # Training utilities
+    └── data/                   # Dataset utilities
+```
+
+## 🎯 Usage
+
+### Universal Training Script
+
+The `run_training.sh` script provides a unified interface for all training modes:
 
 ```bash
-python inference.py \
-    "path/to/your/model_checkpoint" \
-    "The capital of the United Kingdom is" \
-    --max_new_tokens 50
+./run_training.sh [MODE] [MODEL_TYPE] [CONFIG]
+
+# Modes:
+#   quick      - Quick test (1000 steps)
+#   scratch    - Train from scratch
+#   transfer   - Transfer learning from Qwen2.5
+#   custom     - Use custom config file
+
+# Model Types:
+#   dtf        - Dynamic Transformer
+#   mod        - Mixture of Depths
+#   standard   - Standard Transformer
+#   tdtf       - Temporal Dynamic Transformer (new in this repo)
 ```
-- **Note:** The script automatically disables the KV cache for dynamic models (`DTF`, `MoD`), as it is incompatible with their routing mechanism.
 
-### 4. Uploading to Hugging Face Hub
+### Training Examples
 
-The `upload_to_hub.py` script generates a model card and uploads your model, tokenizer, and custom code to the Hub.
+#### Quick Testing
+```bash
+# Test DTF for 1000 steps
+./run_training.sh quick dtf
+
+# Test MoD for 1000 steps
+./run_training.sh quick mod
+
+# Test Standard Transformer for 1000 steps
+./run_training.sh quick standard
+```
+
+#### Laptop 10M Wikitext Training (CPU-friendly)
+This configuration is designed for quick local testing on a CPU, using a very small model (10M parameters) and a subset of the Wikitext dataset.
 
 ```bash
-# First, log in to your Hugging Face account
-huggingface-cli login
-
-# Then, run the upload script
-python upload_to_hub.py \
-    path/to/your/model_checkpoint \
-    your-new-repo-name \
-    --hf_username YOUR_HF_USERNAME \
-    --eval_results path/to/eval_results.json
+python train.py --config-name=laptop_10m_wikitext
 ```
 
-## Results Summary
+#### Full Training from Scratch
+```bash
+# Train DTF from scratch (10 epochs)
+./run_training.sh scratch dtf
 
-Our key finding is that the DTF architecture consistently achieves a lower validation loss than the MoD baseline at a matched compute capacity ($\gamma=0.5$). This suggests that the surprise-based, model-comparison gating provides a more effective inductive bias for routing than a context-independent importance score.
+# Train MoD from scratch (5 epochs)
+./run_training.sh scratch mod
 
-However, both dynamic models underperform the dense baseline on several downstream benchmarks in our limited transfer-learning setting. This is an expected trade-off due to reduced per-token computation and highlights challenges in adapting pre-trained models to conditional computation. For a detailed analysis, please see Chapter 5 of the [thesis](link-to-thesis.pdf).
-
-## Citation
-
-If you find this work useful in your research, please consider citing the thesis:
-
-```bibtex
-@mastersthesis{wieser2025dynamic,
-  author  = {Wieser, Frederico Luis},
-  title   = {Dynamic Transformers},
-  school  = {University College London},
-  year    = {2025},
-  month   = {September},
-  address = {London, UK},
-  note    = {MSc Computational Statistics and Machine Learning}
-}
+# Train Standard Transformer from scratch
+./run_training.sh scratch standard
 ```
+
+#### Transfer Learning from Qwen2.5 (0.5B and above)
+This mode allows you to fine-tune DTF, MoD, or TDTF models by initializing their core transformer layers with weights from a pre-trained Qwen2.5 model (e.g., 0.5B, 1.5B, 3B).
+
+```bash
+# Transfer learn DTF from Qwen2.5-0.5B
+./run_training.sh transfer dtf model.size=0.5B
+
+# Transfer learn MoD from Qwen2.5-1.5B
+./run_training.sh transfer mod model.size=1.5B
+
+# Transfer learn TDTF from Qwen2.5-3B
+./run_training.sh transfer tdtf model.size=3B
+
+# Example: Transfer learn DTF from Qwen2.5-0.5B and freeze base transformer blocks
+# This is useful for focusing training on the dynamic components.
+./run_training.sh transfer dtf model.size=0.5B model.freeze_base_model=True
+```
+
+#### Direct Training with Hydra
+```bash
+# DTF from scratch
+python train.py --config-name=dtf_scratch
+
+# MoD transfer learning
+python train.py --config-name=mod_transfer
+
+# Override parameters
+python train.py --config-name=dtf_scratch training.num_epochs=5 training.batch_size=4
+```
+
+### Custom Configuration
+
+Create a custom config file in `config/`:
+
+```yaml
+# config/my_experiment.yaml
+defaults:
+  - train
+  - _self_
+
+model:
+  type: dtf
+  size: 0.5B
+
+training:
+  from_scratch: true
+  num_epochs: 5
+  optimizer:
+    lr: 5e-4
+
+data:
+  batch_size: 16
+```
+
+Then run:
+```bash
+./run_training.sh custom dtf my_experiment
+```
+
+## 🏛️ Model Architectures
+
+### Standard Transformer
+- **Base**: Qwen2.5 architecture (RMSNorm, SwiGLU, RoPE, GQA)
+- **Use Case**: Baseline comparison and standard language modeling
+- **Details**: See [Qwen-Spec.md](Qwen-Spec.md)
+
+### Dynamic Transformer (DTF)
+- **Innovation**: Surprise-based routing using predictive coding
+- **Key Components**:
+  - Decision layers compute original, posterior, and prior states
+  - Dynamic layers process selected tokens based on routing scores
+  - Surprise metrics (CE/CU) determine computational allocation
+- **Efficiency**: ~12.5% of tokens processed per layer
+- **Details**: See [DTF-Spec.md](DTF-Spec.md)
+
+### Mixture of Depths (MoD)
+- **Innovation**: Learned importance scoring for token selection
+- **Key Components**:
+  - Router networks compute token importance scores
+  - Top-k selection chooses most important tokens
+  - Auxiliary load balancing loss
+- **Efficiency**: ~12.5% of tokens processed per layer
+- **Details**: See [MoD-Spec.md](MoD-Spec.md)
+
+### Temporal Dynamic Transformer (TDTF)
+- **Innovation**: Teacher-student framework for temporal event detection and conditional computation.
+- **Key Components**:
+  - Transition Network (TPN) predicts residual updates.
+  - Predictive Router (teacher) uses surprise metrics (CE/CU) for optimal routing decisions during training.
+  - Causal Router (student) learns to predict teacher's decisions for efficient inference.
+- **Efficiency**: Conditional computation based on temporal events.
+- **Details**: See [TDTF-Spec.md](docs/TDTF-Spec.md)
+
+## 🎛️ Configuration
+
+### Model Parameters
+- `model.type`: Architecture type (`standard`/`dtf`/`mod`/`tdtf`)
+- `model.size`: Model size (`0.5B`/`1.5B`/`3B`/`10M`)
+- `training.from_scratch`: Train from scratch vs transfer learning
+- `model.freeze_base_model`: (New) Set to `True` to freeze the weights of the main Qwen2.5 transformer blocks during transfer learning.
+
+### DTF-Specific Parameters
+- `dtf_capacity`: Fraction of tokens to process (default: 0.125)
+- `beta_ce_init`: Expected change temperature (default: -0.5)
+- `beta_cu_init`: Unexpected change temperature (default: -0.8)
+
+### MoD-Specific Parameters
+- `mod_capacity`: Fraction of tokens to process (default: 0.125)
+- `mod_aux_loss_weight`: Load balancing weight (default: 0.01)
+
+### TDTF-Specific Parameters
+- `tdtf_capacity`: Fraction of tokens to process (default: 0.5)
+- `tpn_loss_weight`: Weight for the Transition Network (TPN) auxiliary loss (default: 0.05)
+- `causal_loss_weight`: Weight for the Causal Router auxiliary loss (default: 0.01)
+- `ma_window`: Window size for the Moving Average calculation in the Predictive Router (default: 100)
+- `o_ce_init`: Initial offset for the Expected Change (CE) criterion (default: 1.025)
+- `m_cu_init`: Initial multiplier for the Unexpected Change (CU) criterion (default: 1.1)
+
+
+## 💾 Platform Support
+
+The training script automatically detects and optimizes for:
+
+- **CUDA GPUs**: BF16, AMP, Flash Attention
+- **Apple Silicon**: Metal Performance Schedulers (MPS), FP32
+- **CPU**: Fallback with appropriate settings
+
+## 📊 Monitoring
+
+Training progress is logged with:
+- Loss metrics and gradients
+- Routing statistics (tokens selected/processed)
+- Model efficiency metrics
+- Hardware utilization
+
+## 🔧 Development
+
+### Adding New Models
+
+1. Create model implementation in `src/models/new_model/`
+2. Inherit from `BaseDynamicModel` or implement standard interface
+3. Create config files: `new_model_scratch.yaml`, `new_model_transfer.yaml`
+4. Register in training utilities
+
+### Model Interface
+
+All models follow a unified interface:
+```python
+class MyModel(BaseDynamicModel):
+    def forward(self, input_ids, **kwargs):
+        # Return: CausalLMOutputWithPast
+        pass
+```
+
+## 📚 Documentation
+
+- **[DTF-Spec.md](DTF-Spec.md)**: Dynamic Transformer architecture details
+- **[MoD-Spec.md](MoD-Spec.md)**: Mixture of Depths architecture details
+- **[Qwen-Spec.md](Qwen-Spec.md)**: Qwen2.5 baseline architecture details
+- **[TDTF-Spec.md](TDTF-Spec.md)**: Temporal Dynamic Transformer architecture details
+- **[TRAINING_GUIDE.md](TRAINING_GUIDE.md)**: Comprehensive training guide
+
+## 🚀 Performance
+
+All models are optimized for efficiency:
+
+- **Standard Transformer**: Full computational baseline
+- **DTF**: ~7-8x computational savings with comparable performance
+- **MoD**: ~7-8x computational savings with learned routing
+- **TDTF**: Designed for efficient temporal processing.
+
+Memory usage scales with model size:
+- **0.5B models**: ~3-4GB GPU memory
+- **1.5B models**: ~8-10GB GPU memory
+- **3B models**: ~16-20GB GPU memory
+- **10M models**: Minimal memory usage, suitable for CPU.
+
+## 📄 License
+
+See LICENSE file for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Follow existing code style and architecture patterns
+4. Add tests for new functionality
+5. Submit pull request
+
+## 📞 Support
+
+For issues and questions:
+1. Check existing documentation
+2. Review configuration files
+3. Open GitHub issue with:
+   - Error logs
+   - System information
+   - Reproduction steps

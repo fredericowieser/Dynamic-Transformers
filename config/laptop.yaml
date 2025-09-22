@@ -1,0 +1,45 @@
+
+# Overrides for local laptop training
+
+defaults:
+  - default
+  - _self_
+
+run:
+  name: "laptop-debug-${now:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: standard  # standard, mod, sdt, stt
+  size: 10M
+  from_scratch: true
+  attn_implementation: "eager"
+
+system:
+  device: cpu
+  precision: "no"
+  torch_dtype: "float32"
+  use_flash_attention: false
+  num_workers: 0
+  pin_memory: false
+
+data:
+  batch_size: 2
+  tokenizer_name: "Qwen/Qwen2.5-0.5B" # Use a real tokenizer
+  block_size: 256
+  dataset_configs:
+    - type: "pretrain"
+      dataset_name: "wikitext"
+      dataset_config: "wikitext-103-raw-v1"
+      text_column: "text"
+      train_subset_ratio: 0.001 # Very small subset
+
+training:
+  mode: scratch
+  num_epochs: 1
+  eval_interval: 10
+  accumulate_grad_batches: 1
+
+logging:
+  level: DEBUG
+  wandb:
+    enabled: false

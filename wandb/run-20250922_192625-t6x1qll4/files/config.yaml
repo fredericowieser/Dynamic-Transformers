@@ -1,0 +1,153 @@
+_wandb:
+    value:
+        cli_version: 0.20.1
+        m: []
+        python_version: 3.11.11
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 50
+                - 51
+                - 53
+                - 71
+                - 98
+            "2":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 50
+                - 51
+                - 53
+                - 71
+                - 98
+            "3":
+                - 13
+                - 16
+                - 55
+            "4": 3.11.11
+            "5": 0.20.1
+            "6": 4.54.1
+            "8":
+                - 2
+            "12": 0.20.1
+            "13": darwin-arm64
+data:
+    value:
+        batch_size: 16
+        block_size: 1024
+        dataset_configs:
+            - dataset_config: wikitext-103-raw-v1
+              dataset_name: wikitext
+              text_column: text
+              train_subset_ratio: 1
+              type: pretrain
+        name: pretrain_mix
+        tokenizer_name: Qwen/Qwen2.5-0.5B
+        validation_split_percentage: 2
+lm_eval:
+    value:
+        enabled: false
+logging:
+    value:
+        level: INFO
+        wandb:
+            enabled: true
+            entity: huawei-noahs-ark
+            log_interval: 50
+            project: Dynamic-Transformers
+model:
+    value:
+        attn_implementation: eager
+        beta_schedule:
+            beta_ce_end: 6
+            beta_ce_start: 0.3
+            beta_cu_end: 6
+            beta_cu_start: 0.3
+            type: cosine
+            warmup_steps: 1000
+        capacity: 0.5
+        from_scratch: false
+        m_cu_init: 1.1
+        ma_window: 100
+        mod:
+            aux_loss_weight: 0.01
+        o_ce_init: 1.025
+        pretrained_model_name_or_path: Qwen/Qwen2.5-0.5B
+        prior_ffn_intermediate_size_factor: 0.25
+        scratch_config:
+            0.5B:
+                hidden_size: 896
+                intermediate_size: 4864
+                num_attention_heads: 14
+                num_hidden_layers: 24
+                num_key_value_heads: 2
+            10M:
+                hidden_size: 32
+                intermediate_size: 128
+                num_attention_heads: 4
+                num_hidden_layers: 2
+                num_key_value_heads: 2
+            max_position_embeddings: 32768
+            rope_theta: 1e+06
+            sliding_window: 131072
+            vocab_size: 151936
+        sdt:
+            prior_loss_weight: 0.05
+        size: 0.5B
+        stt:
+            causal_loss_weight: 0.01
+            tpn_loss_weight: 0.05
+        tie_word_embeddings: true
+        type: sdt
+        use_cache: false
+peft:
+    value:
+        enabled: false
+push_to_hub:
+    value:
+        enabled: false
+run:
+    value:
+        name: experiment-2025-09-22_19-26-25
+        output_dir: outputs/experiment-2025-09-22_19-26-25
+        run_final_evaluation: true
+        seed: 42
+system:
+    value:
+        compile_model: false
+        device: auto
+        num_workers: 4
+        persistent_workers: true
+        pin_memory: true
+        precision: "no"
+        torch_dtype: bfloat16
+        use_flash_attention: true
+training:
+    value:
+        accumulate_grad_batches: 64
+        eval_interval: 10000
+        gradient_checkpointing: true
+        gradient_clip_val: 1
+        max_steps: -1
+        mode: finetune
+        num_epochs: 10
+        optimizer:
+            adam_beta1: 0.9
+            adam_beta2: 0.95
+            adam_epsilon: 1e-08
+            lr: 1e-05
+            lrs:
+                base_model: 1e-05
+                causal_router: 0.01
+                predictive_router: 0.01
+                prior: 0.001
+                router: 0.001
+                transition_network: 0.001
+            scheduler: cosine
+            warmup_ratio: 0.01
+            weight_decay: 0.01
+        use_gradient_clipping: true
