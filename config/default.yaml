@@ -68,7 +68,7 @@ model:
 
 data:
   name: "pretrain_mix"
-  batch_size: 16
+  batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
   validation_split_percentage: 2
