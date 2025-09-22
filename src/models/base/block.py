@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch._dynamo
 from typing import Tuple, Optional
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
@@ -16,6 +17,7 @@ class DynamicBlock(nn.Module):
     def forward(self, hidden_states: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, ...]:
         return self.layer(hidden_states, **kwargs)
 
+    @torch._dynamo.disable
     def process_selected(
         self,
         hidden_states: torch.Tensor,
