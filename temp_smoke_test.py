@@ -1,46 +1,61 @@
 import torch
 from omegaconf import OmegaConf
 from src.training.utils import create_model
-import hydra
 
-# Initialize Hydra and compose the config
-# The path is relative to the current working directory where the script is run
-with hydra.initialize(config_path="config", version_base=None):
-    cfg = hydra.compose(config_name="laptop_10m_wikitext.yaml")
+# Simplified and unified config for smoke test
+cfg = OmegaConf.create({
+  "system": {
+      "torch_dtype": "float32", 
+      "use_flash_attention": False
+  },
+  "model": {
+    "type": "stt",
+    "size": "10M",
+    "from_scratch": True,
+    "scratch_config": {
+      "vocab_size": 32000,
+      "max_position_embeddings": 1024,
+      "rope_theta": 1000000.0,
+      "sliding_window": 1024,
+      "10M": {"hidden_size": 32, "intermediate_size": 128, "num_hidden_layers": 2, "num_attention_heads": 4, "num_key_value_heads": 2},
+    },
+    "capacity": 0.5,
+    "o_ce_init": 1.025, 
+    "m_cu_init": 1.1, 
+    "ma_window": 100,
+    "attn_implementation": "eager", 
+    "use_cache": False, 
+    "tie_word_embeddings": True,
+    "stt": {
+        "tpn_loss_weight": 0.05, 
+        "causal_loss_weight": 0.01,
+    },
+    "sdt": {
+        "prior_loss_weight": 0.05,
+    },
+    "mod": {
+        "aux_loss_weight": 0.01,
+    }
+  },
+})
 
-cfg.training.mode = "scratch"
-cfg.model.size = "10M"
+# --- Test STT ---
+cfg.model.type = "stt"
+print(f"Creating model {cfg.model.type}")
+m = create_model(cfg.model.type, cfg)
+m.eval()
+B, T = 2, 64
+x = torch.randint(0, cfg.model.scratch_config.vocab_size, (B, T))
+with torch.no_grad():
+    out = m(input_ids=x, labels=x)
+print("OK STT:", out["logits"].shape, "loss:", float(out["loss"]))
 
-# Allow dynamic addition of keys to cfg.model
-OmegaConf.set_struct(cfg.model, False)
-
-model_types = ["stt", "sdt", "mod", "standard"]
-
-for model_type in model_types:
-    print(f"\n--- Testing model type: {model_type.upper()} ---")
-    cfg.model.type = model_type
-
-    # Set model-specific parameters if needed
-    if model_type == "stt":
-        cfg.model.prior_ffn_intermediate_size_factor = 0.25
-        cfg.model.stt_capacity = 0.5
-        cfg.model.tpn_loss_weight = 0.05 # From prior.yaml
-        cfg.model.causal_loss_weight = 0.05 # From causal_router.yaml
-    elif model_type == "sdt":
-        cfg.model.prior_ffn_intermediate_size_factor = 0.25
-        cfg.model.sdt_capacity = 0.5
-        cfg.model.prior_loss_weight = 0.05 # From prior.yaml
-        cfg.model.causal_loss_weight = 0.05 # From causal_router.yaml
-    elif model_type == "mod":
-        cfg.model.mod_capacity = 0.5
-        cfg.model.mod_aux_loss_weight = 0.01
-        cfg.model.causal_loss_weight = 0.05 # From causal_router.yaml
-    # For "standard" model, no extra parameters are needed for this test
-
-    m = create_model(cfg.model.type, cfg.model.size, True, cfg)
+# --- Test other models ---
+for typ in ["sdt", "mod"]:
+    cfg.model.type = typ
+    print(f"Creating model {cfg.model.type}")
+    m = create_model(cfg.model.type, cfg)
     m.eval()
-    B,T = 2, 64
-    x = torch.randint(0, cfg.model.scratch_config.vocab_size, (B,T))
     with torch.no_grad():
         out = m(input_ids=x, labels=x)
-    print(f"OK ({model_type.upper()}): logits shape: {out['logits'].shape}, loss: {out['loss'].item()}")
+    print("OK", typ.upper(), ":", out["logits"].shape, "loss:", float(out["loss"]))

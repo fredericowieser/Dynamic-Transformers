@@ -1,4 +1,0 @@
-# config/component/causal_router.yaml
-
-# Defaults for the Causal (student) Router
-causal_loss_weight: 0.10

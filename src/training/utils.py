@@ -20,116 +20,86 @@ from ..models.stt.model import STTForCausalLM
 log = logging.getLogger(__name__)
 
 
-def create_model_config(
-    model_size: str,
-    from_scratch: bool,
-    cfg: DictConfig,
-) -> Qwen2Config:
-    """Create model configuration.
-
-    Args:
-        model_size: '0.5B', '1.5B', or '3B'
-        from_scratch: Whether to train from scratch
-        cfg: The full training config
-
-    Returns:
-        Qwen2Config with appropriate settings
-    """
-    pretrained_name = f"Qwen/Qwen2.5-{model_size}"
-
-    if from_scratch:
-        # Create config from scratch with Qwen2.5 specifications
-        if model_size not in cfg.model.scratch_config:
-            raise ValueError(f"Unknown model size for scratch training: {model_size}")
-
-        config = Qwen2Config(
-            vocab_size=cfg.model.scratch_config.vocab_size,
-            max_position_embeddings=cfg.model.scratch_config.max_position_embeddings,
-            rope_theta=cfg.model.scratch_config.rope_theta,
-            sliding_window=cfg.model.scratch_config.sliding_window,
-            **cfg.model.scratch_config[model_size]
-        )
-        config.init_from_scratch = True
-    else:
-        # Load full config from pretrained
-        config = Qwen2Config.from_pretrained(pretrained_name)
-        log.info(f"create_model_config: intermediate_size after from_pretrained: {config.intermediate_size}")
-
-    # Determine attention implementation based on system config
-    if cfg.system.get('use_flash_attention', False):
-        config.attn_implementation = cfg.model.get('attn_implementation', 'flash_attention_2')
-    else:
-        config.attn_implementation = 'eager' # Fallback to eager
-
-    # Ensure _attn_implementation is consistent with the public one
-    config._attn_implementation = config.attn_implementation
-
-    # Add model-type specific configurations from the provided config
-    # Copy all relevant model parameters from cfg.model to the Qwen2Config object
-    for key, value in cfg.model.items():
-        if key not in ['scratch_config', 'size', 'pretrained_model_name_or_path', 'use_flash_attention_2', 'attn_implementation', 'use_cache', 'tie_word_embeddings', 'intermediate_size', 'params']: # Added 'params' and 'beta_schedule' to exclusion
-            setattr(config, key, value)
-    log.info(f"create_model_config: intermediate_size after cfg.model.items() loop: {config.intermediate_size}")
-    log.info(f"create_model_config: config.hidden_size: {config.hidden_size}")
-    log.info(f"create_model_config: config.num_attention_heads: {config.num_attention_heads}")
-
-
-    # Explicitly set head_dim for consistency
-    config.head_dim = config.hidden_size // config.num_attention_heads
-    log.info(f"create_model_config: config.head_dim: {config.head_dim}")
-
-
-
-    # Common settings for all models
-    config.use_cache = cfg.model.get('use_cache', True)
-    config.tie_word_embeddings = cfg.model.get('tie_word_embeddings', True)
-
-    # Platform-specific settings (use_flash_attention is now handled above for attn_implementation)
-    config.torch_dtype = cfg.system.get('torch_dtype', 'float32')
-
-    return config
-
-
-def create_model(
-    model_type: str,
-    model_size: str,
-    from_scratch: bool,
-    cfg: DictConfig,
-) -> torch.nn.Module:
-    """Create and initialize model."""
-    config = create_model_config(model_size, from_scratch, cfg)
-    pretrained_name = f"Qwen/Qwen2.5-{model_size}"
+def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
+    """Create and initialize model based on the unified config."""
+    model_cfg = cfg.model
+    from_scratch = model_cfg.from_scratch
     torch_dtype = getattr(torch, cfg.system.get('torch_dtype', 'float32'))
 
-    if model_type == "standard":
-        from ..models.standard.model import StandardTransformerForCausalLM
-        if from_scratch:
-            return StandardTransformerForCausalLM(config)
-        else:
-            return StandardTransformerForCausalLM.from_pretrained(pretrained_name, torch_dtype=torch_dtype)
-    
-    model_class_map = {
-        "mod": MoDForCausalLM,
-        "sdt": SDTForCausalLM,
-        "stt": STTForCausalLM,
-    }
-    
-    if model_type in model_class_map:
-        # Add all model-specific hyperparameters from the 'params' block
-        # to the main config object for easy access.
-        if hasattr(cfg.model, 'params'):
-            for key, value in cfg.model.params.items():
-                setattr(config, key, value)
+    # 1. Create base Qwen2Config
+    if from_scratch:
+        if model_cfg.size not in model_cfg.scratch_config:
+            raise ValueError(f"Unknown model size for scratch: {model_cfg.size}")
+        config = Qwen2Config(
+            **model_cfg.scratch_config[model_cfg.size],
+            vocab_size=model_cfg.scratch_config.vocab_size,
+            max_position_embeddings=model_cfg.scratch_config.max_position_embeddings,
+            rope_theta=model_cfg.scratch_config.rope_theta,
+            sliding_window=model_cfg.scratch_config.sliding_window,
+        )
+    else:
+        config = Qwen2Config.from_pretrained(model_cfg.pretrained_model_name_or_path)
 
-        model = model_class_map[model_type](config)
-        if not from_scratch:
-            log.info(f"Initializing {model_type.upper()} from pretrained {pretrained_name}")
-            base_model = Qwen2ForCausalLM.from_pretrained(pretrained_name, torch_dtype=torch_dtype)
-            model.copy_weights_from_pretrained(base_model)
-            del base_model
-        return model
+    # 2. Dynamically update config with all parameters from the 'model' section
+    for key, value in model_cfg.items():
+        setattr(config, key, value)
     
-    raise ValueError(f"Unknown model type: {model_type}")
+    # Unpack model-specific config into the main config
+    if model_type in model_cfg:
+        model_specific_cfg = model_cfg[model_type]
+        for key, value in model_specific_cfg.items():
+            setattr(config, key, value)
+    
+    # Handle special cases like attention implementation
+    if cfg.system.get('use_flash_attention', False):
+        config.attn_implementation = model_cfg.get('attn_implementation', 'flash_attention_2')
+    else:
+        config.attn_implementation = 'eager'
+    config._attn_implementation = config.attn_implementation
+
+
+    # 3. Instantiate the correct model
+    log.debug(f"Final config attributes before model instantiation: {config.__dict__}")
+    model_class_map = {
+        "standard": "src.models.standard.model.StandardTransformerForCausalLM",
+        "mod": "src.models.mod.model.MoDForCausalLM",
+        "sdt": "src.models.sdt.model.SDTForCausalLM",
+        "stt": "src.models.stt.model.STTForCausalLM",
+    }
+    if model_type not in model_class_map:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    def get_class(class_path: str):
+        from importlib import import_module
+        module_path, class_name = class_path.rsplit('.', 1)
+        module = import_module(module_path)
+        return getattr(module, class_name)
+
+    model_class = get_class(model_class_map[model_type])
+    
+    # Pass the entire model config dict as kwargs
+    model_kwargs = OmegaConf.to_container(model_cfg, resolve=True)
+    log.debug(f"Instantiating {model_class.__name__} with kwargs: {model_kwargs}")
+
+    if from_scratch:
+        model = model_class(config, **model_kwargs)
+    else:
+        # For pretrained, we still need to load the base weights
+        model = model_class(config, **model_kwargs)
+        log.info(f"Initializing {model_type.upper()} from pretrained {model_cfg.pretrained_model_name_or_path}")
+        base_model = Qwen2ForCausalLM.from_pretrained(model_cfg.pretrained_model_name_or_path, torch_dtype=torch_dtype)
+        
+        # This method needs to exist on the model class
+        if hasattr(model, 'copy_weights_from_pretrained'):
+             model.copy_weights_from_pretrained(base_model)
+        else:
+            log.warning(f"Model {model_type} does not have 'copy_weights_from_pretrained' method. Weight transfer might be incomplete.")
+            # Fallback to simple load, might fail if architectures differ
+            model.load_state_dict(base_model.state_dict(), strict=False)
+
+        del base_model
+        
+    return model
 
 
 def setup_optimizer_and_scheduler(model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator):

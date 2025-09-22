@@ -1,3 +1,328 @@
+# Directory: `conf`
+
+## File: `conf/base-mod.yaml`
+
+```yaml
+defaults:
+  - base
+
+model:
+  model_cfg:
+    # Architecture configuration
+    dynamic_architecture: "mod"  # MoD architecture
+    capacity_gamma: 0.5
+
+    # VPR parameters (disabled for MoD)
+    prior_loss_schedule: null
+    learn_beta_ce: False
+    learn_beta_cu: False
+    learn_cu_multiplier: False
+    learn_ce_offset: False
+    beta_ce_init: null
+    beta_cu_init: null
+    cu_detection_multiplier_init: null
+    ce_criterion_offset_init: null
+```
+
+## File: `conf/base.yaml`
+
+```yaml
+defaults:
+  - _self_
+  - data: pretrain_mix
+
+run:
+  name: "LARGER-PRIOR-TEST-qwen2.5-0.5B-${model.model_cfg.dynamic_architecture}-${data.name}-${now:%Y-%m-%d_%H-%M-%S}-gamma=${model.model_cfg.capacity_gamma}"
+  output_dir: "outputs/${run.name}"
+  seed: 42
+  device: "auto"
+  precision: "bf16"
+  run_final_evaluation: True
+
+data:
+  name: ${hydra:runtime.choices.data}
+  batch_size: 16
+  tokenizer_name: "Qwen/Qwen2.5-0.5B"
+  block_size: 1024
+  validation_split_percentage: 2
+
+peft:
+  enabled: False
+  config:
+    _target_: peft.LoraConfig
+    r: 16
+    lora_alpha: 32
+    target_modules:
+      - "q_proj"      # Query projection
+      - "k_proj"      # Key projection
+      - "v_proj"      # Value projection
+      - "o_proj"      # Output projection
+      - "gate_proj"   # Gate projection (SwiGLU)
+      - "up_proj"     # Up projection (SwiGLU)
+      - "down_proj"   # Down projection
+    modules_to_save:
+      - "vpr_router"
+      - "prior_ffn"
+    lora_dropout: 0.05
+    bias: "none"
+    task_type: "CAUSAL_LM"
+
+model:
+  _target_: src.models.qwen.causal_lm.DynamicQwenForCausalLM.from_pretrained
+  pretrained_model_name_or_path: "Qwen/Qwen2.5-0.5B"
+  use_flash_attention_2: true
+
+  model_cfg:
+    # Architecture configuration
+    dynamic_architecture: "vpr"  # Options: "vpr" or "mod"
+    capacity_gamma: 0.5          # VPR: routing capacity, MoD: token percentage
+
+    # VPR-specific parameters
+    prior_loss_schedule:
+      initial_weight: 0.05  # Initial weight for training
+      final_weight: 0.05    # Final stable weight
+      decay_steps: 0        # Decay duration (steps)
+
+    learn_beta_ce: True
+    learn_beta_cu: True
+    learn_cu_multiplier: True
+    learn_ce_offset: True
+
+    beta_ce_init: -0.3
+    beta_cu_init: -0.6
+    cu_detection_multiplier_init: 1.1
+    ce_criterion_offset_init: 1.025
+
+    token_wise_gating: True
+    moving_average_window_size: 100
+    prior_ffn_intermediate_size_factor: 0.5  # Fraction of main FFN size
+
+    # General training parameters
+    freeze_main_transformer_blocks: False
+
+training:
+  # Training duration control - specify either num_epochs or max_steps
+  # If max_steps > 0, it takes precedence over num_epochs
+  num_epochs: 1
+  max_steps: -1
+
+  accumulate_grad_batches: 64
+  eval_interval: 100
+
+  use_gradient_clipping: False
+  gradient_clip_val: 1.0
+
+  optimizer:
+    base_model_lr: 1.0e-5       # Base model learning rate
+    prior_lr: 1.0e-3
+    vpr_router_lr: 1.0e-2
+    weight_decay: 0.01
+    warmup_ratio: 0.01
+
+logging:
+  wandb:
+    enabled: true
+    project: "Dynamic-Transformers"
+    entity: "huawei-noahs-ark"
+
+```
+
+# Directory: `conf/data`
+
+## File: `conf/data/lang_mix.yaml`
+
+```yaml
+_target_: src.data.mixed_dataset.MixedDataset
+_recursive_: false   # Don't instantiate children automatically
+_convert_:  partial  # Pass nested structures as DictConfig/ListConfig
+
+dataset_configs:
+
+  # Category 1: Core Knowledge & Coherence (~45%)
+  # High-quality English text foundation
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "wikitext"
+    dataset_config: "wikitext-103-raw-v1"  # Clean benchmark dataset
+    text_column: "text"
+    train_subset_ratio: 1.0  # Use full dataset
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article"  # Full articles for long-form text
+    train_subset_ratio: 0.2  # 20% for high-quality news
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "roneneldan/TinyStories"  # Narrative and causal learning
+    text_column: "text"
+    train_subset_ratio: 1.0
+
+  # Category 2: Code & Technical Acumen (~25%)
+  # High-quality code for HumanEval and MBPP performance
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "codeparrot/codeparrot-clean-valid"  # Validated Python code
+    text_column: "content"
+    train_subset_ratio: 1.0
+
+  # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+  #   dataset_name: "bigcode/the-stack-smol"
+  #   text_column: "content" # The text column for this dataset is 'content'.
+  #   train_subset_ratio: 0.2
+
+  # Category 3: Mathematical & Scientific Reasoning (~20%)
+  # Targets MATH, GSM8K, and science benchmarks
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "gsm8k"
+    dataset_config: "main"
+    text_column: "question"  # Question text for pre-training
+    train_subset_ratio: 1.0  # Full dataset (small size)
+
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "sciq"  # Science questions for reasoning
+    text_column: "support"  # Supporting evidence text
+    train_subset_ratio: 1.0
+
+  # Category 4: Multilingual Capabilities (~10%)
+  # Targeted multilingual understanding and translation
+
+  # - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+  #   # REPLACED: Switched to the stable UN Parallel Corpus for multilingual data.
+  #   dataset_name: "un_pc"
+  #   dataset_config: "en-fr" # English-French parallel text.
+  #   text_column: "translation" # Contains a dictionary with 'en' and 'fr' keys.
+  #   train_subset_ratio: 0.2 # Take a 20% slice to keep it fast.
+
+```
+
+## File: `conf/data/pretrain_mix.yaml`
+
+```yaml
+_target_: src.data.mixed_dataset.MixedDataset
+_recursive_: false
+_convert_: partial
+
+dataset_configs:
+
+  # Category 1: Foundational General Knowledge (~40%)
+  # Diverse high-quality text to prevent catastrophic forgetting
+  # and maintain broad language skills
+
+  - type: "pretrain"
+    dataset_name: "wikitext"
+    dataset_config: "wikitext-103-raw-v1"
+    text_column: "text"
+    train_subset_ratio: 1.0  # ~1.8M docs, core text
+
+  - type: "pretrain"
+    dataset_name: "cnn_dailymail"
+    dataset_config: "3.0.0"
+    text_column: "article"
+    train_subset_ratio: 0.2  # ~57k docs, news articles
+
+  - type: "pretrain"
+    dataset_name: "storytracer/US-PD-Books"
+    text_column: "text"
+    train_subset_ratio: 0.5  # ~327k docs, classic literature
+
+  # Category 2: Academic & Scientific Reasoning (~40%)
+  # Targets MMLU and ARC-Challenge with technical text
+
+  - type: "pretrain"
+    dataset_name: "HuggingFaceTB/cosmopedia"
+    dataset_config: "openstax"  # OpenStax configuration
+    text_column: "text"
+    train_subset_ratio: 0.1  # ~3M docs, synthetic textbooks
+
+  - type: "pretrain"
+    dataset_name: "sciq"
+    text_column: "support"
+    train_subset_ratio: 1.0  # ~13k docs, science passages
+
+  # Category 3: Logical & Commonsense Reasoning (~20%)
+  # Improves Hellaswag and general reasoning performance
+
+  - type: "pretrain"
+    dataset_name: "codeparrot/codeparrot-clean-valid"
+    text_column: "content"
+    train_subset_ratio: 1.0  # ~18k docs, code structure
+
+  - type: "pretrain"
+    dataset_name: "roneneldan/TinyStories"
+    text_column: "text"
+    train_subset_ratio: 1.0  # ~2.1M docs, basic causality
+
+```
+
+## File: `conf/data/sft_mix.yaml`
+
+```yaml
+_target_: src.data.mixed_dataset.MixedDataset
+_recursive_: false   # <- DO NOT instantiate children automatically
+_convert_:  partial  # <- Pass nested lists/dicts as DictConfig/ListConfig
+
+dataset_configs:
+  
+  # High-Quality General Instructions (The Foundation)
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "HuggingFaceH4/ultrafeedback_binarized"
+    text_column: "chosen" # Contains the highest-rated response.
+    # This dataset is huge and diverse. 20% is a very large, high-quality sample.
+    train_subset_ratio: 0.20
+
+  # Mathematical and Logical Reasoning
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "meta-math/MetaMathQA"
+    text_column: "messages" # Formatted as a chat.
+    # MetaMath is smaller but crucial for reasoning. We use a larger portion.
+    train_subset_ratio: 0.50
+
+  # Coding and Programming Instructions
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "WizardLMTeam/WizardLM_evol_instruct_70k"
+    text_column: "conversations" # High-quality, complex code instructions.
+    # Use the entire dataset to maximize coding ability.
+    train_subset_ratio: 1.0
+
+  # High-Quality Human-Generated Dialogue
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "HuggingFaceH4/no_robots"
+    text_column: "prompt_response" # 10k high-quality human demonstrations.
+    # Use all of it to improve the model's natural style.
+    train_subset_ratio: 1.0
+
+  # Safety and Helpfulness (Alignment)
+  - _target_: src.data.huggingface_dataset.HuggingFaceDataset
+    dataset_name: "Anthropic/hh-rlhf"
+    text_column: "chosen" # The "helpful and harmless" response.
+    # Use all of it to teach the model safe boundaries.
+    train_subset_ratio: 1.0
+```
+
+## File: `conf/data/test.yaml`
+
+```yaml
+# This file defines a simple, single-dataset configuration for testing.
+# It uses only the 'openassistant-guanaco' dataset.
+# This does not use the MixedDataModule, as it's only one dataset.
+#
+# To use this config, run:
+# python main.py data=test
+
+_target_: src.data.huggingface_datamodule.HuggingFaceDataModule  # Updated: New path to HuggingFaceDataModule
+
+dataset_name: "timdettmers/openassistant-guanaco"
+dataset_config: null
+text_column: "text" # This dataset has a single 'text' column.
+tokenizer_name: "meta-llama/Llama-3.2-1B-instruct"
+block_size: 1024
+batch_size: 4
+validation_split_percentage: 5
+train_subset_ratio: null # Use the full dataset.
+```
+
 # Directory: `src/data`
 
 ## File: `src/data/gate_logging.py`

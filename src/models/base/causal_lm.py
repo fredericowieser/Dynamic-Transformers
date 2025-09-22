@@ -1,181 +1,157 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List
-from omegaconf import DictConfig
-from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm, Qwen2RotaryEmbedding, Qwen2DecoderLayer, Qwen2Config
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
-from .block import DynamicBlock
+from typing import Dict, Any, Optional, List, Tuple
 import logging
-import copy
+
+from transformers import PreTrainedModel
+from transformers.models.qwen2.modeling_qwen2 import (
+    Qwen2Config,
+    Qwen2Model,
+    Qwen2DecoderLayer,
+    Qwen2RMSNorm,
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+    Qwen2ForCausalLM,
+)
 
 log = logging.getLogger(__name__)
 
-from transformers import PreTrainedModel, Qwen2Config
-
 class BaseForCausalLM(PreTrainedModel):
-    config_class = Qwen2Config 
+    config_class = Qwen2Config
 
-    def __init__(self, config):
+    def __init__(self, config: Qwen2Config, **kwargs):
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList()
-        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        # ————————————————
-        # Mirror Qwen2Model: own a single rotary embedding
-        self.rotary_emb = Qwen2RotaryEmbedding(config)
-        # ————————————————
-        
+        self.model_params = kwargs
+        self.model = Qwen2Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         if config.tie_word_embeddings:
-            self.lm_head.weight = self.embed_tokens.weight
+            self.lm_head.weight = self.model.embed_tokens.weight
 
-    def _setup_layers(self):
-        raise NotImplementedError("Subclasses must implement `_setup_layers`")
-
-    def _forward_layers(self, hidden_states: torch.Tensor, **kwargs) -> Dict[str, Any]:
-        raise NotImplementedError("Subclasses must implement `_forward_layers`")
+    def copy_weights_from_pretrained(self, base_model: Qwen2ForCausalLM):
+        log.info("Copying weights from pretrained model...")
+        self.model.load_state_dict(base_model.model.state_dict(), strict=False)
+        self.lm_head.load_state_dict(base_model.lm_head.state_dict(), strict=False)
+        log.info("Weight copy complete.")
 
     def forward(
-        self, input_ids: Optional[torch.LongTensor] = None,
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Any] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        **kwargs
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        output_attentions: bool = False,
+        **kwargs,
     ) -> Dict[str, Any]:
-        
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+        cfg = self.config
+        use_cache = use_cache if use_cache is not None else cfg.use_cache
 
-        hidden_states = inputs_embeds
-        B, T, D = hidden_states.shape
+        # Input handling (match HF logic)
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("Specify exactly one of input_ids or inputs_embeds")
+        if inputs_embeds is None:
+            inputs_embeds = self.model.embed_tokens(input_ids)
+
+        # Past KV and cache positions
+        if use_cache and past_key_values is None:
+            # We don’t create DynamicCache explicitly here; Qwen2Model does this
+            # but for training we typically keep use_cache=False.
+            pass
+
+        if cache_position is None:
+            past_seen = 0
+            cache_position = torch.arange(
+                past_seen, past_seen + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
 
         if position_ids is None:
-            position_ids = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1)
-        
-        causal_mask = _prepare_4d_causal_attention_mask(attention_mask, (B, T), hidden_states, 0)
-        
-        # compute RoPE once (partial dims) and share to every layer
-        cos, sin = self.rotary_emb(hidden_states, position_ids)
-        layer_kwargs = {
-            **kwargs,
-            "attention_mask": causal_mask,
-            "position_ids": position_ids,
-            "position_embeddings": (cos, sin),
-        }
-        
-        layer_outputs = self._forward_layers(hidden_states, **layer_kwargs)
-        
-        final_hidden_states = self.norm(layer_outputs["hidden_states"])
-        logits = self.lm_head(final_hidden_states)
-        
-        lm_loss = self.compute_loss(logits, labels)
-        
-        total_loss = lm_loss
-        if "aux_loss" in layer_outputs and layer_outputs["aux_loss"] is not None and self.training:
-            total_loss += layer_outputs["aux_loss"]
-        
-        final_outputs = {"logits": logits, "loss": total_loss, "lm_loss": lm_loss}
-        final_outputs.update(layer_outputs)
-        
-        return final_outputs
+            # unsqueezed to [1, T], now expand to [B, T] for all batches
+            position_ids = cache_position.unsqueeze(0)
+            batch_size = inputs_embeds.shape[0]
+            position_ids = position_ids.expand(batch_size, -1)
 
-    def compute_loss(self, logits, labels):
+        # Create mask mapping (same contract as Qwen2Model)
+        if not isinstance(causal_mask_mapping := attention_mask, dict):
+            mask_kwargs = {
+                "config": self.model.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            causal_mask_mapping = {"full_attention": create_causal_mask(**mask_kwargs)}
+            if getattr(self.model, "has_sliding_layers", False):
+                causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(
+                    **mask_kwargs
+                )
+
+        hidden_states = inputs_embeds
+
+        # Create position embeddings once (stock behavior)
+        # Qwen2Model stores rotary_emb internally
+        position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
+
+        # Run layers (allow subclasses to interpose dynamic logic)
+        layer_kwargs = {**kwargs, "attention_mask": causal_mask_mapping["full_attention"], "position_ids": position_ids, "position_embeddings": position_embeddings}
+        
+        hidden_states, aux = self._run_layers(
+            hidden_states=hidden_states,
+            mask_mapping=causal_mask_mapping,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            output_attentions=output_attentions,
+            **kwargs,
+        )
+
+        hidden_states = self.model.norm(hidden_states)
+        logits = self.lm_head(hidden_states)
+
+        # Cross-entropy loss
+        loss = None
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = nn.CrossEntropyLoss()
-            return loss_fct(shift_logits.view(-1, logits.size(-1)), shift_labels.view(-1))
-        return None
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
-    def gradient_checkpointing_enable(self):
-        """
-        Enables gradient checkpointing for all `DynamicBlock` and `Qwen2DecoderLayer`
-        instances within the model's layers.
-        """
-        for layer in self.layers:
-            if isinstance(layer, DynamicBlock):
-                if hasattr(layer.layer, 'gradient_checkpointing_enable'):
-                    layer.layer.gradient_checkpointing_enable()
-            elif isinstance(layer, nn.ModuleDict):
-                # Handle cases where DynamicBlock is nested in ModuleDict (e.g., MoD, SDT, STT)
-                for sub_module in layer.values():
-                    if isinstance(sub_module, DynamicBlock):
-                        if hasattr(sub_module.layer, 'gradient_checkpointing_enable'):
-                            sub_module.layer.gradient_checkpointing_enable()
-                    elif hasattr(sub_module, 'block') and isinstance(sub_module.block, DynamicBlock):
-                        if hasattr(sub_module.block.layer, 'gradient_checkpointing_enable'):
-                            sub_module.block.layer.gradient_checkpointing_enable()
-                    elif hasattr(sub_module, 'decision') and hasattr(sub_module.decision, 'block'): # For SDT
-                        if hasattr(sub_module.decision.block.layer, 'gradient_checkpointing_enable'):
-                            sub_module.decision.block.layer.gradient_checkpointing_enable()
-                    elif isinstance(sub_module, Qwen2DecoderLayer): # For standard layers in ModuleDict
-                        if hasattr(sub_module, 'gradient_checkpointing_enable'):
-                            sub_module.gradient_checkpointing_enable()
-                    elif hasattr(sub_module, 'block') and isinstance(sub_module.block, Qwen2DecoderLayer): # For STTLayer
-                        if hasattr(sub_module.block, 'gradient_checkpointing_enable'):
-                            sub_module.block.gradient_checkpointing_enable()
-            elif isinstance(layer, Qwen2DecoderLayer): # For standard layers directly in self.layers
-                if hasattr(layer, 'gradient_checkpointing_enable'):
-                    layer.gradient_checkpointing_enable()
-        # Also enable for the base model if it has the method (e.g., if it's a Qwen2ForCausalLM)
-        if hasattr(super(), 'gradient_checkpointing_enable'):
-            super().gradient_checkpointing_enable()
+        out = {"logits": logits, "lm_loss": loss, "loss": loss}
+        if aux:
+            out.update(aux)
+        return out
 
-    def enable_input_require_grads(self):
+    def _run_layers(
+        self,
+        hidden_states: torch.Tensor,
+        mask_mapping: Dict[str, torch.Tensor],
+        position_ids: torch.LongTensor,
+        past_key_values: Optional[Any],
+        use_cache: bool,
+        cache_position: Optional[torch.LongTensor],
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        output_attentions: bool,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
-        Enables `requires_grad` for the input embeddings, which is necessary
-        when using gradient checkpointing.
+        Default: run all stock HF layers with the right mask/pos embeddings.
+        Dynamic subclasses override this and interpose custom routing.
         """
-        if hasattr(self, 'embed_tokens') and hasattr(self.embed_tokens, 'weight'):
-            self.embed_tokens.weight.requires_grad_(True)
-        # If the model has a get_input_embeddings method (like PreTrainedModel), use it
-        elif hasattr(self, 'get_input_embeddings'):
-            input_embeddings = self.get_input_embeddings()
-            if input_embeddings is not None and hasattr(input_embeddings, 'weight'):
-                input_embeddings.weight.requires_grad_(True)
-
-    def copy_weights_from_pretrained(self, pretrained_model):
-        """
-        Copies weights from a pretrained Qwen2 model to this model.
-        """
-        self.embed_tokens.load_state_dict(pretrained_model.model.embed_tokens.state_dict())
-        self.norm.load_state_dict(pretrained_model.model.norm.state_dict())
-        self.lm_head.load_state_dict(pretrained_model.lm_head.state_dict())
-
-        for i, layer in enumerate(self.layers):
-            if i >= len(pretrained_model.model.layers): break
-            pretrained_layer = pretrained_model.model.layers[i]
-            
-            if isinstance(layer, DynamicBlock):
-                layer.layer.load_state_dict(pretrained_layer.state_dict())
-            elif isinstance(layer, nn.ModuleDict):
-                if 'block' in layer:
-                    layer.block.layer.load_state_dict(pretrained_layer.state_dict())
-                if 'decision' in layer and hasattr(layer.decision, 'block'):
-                    layer.decision.block.load_state_dict(pretrained_layer.state_dict())
-                if 'dynamic_block' in layer and i + 1 < len(pretrained_model.model.layers):
-                    pretrained_dynamic_layer = pretrained_model.model.layers[i + 1]
-                    layer.dynamic_block.layer.load_state_dict(pretrained_dynamic_layer.state_dict())
-
-    def get_trainable_parameters(self) -> List[Dict[str, Any]]:
-        return [{'name': 'base_model', 'params': list(p for p in self.parameters() if p.requires_grad)}]
-
-    def _create_param_groups(self, component_map: Dict[str, str]) -> List[Dict[str, Any]]:
-        param_groups = {}
-        base_model_params = []
-        for name, param in self.named_parameters():
-            if not param.requires_grad: continue
-            assigned = False
-            for group_name, keyword in component_map.items():
-                if keyword in name:
-                    param_groups.setdefault(group_name, []).append(param)
-                    assigned = True
-                    break
-            if not assigned:
-                base_model_params.append(param)
-        
-        groups_list = [{'name': 'base_model', 'params': base_model_params}]
-        groups_list.extend([{'name': name, 'params': params} for name, params in param_groups.items()])
-        return [g for g in groups_list if g['params']]
+        for layer in self.model.layers:
+            attn_mask = mask_mapping[layer.attention_type]
+            hidden_states = layer(
+                hidden_states=hidden_states,
+                attention_mask=attn_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+        return hidden_states, {}

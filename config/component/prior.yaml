@@ -1,6 +1,0 @@
-# config/component/prior.yaml
-
-# Defaults for the SDT Prior and STT Transition Network
-prior_ffn_intermediate_size_factor: 0.25
-prior_loss_weight: 0.05 # Used by SDT
-tpn_loss_weight: 0.05   # Used by STT

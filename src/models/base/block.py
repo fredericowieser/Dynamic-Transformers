@@ -3,21 +3,16 @@ import torch.nn as nn
 from typing import Tuple
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 class DynamicBlock(nn.Module):
     """
-    A versatile Transformer block that serves two purposes:
-    1. As a standard, dense Qwen2DecoderLayer.
-    2. As a processing engine for a selected subset of tokens in dynamic models.
+    Wraps an existing HF Qwen2DecoderLayer and provides a gather-process-scatter path.
     """
-    def __init__(self, config, layer_idx: int):
+    def __init__(self, layer: Qwen2DecoderLayer):
         super().__init__()
-        self.layer = Qwen2DecoderLayer(config, layer_idx)
-        # self.layer = Qwen2DecoderLayer(config, layer_idx) # Use standard Qwen2DecoderLayer
+        self.layer = layer  # reference to HF layer (weights are shared)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, ...]:
-        """Standard forward pass for use as a dense layer."""
         return self.layer(hidden_states, **kwargs)
 
     def process_selected(
@@ -29,10 +24,6 @@ class DynamicBlock(nn.Module):
         use_soft_gating: bool = False,
         **kwargs
     ) -> Tuple[torch.Tensor, Tuple, Tuple]:
-        """
-        Gathers, processes, and scatters a selected subset of tokens.
-        This is the core utility for all dynamic computation layers.
-        """
         if batch_indices.numel() == 0:
             return hidden_states, None, None
 
@@ -47,25 +38,29 @@ class DynamicBlock(nn.Module):
         
         selected_attn_mask = _prepare_4d_causal_attention_mask(None, (1, num_selected), selected_tokens_batched, 0)
         selected_pos_ids = position_ids[batch_indices, token_indices].unsqueeze(0) if position_ids is not None else None
-
+        
         selected_pos_emb = None
         if position_embeddings is not None:
             cos, sin = position_embeddings
-            # Slice cos/sin for the selected positions; preserve last dim (head_dim)
-            selected_pos_emb = (
-                cos[batch_indices, token_indices].unsqueeze(0),
-                sin[batch_indices, token_indices].unsqueeze(0),
-            )
+            selected_pos_emb = (cos[batch_indices, token_indices].unsqueeze(0), sin[batch_indices, token_indices].unsqueeze(0))
 
         # 3. Process
-        block_outputs = self.layer(
+        out = self.layer(
             hidden_states=selected_tokens_batched,
             attention_mask=selected_attn_mask,
             position_ids=selected_pos_ids,
             position_embeddings=selected_pos_emb,
-            use_cache=kwargs.get('use_cache', False)
+            use_cache=kwargs.get('use_cache', False),
         )
-        processed_tokens = block_outputs[0].squeeze(0)
+        # HF Qwen2DecoderLayer returns a Tensor (B, L, H). Old custom code returned a tuple.
+        if isinstance(out, tuple):
+            processed_tokens = out[0].squeeze(0)
+            present_key_value = out[1] if kwargs.get('use_cache', False) and len(out) > 1 else None
+            attention_weights = out[2] if len(out) > 2 else None
+        else:
+            processed_tokens = out.squeeze(0)  # out is (1, L, H)
+            present_key_value = None
+            attention_weights = None
 
         # 4. Scatter
         final_hidden_states = hidden_states.clone()
@@ -79,8 +74,5 @@ class DynamicBlock(nn.Module):
         else:
             # Hard update for inference
             final_hidden_states[batch_indices, token_indices] = processed_tokens
-
-        present_key_value = block_outputs[1] if kwargs.get('use_cache', False) and len(block_outputs) > 1 else None
-        attention_weights = block_outputs[2] if len(block_outputs) > 2 else None
 
         return final_hidden_states, present_key_value, attention_weights

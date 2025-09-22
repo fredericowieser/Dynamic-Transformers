@@ -17,28 +17,31 @@ class BaseRouter(nn.Module, ABC):
     def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
         super().__init__()
         self.config = config
-        # capacity was moved into config via create_model
-        if not hasattr(config, capacity_attr):
-            raise AttributeError(f"model config missing '{capacity_attr}'")
-        self.capacity = getattr(config, capacity_attr)
+        self.capacity = model_cfg.get(capacity_attr, 0.5)
 
     @abstractmethod
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         raise NotImplementedError
 
     def select_tokens(self, scores: torch.Tensor, hidden_states: torch.Tensor):
-        log.debug(f"BaseRouter.select_tokens: hidden_states shape: {hidden_states.shape}")
         B, T, D = hidden_states.shape
         k = max(1, int(T * self.capacity))
+        
+        if k > T:
+            k = T
+
         topk_vals, topk_idx = scores.topk(k, dim=-1)
         batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, k)
-        return hidden_states[batch_idx, topk_idx].reshape(-1, D), \
+        
+        selected_hidden = hidden_states[batch_idx, topk_idx]
+
+        return selected_hidden.reshape(-1, D), \
                batch_idx.reshape(-1), topk_idx.reshape(-1), topk_vals.reshape(-1)
 
 class CausalRouter(BaseRouter):
     """Unified CausalRouter for MoD, SDT, and STT inference."""
-    def __init__(self, config, layer_idx: int, capacity_attr: str):
-        super().__init__(config, capacity_attr)
+    def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict = None):
+        super().__init__(config, capacity_attr, model_cfg=model_cfg)
         self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
@@ -47,14 +50,13 @@ class CausalRouter(BaseRouter):
         logits = self.router(torch.cat([hidden_states, prev], dim=-1)).squeeze(-1)
         return logits, None, {}
 
-class BaseSurpriseRouter(BaseRouter, ABC):
+class BaseSurpriseRouter(BaseRouter):
     """Abstracts the common surprise-based routing logic for SDT and STT."""
     def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
-        super().__init__(config, capacity_attr)
-        # betas & window also live in config now
-        self.raw_o_ce = nn.Parameter(torch.tensor(float(config.o_ce_init)))
-        self.raw_m_cu = nn.Parameter(torch.tensor(float(config.m_cu_init)))
-        self.ma_window = int(config.ma_window)
+        super().__init__(config, capacity_attr, model_cfg=model_cfg)
+        self.raw_o_ce = nn.Parameter(torch.tensor(float(model_cfg.get('o_ce_init', 1.0))))
+        self.raw_m_cu = nn.Parameter(torch.tensor(float(model_cfg.get('m_cu_init', 1.0))))
+        self.ma_window = int(model_cfg.get('ma_window', 100))
     
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
         B, T = d_st.shape

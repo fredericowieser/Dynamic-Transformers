@@ -9,7 +9,7 @@ class StandardTransformerForCausalLM(Qwen2ForCausalLM):
     we use the exact same architecture (RMSNorm, SwiGLU MLP, RoPE, etc.)
     """
 
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         super().__init__(config)
         self._init_weights_if_needed(config)
 

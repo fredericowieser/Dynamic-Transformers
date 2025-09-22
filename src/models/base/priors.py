@@ -11,7 +11,7 @@ class BasePriorNetwork(nn.Module):
         super().__init__()
         self.config = config
         mlp_config = copy.deepcopy(config)
-        factor = config.prior_ffn_intermediate_size_factor
+        factor = model_cfg.get('prior_ffn_intermediate_size_factor', 0.25)
         raw_size = config.hidden_size * factor
         rounded_size = int(raw_size + 0.999)
         intermediate_size = max(2, rounded_size + (rounded_size % 2))

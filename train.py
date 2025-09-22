@@ -28,7 +28,7 @@ from src.training.utils import (
 log = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="config", config_name="train", version_base="1.3")
+@hydra.main(config_path="config", config_name="default", version_base="1.3")
 def main(cfg: DictConfig):
     print(f"Resolved logging level from config: {cfg.logging.level}")
     logging.basicConfig(level=cfg.logging.level, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -43,6 +43,10 @@ def main(cfg: DictConfig):
         mixed_precision=cfg.system.precision,
         gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
     )
+
+    # Log the final configuration
+    if accelerator.is_main_process:
+        log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Initialize Weights & Biases
     if cfg.logging.wandb.enabled and accelerator.is_main_process:
@@ -95,11 +99,9 @@ def main(cfg: DictConfig):
     )
 
     # Create model
-    log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.training.mode == 'scratch'})")
+    log.info(f"Creating {cfg.model.type} model ({cfg.model.size}, from_scratch={cfg.model.from_scratch})")
     model = create_model(
         cfg.model.type,
-        cfg.model.size,
-        cfg.training.mode == 'scratch',
         cfg
     )
 
@@ -125,35 +127,6 @@ def main(cfg: DictConfig):
     # Setup training
     steps_per_epoch = len(train_loader) // cfg.training.accumulate_grad_batches
     num_training_steps = steps_per_epoch * cfg.training.num_epochs
-
-    def compute_beta_values(model: nn.Module, step: int, total_steps: int) -> Tuple[float, float]:
-        """Computes scheduled beta values for STT/SDT models."""
-        if model.config.type not in ['sdt', 'stt']:
-            return 0.0, 0.0 # Return dummy values if not applicable
-        
-        # This check now correctly belongs here
-        if not hasattr(model.config, "beta_schedule"):
-            raise ValueError(f"{model.config.type.upper()} model requires a 'beta_schedule' block in the config.")
-        
-        sched_cfg = model.config.beta_schedule
-        warmup = int(sched_cfg.warmup_steps)
-        stype = sched_cfg.type
-
-        if step <= warmup:
-            r = 0.0
-        else:
-            denom = max(1, total_steps - warmup)
-            r = min(1.0, (step - warmup) / denom)
-
-        def slinear(s0, s1): return s0 + r * (s1 - s0)
-        def scos(s0, s1):
-            import math
-            return s0 + 0.5 * (1.0 - math.cos(math.pi * r)) * (s1 - s0)
-
-        f = slinear if stype == "linear" else scos
-        beta_ce = f(float(sched_cfg.beta_ce_start), float(sched_cfg.beta_ce_end))
-        beta_cu = f(float(sched_cfg.beta_cu_start), float(sched_cfg.beta_cu_end))
-        return beta_ce, beta_cu
 
     optimizers_dict, schedulers_dict = setup_optimizer_and_scheduler(model, cfg, num_training_steps, accelerator)
 
@@ -201,18 +174,12 @@ def main(cfg: DictConfig):
                 break
             
             with accelerator.accumulate(model):
-                beta_ce, beta_cu = compute_beta_values(model, global_step, num_training_steps)
-
-                forward_kwargs = {}
-                if cfg.model.type in ["sdt", "stt"]:
-                    forward_kwargs["beta_ce"] = beta_ce
-                    forward_kwargs["beta_cu"] = beta_cu
-
                 outputs = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     labels=batch["labels"],
-                    **forward_kwargs
+                    global_step=global_step,
+                    max_steps=num_training_steps
                 )
                 loss = outputs['loss']
                 
@@ -248,10 +215,11 @@ def main(cfg: DictConfig):
                                 elif isinstance(stat_value, list) and len(stat_value) > 0:
                                     log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
 
-                    if cfg.model.type == "stt" or cfg.model.type == "sdt":
+                    if cfg.model.type in ["sdt", "stt"]:
+                        beta_ce = outputs.get('beta_ce', 0.0)
+                        beta_cu = outputs.get('beta_cu', 0.0)
                         log_metrics["train/beta_ce"] = beta_ce
                         log_metrics["train/beta_cu"] = beta_cu
-                        # Log o_ce_pos and m_cu_pos from router_stats if present
                         if "router_stats" in outputs and "o_ce_pos" in outputs["router_stats"]:
                             log_metrics["train/router_stats/o_ce_pos"] = outputs["router_stats"]["o_ce_pos"]
                             log_metrics["train/router_stats/m_cu_pos"] = outputs["router_stats"]["m_cu_pos"]
