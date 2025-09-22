@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Unified training script for all model architectures."""
-
 import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
@@ -201,71 +198,69 @@ def main(cfg: DictConfig):
                 global_step += 1
 
                 if accelerator.is_main_process:
-                    log_metrics = {
-                        "train/loss": loss.item(),
-                        "train/lm_loss": outputs.get('lm_loss', torch.tensor(0.0)).item(),
-                    }
-                    for key, value in outputs.items():
-                        if "loss" in key and key != "loss":
-                            log_metrics[f"train/{key}"] = value.item()
-                        elif "router_stats" in key and isinstance(value, dict):
-                            for stat_key, stat_value in value.items():
-                                if isinstance(stat_value, (float, int)):
-                                    log_metrics[f"train/router_stats/{stat_key}"] = stat_value
-                                elif isinstance(stat_value, list) and len(stat_value) > 0:
-                                    log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
+                    if global_step % cfg.logging.wandb.log_interval == 0:
+                        log_metrics = {
+                            "train/loss": loss.item(),
+                            "train/lm_loss": outputs.get('lm_loss', torch.tensor(0.0)).item(),
+                        }
+                        for key, value in outputs.items():
+                            if "loss" in key and key != "loss":
+                                log_metrics[f"train/{key}"] = value.item()
+                            elif "router_stats" in key and isinstance(value, dict):
+                                for stat_key, stat_value in value.items():
+                                    if isinstance(stat_value, (float, int)):
+                                        log_metrics[f"train/router_stats/{stat_key}"] = stat_value
+                                    elif isinstance(stat_value, list) and len(stat_value) > 0:
+                                        log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
 
-                    if cfg.model.type in ["sdt", "stt"]:
-                        beta_ce = outputs.get('beta_ce', 0.0)
-                        beta_cu = outputs.get('beta_cu', 0.0)
-                        log_metrics["train/beta_ce"] = beta_ce
-                        log_metrics["train/beta_cu"] = beta_cu
-                        if "router_stats" in outputs and "o_ce_pos" in outputs["router_stats"]:
-                            log_metrics["train/router_stats/o_ce_pos"] = outputs["router_stats"]["o_ce_pos"]
-                            log_metrics["train/router_stats/m_cu_pos"] = outputs["router_stats"]["m_cu_pos"]
+                        if cfg.model.type in ["sdt", "stt"]:
+                            beta_ce = outputs.get('beta_ce', 0.0)
+                            beta_cu = outputs.get('beta_cu', 0.0)
+                            log_metrics["train/beta_ce"] = beta_ce
+                            log_metrics["train/beta_cu"] = beta_cu
+                            if "router_stats" in outputs and "o_ce_pos" in outputs["router_stats"]:
+                                log_metrics["train/router_stats/o_ce_pos"] = outputs["router_stats"]["o_ce_pos"]
+                                log_metrics["train/router_stats/m_cu_pos"] = outputs["router_stats"]["m_cu_pos"]
 
-                    if cfg.logging.wandb.enabled and wandb.run is not None:
-                        wandb.log(log_metrics, step=global_step)
-                    accelerator.print(
-                        f"Epoch {epoch}, Step {global_step+1}: "
-                        f"Loss = {loss.item():.4f}, "
-                        f"LM Loss = {outputs.get('lm_loss', torch.tensor(0.0)).item():.4f}"
-                    )
-
-            # Evaluation and checkpointing
-            if (global_step) % cfg.training.eval_interval == 0:
-                accelerator.wait_for_everyone()
-                unwrapped_model = accelerator.unwrap_model(model)
-
-                val_loss, val_perplexity = evaluate_perplexity(unwrapped_model, eval_loader, accelerator)
-
-                if accelerator.is_main_process:
-                    if cfg.logging.wandb.enabled and wandb.run is not None:
-                        wandb.log({
-                            "val/loss": val_loss,
-                            "val/perplexity": val_perplexity,
-                        }, step=global_step)
-                    accelerator.print(f"Validation Loss: {val_loss:.4f}, Validation Perplexity: {val_perplexity:.2f}")
-
-                    if val_loss < best_eval_loss:
-                        best_eval_loss = val_loss
-                        save_checkpoint(
-                            unwrapped_model,
-                            optimizers_dict,
-                            schedulers_dict,
-                            epoch,
-                            global_step,
-                            best_eval_loss,
-                            Path(cfg.run.output_dir) / "best_model"
+                        if cfg.logging.wandb.enabled and wandb.run is not None:
+                            wandb.log(log_metrics, step=global_step)
+                        accelerator.print(
+                            f"Epoch {epoch}, Step {global_step}: "
+                            f"Loss = {loss.item():.4f}, "
+                            f"LM Loss = {outputs.get('lm_loss', torch.tensor(0.0)).item():.4f}"
                         )
-                accelerator.wait_for_everyone()
 
-                if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
-                    log.info(f"Reached max steps ({cfg.training.max_steps})")
-                    break
+                # Evaluation and checkpointing
+                if global_step > 0 and global_step % cfg.training.eval_interval == 0:
+                    accelerator.wait_for_everyone()
+                    unwrapped_model = accelerator.unwrap_model(model)
 
-        if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
-            break
+                    val_loss, val_perplexity = evaluate_perplexity(unwrapped_model, eval_loader, accelerator)
+
+                    if accelerator.is_main_process:
+                        if cfg.logging.wandb.enabled and wandb.run is not None:
+                            wandb.log({
+                                "val/loss": val_loss,
+                                "val/perplexity": val_perplexity,
+                            }, step=global_step)
+                        accelerator.print(f"Validation Loss: {val_loss:.4f}, Validation Perplexity: {val_perplexity:.2f}")
+
+                        if val_loss < best_eval_loss:
+                            best_eval_loss = val_loss
+                            save_checkpoint(
+                                unwrapped_model,
+                                optimizers_dict,
+                                schedulers_dict,
+                                epoch,
+                                global_step,
+                                best_eval_loss,
+                                Path(cfg.run.output_dir) / "best_model"
+                            )
+                    accelerator.wait_for_everyone()
+
+                    if cfg.training.max_steps > 0 and global_step >= cfg.training.max_steps:
+                        log.info(f"Reached max steps ({cfg.training.max_steps})")
+                        break
 
     # Save final model
     save_path = Path(cfg.run.output_dir) / "final_model"
