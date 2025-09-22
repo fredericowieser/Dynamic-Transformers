@@ -42,14 +42,13 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
         config = Qwen2Config.from_pretrained(model_cfg.pretrained_model_name_or_path)
 
     # 2. Dynamically update config with all parameters from the 'model' section
-    for key, value in model_cfg.items():
-        setattr(config, key, value)
-    
-    # Unpack model-specific config into the main config
-    if model_type in model_cfg:
-        model_specific_cfg = model_cfg[model_type]
-        for key, value in model_specific_cfg.items():
+    # We convert the OmegaConf object to a standard python dict to prevent
+    # serialization errors when saving the config.
+    model_cfg_dict = OmegaConf.to_container(model_cfg, resolve=True)
+    for key, value in model_cfg_dict.items():
+        if hasattr(config, key):
             setattr(config, key, value)
+
     
     # Handle special cases like attention implementation
     if cfg.system.get('use_flash_attention', False):
