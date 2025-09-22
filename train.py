@@ -193,37 +193,36 @@ def main(cfg: DictConfig):
                 global_step += 1
 
                 if accelerator.is_main_process:
-                    if global_step % cfg.logging.wandb.log_interval == 0:
-                        log_metrics = {
-                            "train/loss": loss.item(),
-                            "train/lm_loss": metrics.get('lm_loss', torch.tensor(0.0)).item(),
-                        }
-                        for key, value in metrics.items():
-                            if "loss" in key and key != "loss":
-                                log_metrics[f"train/{key}"] = value.item()
-                            elif "router_stats" in key and isinstance(value, dict):
-                                for stat_key, stat_value in value.items():
-                                    if isinstance(stat_value, (float, int)):
-                                        log_metrics[f"train/router_stats/{stat_key}"] = stat_value
-                                    elif isinstance(stat_value, list) and len(stat_value) > 0:
-                                        log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
+                    log_metrics = {
+                        "train/loss": loss.item(),
+                        "train/lm_loss": metrics.get('lm_loss', torch.tensor(0.0)).item(),
+                    }
+                    for key, value in metrics.items():
+                        if "loss" in key and key != "loss":
+                            log_metrics[f"train/{key}"] = value.item()
+                        elif "router_stats" in key and isinstance(value, dict):
+                            for stat_key, stat_value in value.items():
+                                if isinstance(stat_value, (float, int)):
+                                    log_metrics[f"train/router_stats/{stat_key}"] = stat_value
+                                elif isinstance(stat_value, list) and len(stat_value) > 0:
+                                    log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
 
-                        if cfg.model.type in ["sdt", "stt"]:
-                            beta_ce = metrics.get('beta_ce', 0.0)
-                            beta_cu = metrics.get('beta_cu', 0.0)
-                            log_metrics["train/beta_ce"] = beta_ce
-                            log_metrics["train/beta_cu"] = beta_cu
-                            if "router_stats" in metrics and "o_ce_pos" in metrics["router_stats"]:
-                                log_metrics["train/router_stats/o_ce_pos"] = metrics["router_stats"]["o_ce_pos"]
-                                log_metrics["train/router_stats/m_cu_pos"] = metrics["router_stats"]["m_cu_pos"]
+                    if cfg.model.type in ["sdt", "stt"]:
+                        beta_ce = metrics.get('beta_ce', 0.0)
+                        beta_cu = metrics.get('beta_cu', 0.0)
+                        log_metrics["train/beta_ce"] = beta_ce
+                        log_metrics["train/beta_cu"] = beta_cu
+                        if "router_stats" in metrics and "o_ce_pos" in metrics["router_stats"]:
+                            log_metrics["train/router_stats/o_ce_pos"] = metrics["router_stats"]["o_ce_pos"]
+                            log_metrics["train/router_stats/m_cu_pos"] = metrics["router_stats"]["m_cu_pos"]
 
-                        if cfg.logging.wandb.enabled and wandb.run is not None:
-                            wandb.log(log_metrics, step=global_step)
-                        accelerator.print(
-                            f"Epoch {epoch}, Step {global_step}: "
-                            f"Loss = {loss.item():.4f}, "
-                            f"LM Loss = {metrics.get('lm_loss', torch.tensor(0.0)).item():.4f}"
-                        )
+                    if cfg.logging.wandb.enabled and wandb.run is not None:
+                        wandb.log(log_metrics, step=global_step)
+                    accelerator.print(
+                        f"Epoch {epoch}, Step {global_step}: "
+                        f"Loss = {loss.item():.4f}, "
+                        f"LM Loss = {metrics.get('lm_loss', torch.tensor(0.0)).item():.4f}"
+                    )
 
                 # Evaluation and checkpointing
                 if global_step > 0 and global_step % cfg.training.eval_interval == 0:
