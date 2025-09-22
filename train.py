@@ -20,6 +20,7 @@ from src.training.utils import (
     save_checkpoint,
     setup_optimizer_and_scheduler,
     evaluate_perplexity,
+    calculate_metrics,
 )
 
 log = logging.getLogger(__name__)
