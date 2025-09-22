@@ -84,6 +84,8 @@ class SDTPair(nn.Module):
         return final_hidden_states, prior_loss, stats
 
 class SDTForCausalLM(BaseForCausalLM):
+    _supports_flash_attn_2 = True
+
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         self._pairs = nn.ModuleDict({

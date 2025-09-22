@@ -46,6 +46,8 @@ class MoDLayer(nn.Module):
         return new_states, aux_loss if aux_loss is not None else torch.tensor(0.0, device=hidden_states.device)
 
 class MoDForCausalLM(BaseForCausalLM):
+    _supports_flash_attn_2 = True
+
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         self._mod_wrappers = nn.ModuleDict({

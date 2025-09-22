@@ -97,6 +97,8 @@ class STTLayer(nn.Module):
         return final_hidden_states, aux_loss, router_stats
 
 class STTForCausalLM(BaseForCausalLM):
+    _supports_flash_attn_2 = True
+
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         # Build wrappers for odd layers only
