@@ -14,11 +14,13 @@ log = logging.getLogger(__name__)
 
 class BaseRouter(nn.Module, ABC):
     """Abstract base class for all routing modules."""
-    def __init__(self, config, capacity_attr: str, model_cfg: Dict):
+    def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
         super().__init__()
         self.config = config
-        self.model_cfg = model_cfg
-        self.capacity = self.model_cfg[capacity_attr]
+        # capacity was moved into config via create_model
+        if not hasattr(config, capacity_attr):
+            raise AttributeError(f"model config missing '{capacity_attr}'")
+        self.capacity = getattr(config, capacity_attr)
 
     @abstractmethod
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
@@ -35,8 +37,8 @@ class BaseRouter(nn.Module, ABC):
 
 class CausalRouter(BaseRouter):
     """Unified CausalRouter for MoD, SDT, and STT inference."""
-    def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict):
-        super().__init__(config, capacity_attr, model_cfg) # Pass model_cfg
+    def __init__(self, config, layer_idx: int, capacity_attr: str):
+        super().__init__(config, capacity_attr)
         self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
@@ -47,11 +49,12 @@ class CausalRouter(BaseRouter):
 
 class BaseSurpriseRouter(BaseRouter, ABC):
     """Abstracts the common surprise-based routing logic for SDT and STT."""
-    def __init__(self, config, capacity_attr: str, model_cfg: Dict):
-        super().__init__(config, capacity_attr, model_cfg)
-        self.raw_o_ce = nn.Parameter(torch.tensor(float(self.model_cfg['o_ce_init'])))
-        self.raw_m_cu = nn.Parameter(torch.tensor(float(self.model_cfg['m_cu_init'])))
-        self.ma_window = int(self.model_cfg['ma_window'])
+    def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
+        super().__init__(config, capacity_attr)
+        # betas & window also live in config now
+        self.raw_o_ce = nn.Parameter(torch.tensor(float(config.o_ce_init)))
+        self.raw_m_cu = nn.Parameter(torch.tensor(float(config.m_cu_init)))
+        self.ma_window = int(config.ma_window)
     
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
         B, T = d_st.shape

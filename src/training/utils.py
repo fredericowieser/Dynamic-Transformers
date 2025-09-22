@@ -121,7 +121,7 @@ def create_model(
             for key, value in cfg.model.params.items():
                 setattr(config, key, value)
 
-        model = model_class_map[model_type](config, model_cfg=cfg.model)
+        model = model_class_map[model_type](config)
         if not from_scratch:
             log.info(f"Initializing {model_type.upper()} from pretrained {pretrained_name}")
             base_model = Qwen2ForCausalLM.from_pretrained(pretrained_name, torch_dtype=torch_dtype)

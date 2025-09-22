@@ -9,19 +9,19 @@ from ..base.block import DynamicBlock
 from ..base.routers import CausalRouter
 
 class MoDRouter(BaseRouter):
-    """A simple linear router for MoD that includes a load-balancing loss."""
-    def __init__(self, config, layer_idx: int, model_cfg: Dict):
-        super().__init__(config, capacity_attr='mod_capacity', model_cfg=model_cfg)
+    """Implements the MoD router, which is a simple linear layer."""
+    def __init__(self, config, layer_idx: int, model_cfg: Dict = None):
+        super().__init__(config, capacity_attr='mod_capacity')
         self.router = nn.Linear(config.hidden_size, 1, bias=False)
-        self.aux_loss_weight = model_cfg['mod_aux_loss_weight']
+        self.aux_loss_weight = config.mod_aux_loss_weight
 
     def forward(self, hidden_states: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         logits = self.router(hidden_states).squeeze(-1)
         return logits, None, {}
 
 class MoDForCausalLM(BaseForCausalLM):
-    def __init__(self, config, model_cfg: Dict):
-        super().__init__(config, model_cfg)
+    def __init__(self, config):
+        super().__init__(config)
         self._setup_layers()
     
     def _setup_layers(self):
@@ -30,8 +30,8 @@ class MoDForCausalLM(BaseForCausalLM):
             if i % 2 == 1: # Dynamic MoD layer
                 self.layers.append(nn.ModuleDict({
                     'block': block,
-                    'router': MoDRouter(self.config, i, self.model_cfg),
-                    'causal_router': CausalRouter(self.config, i, 'mod_capacity', self.model_cfg),
+                    'router': MoDRouter(self.config, i),
+                    'causal_router': CausalRouter(self.config, i, 'mod_capacity'),
                 }))
 
     def _forward_layers(self, hidden_states, **kwargs):

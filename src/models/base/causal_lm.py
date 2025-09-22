@@ -15,9 +15,8 @@ from transformers import PreTrainedModel, Qwen2Config
 class BaseForCausalLM(PreTrainedModel):
     config_class = Qwen2Config 
 
-    def __init__(self, config, model_cfg: Dict):
+    def __init__(self, config):
         super().__init__(config)
-        self.model_cfg = model_cfg
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList()
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)

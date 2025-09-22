@@ -12,8 +12,8 @@ from ..base.causal_lm import BaseForCausalLM
 
 class STTTransitionNetwork(BasePriorNetwork):
     """Implements the STT transition network with pre-normalization: MLP(RMSNorm(x))."""
-    def __init__(self, config, model_cfg: Dict):
-        super().__init__(config, model_cfg)
+    def __init__(self, config):
+        super().__init__(config)
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -21,8 +21,8 @@ class STTTransitionNetwork(BasePriorNetwork):
 
 class STTPredictiveRouter(BaseSurpriseRouter):
     """Implements the STT surprise calculation and returns binary targets."""
-    def __init__(self, config, layer_idx: int, model_cfg: Dict):
-        super().__init__(config, capacity_attr='stt_capacity', model_cfg=model_cfg)
+    def __init__(self, config, layer_idx: int, model_cfg: Dict = None):
+        super().__init__(config, capacity_attr='stt_capacity')
 
     def forward(self, actual_residual: torch.Tensor, predicted_residual: torch.Tensor, beta_ce: float, beta_cu: float, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         d = float(actual_residual.shape[-1])
@@ -41,14 +41,13 @@ class STTPredictiveRouter(BaseSurpriseRouter):
 
 class STTLayer(nn.Module):
     """A self-contained STT Layer implementing the full teacher-student paradigm."""
-    def __init__(self, config, layer_idx: int, model_cfg: Dict):
+    def __init__(self, config, layer_idx: int):
         super().__init__()
         self.block = DynamicBlock(config, layer_idx)
-        self.transition_network = STTTransitionNetwork(config, model_cfg)
-        self.predictive_router = STTPredictiveRouter(config, layer_idx, model_cfg)
-        self.causal_router = CausalRouter(config, layer_idx, 'stt_capacity', model_cfg)
+        self.transition_network = STTTransitionNetwork(config)
+        self.predictive_router = STTPredictiveRouter(config, layer_idx)
+        self.causal_router = CausalRouter(config, layer_idx, 'stt_capacity')
         self.config = config
-        self.model_cfg = model_cfg # Store model_cfg
 
     def forward(self, hidden_states, **kwargs):
         original_hidden = hidden_states
@@ -76,8 +75,8 @@ class STTLayer(nn.Module):
             router_stats.update(causal_router_stats)
             causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
             
-            aux_loss = (self.model_cfg['tpn_loss_weight'] * tpn_loss) + \
-                       (self.model_cfg['causal_loss_weight'] * causal_loss)
+            aux_loss = (self.config.tpn_loss_weight * tpn_loss) + \
+                       (self.config.causal_loss_weight * causal_loss)
             
             # During training, no tokens are skipped to ensure stable gradient flow
             final_hidden_states = processed_hidden
@@ -97,14 +96,14 @@ class STTLayer(nn.Module):
 
 
 class STTForCausalLM(BaseForCausalLM):
-    def __init__(self, config, model_cfg: Dict):
-        super().__init__(config, model_cfg)
-        self._setup_layers(self.model_cfg)
+    def __init__(self, config):
+        super().__init__(config)
+        self._setup_layers()
     
-    def _setup_layers(self, model_cfg: Dict):
+    def _setup_layers(self):
         for i in range(self.config.num_hidden_layers):
                         if i % 2 == 1: # Dynamic STT layer
-                            self.layers.append(STTLayer(self.config, i, model_cfg))
+                            self.layers.append(STTLayer(self.config, i))
                         else: # Standard layer
                             self.layers.append(DynamicBlock(self.config, i))
     def _forward_layers(self, hidden_states, **kwargs):

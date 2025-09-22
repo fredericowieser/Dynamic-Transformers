@@ -7,11 +7,11 @@ from omegaconf import DictConfig
 
 class BasePriorNetwork(nn.Module):
     """Abstracts the creation of a lightweight feed-forward network."""
-    def __init__(self, config: Qwen2Config, model_cfg: Dict):
+    def __init__(self, config: Qwen2Config, model_cfg: Dict = None):
         super().__init__()
-        self.model_cfg = model_cfg
+        self.config = config
         mlp_config = copy.deepcopy(config)
-        factor = self.model_cfg['prior_ffn_intermediate_size_factor']
+        factor = config.prior_ffn_intermediate_size_factor
         raw_size = config.hidden_size * factor
         rounded_size = int(raw_size + 0.999)
         intermediate_size = max(2, rounded_size + (rounded_size % 2))

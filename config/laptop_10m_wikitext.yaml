@@ -49,7 +49,7 @@ system:
   torch_dtype: "float32"
 
 model:
-  type: stt # Changed from sdt to stt
+  type: mod # Changed from sdt to stt
   beta_schedule:
     type: cosine
     beta_ce_start: 0.3
