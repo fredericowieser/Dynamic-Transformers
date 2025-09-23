@@ -28,6 +28,18 @@ class BaseForCausalLM(PreTrainedModel):
         if config.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
 
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
     def copy_weights_from_pretrained(self, base_model: Qwen2ForCausalLM):
         log.info("Copying weights from pretrained model...")
         self.model.load_state_dict(base_model.model.state_dict(), strict=False)
