@@ -274,8 +274,17 @@ class STTForCausalLM(BaseForCausalLM):
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else hidden_states
 
         aux = {}
-        agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
+        # FIX: Use a robust loop for aggregating losses instead of a brittle comprehension.
+        # This ensures that all auxiliary losses are correctly collected and added to the total loss.
+        agg_losses = {}
+        if all_losses:
+            all_keys = set(k for l in all_losses for k in l)
+            for k in all_keys:
+                key_losses = [l[k] for l in all_losses if k in l and l.get(k) is not None]
+                if key_losses:
+                    agg_losses[k] = torch.mean(torch.stack(key_losses))
         aux['unscaled_losses'] = agg_losses
+        
         aux['router_stats'] = all_router_stats
         aux['beta_ce'] = beta_ce
         aux['beta_cu'] = beta_cu
