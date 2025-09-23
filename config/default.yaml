@@ -40,7 +40,7 @@ model:
   stt:
     tpn_loss_weight: 0.05
     causal_loss_weight: 0.01
-    g_threshold: 0.5 # Value between 0 and 1
+    g_threshold: 0.75 # Value between 0 and 1
     use_g_threshold_selection: true # If true, use g_threshold instead of top-k
     g_reg_loss_weight: 0.05 # Weight for g_cont regularization loss
 
@@ -78,7 +78,7 @@ model:
 
 data:
   name: "pretrain_mix"
-  batch_size: 8
+  batch_size: 16
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
   validation_split_percentage: 2
@@ -122,7 +122,7 @@ training:
   mode: finetune # finetune or scratch
   num_epochs: 1
   max_steps: -1
-  accumulate_grad_batches: 32
+  accumulate_grad_batches: 64
   eval_interval: 200
   use_gradient_clipping: False
   gradient_clip_val: 1.0
@@ -181,4 +181,4 @@ push_to_hub:
 lm_eval:
   enabled: true
   tasks: "general" # Comma-separated list of tasks or suites
-  batch_size: 32
+  batch_size: 8
