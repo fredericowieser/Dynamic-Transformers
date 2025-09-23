@@ -206,7 +206,10 @@ def main(cfg: DictConfig):
                     }
                     for key, value in metrics.items():
                         if "loss" in key and key != "loss":
-                            log_metrics[f"train/{key}"] = value.item()
+                            if hasattr(value, 'item'):
+                                log_metrics[f"train/{key}"] = value.item()
+                            else:
+                                log_metrics[f"train/{key}"] = value # Already a float
                         elif "router_stats" in key and isinstance(value, dict):
                             for stat_key, stat_value in value.items():
                                 if isinstance(stat_value, (float, int)):
