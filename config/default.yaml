@@ -133,7 +133,7 @@ training:
       mod_causal_router: 1.0e-3
       prior: 1.0e-3
       transition_network: 1.0e-3
-      predictive_router: 1.0e-2
+      predictive_router: 1.0e-3
 
 system:
   device: "auto" # auto, cuda, mps, cpu

@@ -40,6 +40,48 @@ def _make_json_serializable(obj):
         return obj.tolist()
     return obj
 
+def print_summary(results_dict):
+    """Prints a formatted summary table of the main evaluation metrics, including error bars."""
+    summary_lines = ["--- Final Benchmark Summary ---"]
+    headers = f"| {'Task':<20} | {'Metric':<15} | {'Value':<23} |"
+    separator = "|-" + "-"*22 + "|-" + "-"*17 + "|-" + "-"*25 + "|"
+    summary_lines.append(headers)
+    summary_lines.append(separator)
+
+    for task_name, metrics in sorted(results_dict.get("results", {}).items()):
+        primary_metric, primary_value, primary_stderr = None, None, None
+        
+        metric_priority = ["acc_norm", "acc", "f1", "bleu"]
+        found_metrics = [m for m in metrics.keys() if "stderr" not in m and isinstance(metrics[m], float)]
+
+        for m in metric_priority:
+            if m in found_metrics:
+                primary_metric = m
+                primary_value = metrics[m]
+                stderr_key = f"{m}_stderr"
+                if stderr_key in metrics:
+                    primary_stderr = metrics[stderr_key]
+                break
+        
+        if not primary_metric and found_metrics:
+            primary_metric = found_metrics[0]
+            primary_value = metrics[primary_metric]
+            stderr_key = f"{primary_metric}_stderr"
+            if stderr_key in metrics:
+                primary_stderr = metrics[stderr_key]
+
+        if primary_metric is not None:
+            if primary_stderr is not None:
+                value_str = f"{primary_value:.4f} ± {primary_stderr:.4f}"
+            else:
+                value_str = f"{primary_value:.4f}"
+            
+            line = f"| {task_name:<20} | {primary_metric:<15} | {value_str:<23} |"
+            summary_lines.append(line)
+
+    summary_lines.append("-" * len(separator))
+    log.info("\n".join(summary_lines))
+
 def get_wandb_run(model_path: str):
     """Initializes and resumes a wandb run from info stored in the model directory."""
     wandb_info_path = os.path.join(model_path, "wandb_info.json")
@@ -101,7 +143,7 @@ def main():
 
     # Log and save results
     log.info("--- Evaluation Results ---")
-    print(json.dumps(serializable_results, indent=2))
+    print_summary(serializable_results)
 
     run = get_wandb_run(args.model_path)
     if run:
