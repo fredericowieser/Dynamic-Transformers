@@ -5,7 +5,7 @@
 # Can be overridden by experiment-specific files
 
 run:
-  name: "experiment--${model.type}-${now:%Y-%m-%d_%H-%M-%S}-${model.size}"
+  name: "experiment-${model.type}-${now:%Y-%m-%d_%H-%M-%S}-${model.size}"
   output_dir: "outputs/${run.name}"
   seed: 42
   run_final_evaluation: True

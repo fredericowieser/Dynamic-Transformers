@@ -308,8 +308,8 @@ def main(cfg: DictConfig):
                 result = subprocess.run(
                     eval_command, 
                     check=True, 
-                    capture_output=True, 
-                    text=True
+                    stdout=subprocess.PIPE, # Capture stdout for results
+                    text=True # Decode stdout/stderr as text
                 )
                 eval_results_json = result.stdout
                 eval_results = json.loads(eval_results_json)
