@@ -5,13 +5,13 @@
 # Can be overridden by experiment-specific files
 
 run:
-  name: "experiment-${now:%Y-%m-%d_%H-%M-%S}"
+  name: "experiment--${model.type}-${now:%Y-%m-%d_%H-%M-%S}-${model.size}"
   output_dir: "outputs/${run.name}"
   seed: 42
   run_final_evaluation: True
 
 model:
-  type: dtf  # standard, mod, sdt, stt
+  type: sdt  # standard, mod, sdt, stt
   size: 0.5B
   from_scratch: false
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
