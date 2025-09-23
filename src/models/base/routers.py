@@ -97,14 +97,14 @@ class BaseSurpriseRouter(BaseRouter):
         return F.avg_pool1d(padded, kernel_size=W, stride=1).squeeze(1)
 
     def _get_vpr_signals(self, D_st, D_ch, beta_ce, beta_cu):
-        o_ce_pos = F.softplus(self.raw_o_ce)
-        m_cu_pos = F.softplus(self.raw_m_cu)
-        
-        CE = D_st - (D_ch - torch.log(o_ce_pos + 1e-10))
-        CU = D_st - (m_cu_pos * self._moving_average(D_st.detach()))
-        
+        o_ce = self.raw_o_ce
+        m_cu = self.raw_m_cu
+
+        CE = D_st - (D_ch - torch.log(o_ce + 1e-10))
+        CU = D_st - (m_cu * self._moving_average(D_st.detach()))
+
         S_CE = torch.sigmoid(beta_ce * CE)
         S_CU = torch.sigmoid(beta_cu * CU)
         
         g_cont = S_CE + S_CU - (S_CE * S_CU)
-        return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "g_cont_mean": g_cont.mean().item(), "o_ce_pos": o_ce_pos.item(), "m_cu_pos": m_cu_pos.item()}
+        return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "g_cont_mean": g_cont.mean().item(), "o_ce": o_ce.item(), "m_cu": m_cu.item()}

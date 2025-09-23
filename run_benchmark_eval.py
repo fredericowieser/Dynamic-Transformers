@@ -86,7 +86,7 @@ def print_summary(results_dict):
 def main():
     parser = argparse.ArgumentParser(description="Run lm-eval benchmarks on a trained model.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory (output from save_pretrained).")
-    parser.add_argument("--tasks", type=str, default="quick_test", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
+    parser.add_argument("--tasks", type=str, default="general", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     args = parser.parse_args()
     

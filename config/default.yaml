@@ -21,7 +21,7 @@ model:
 
   # --- Common Dynamic Model Parameters ---
   capacity: 0.5
-  prior_ffn_intermediate_size_factor: 0.25
+  prior_ffn_intermediate_size_factor: 0.0625 # Factor of hidden size (e.g., 0.0625 for 1/16)
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
@@ -42,7 +42,7 @@ model:
     causal_loss_weight: 0.01
     g_threshold: 0.5 # Value between 0 and 1
     use_g_threshold_selection: true # If true, use g_threshold instead of top-k
-    g_reg_loss_weight: 0.01 # Weight for g_cont regularization loss
+    g_reg_loss_weight: 0.0001 # Weight for g_cont regularization loss
 
   mod:
     aux_loss_weight: 0.01

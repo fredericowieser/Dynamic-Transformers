@@ -245,9 +245,9 @@ def main(cfg: DictConfig):
                         beta_cu = metrics.get('beta_cu', 0.0)
                         log_metrics["train/beta_ce"] = beta_ce
                         log_metrics["train/beta_cu"] = beta_cu
-                        if "router_stats" in metrics and "o_ce_pos" in metrics["router_stats"]:
-                            log_metrics["train/router_stats/o_ce_pos"] = metrics["router_stats"]["o_ce_pos"]
-                            log_metrics["train/router_stats/m_cu_pos"] = metrics["router_stats"]["m_cu_pos"]
+                        if "router_stats" in metrics and "o_ce" in metrics["router_stats"]:
+                            log_metrics["train/router_stats/o_ce"] = metrics["router_stats"]["o_ce"]
+                            log_metrics["train/router_stats/m_cu"] = metrics["router_stats"]["m_cu"]
 
                     # Log learning rates for each parameter group
                     for name, opt in optimizers_dict.items():
