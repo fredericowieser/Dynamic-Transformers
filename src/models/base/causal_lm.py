@@ -27,6 +27,8 @@ class BaseForCausalLM(PreTrainedModel):
 
         if config.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
+            # Explicitly declare tied weights for the saving mechanism
+            self._tied_weights_keys = ["lm_head.weight", "model.embed_tokens.weight"]
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
