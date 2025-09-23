@@ -290,14 +290,16 @@ def main(cfg: DictConfig):
                             wandb.log(val_log_metrics, step=global_step)
                         accelerator.print(f"Validation Loss: {val_loss:.4f}, Validation Perplexity: {val_perplexity:.2f}")
 
-                                                if val_loss < best_eval_loss:
-                                                    best_eval_loss = val_loss
-                                                    best_model_path = Path(cfg.run.output_dir) / "best_model"
-                                                    log.info(f"New best model found! Saving to {best_model_path}")
-                                                    # FIX: Use save_pretrained to save the model in the standard Hugging Face format,
-                                                    # which creates pytorch_model.bin or model.safetensors that from_pretrained can find.
-                                                    unwrapped_model.save_pretrained(best_model_path)
-                                                    tokenizer.save_pretrained(best_model_path)                    accelerator.wait_for_everyone()
+                        if val_loss < best_eval_loss:
+                            best_eval_loss = val_loss
+                            best_model_path = Path(cfg.run.output_dir) / "best_model"
+                            log.info(f"New best model found! Saving to {best_model_path}")
+                            # FIX: Use save_pretrained to save the model in the standard Hugging Face format,
+                            # which creates pytorch_model.bin or model.safetensors that from_pretrained can find.
+                            unwrapped_model.save_pretrained(best_model_path)
+                            tokenizer.save_pretrained(best_model_path)
+
+                    accelerator.wait_for_everyone()
 
 
 
