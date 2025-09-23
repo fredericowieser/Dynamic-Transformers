@@ -95,11 +95,25 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    # FIX: Manually load the model and tokenizer to ensure the correct custom classes are used,
-    # then wrap them in the LMEvalAdaptor to bypass lm-eval's faulty auto-discovery.
+    # FIX: Explicitly load the model using the correct custom class to prevent loading a standard
+    # model with missing weights. This is the most robust way to handle custom architectures.
     log.info(f"Loading model and tokenizer from: {args.model_path}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = AutoModelForCausalLM.from_pretrained(
+
+    config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    model_type = getattr(config, "model_type", "standard")
+    model_class_map = {
+        "standard": StandardTransformerForCausalLM,
+        "mod": MoDForCausalLM,
+        "sdt": SDTForCausalLM,
+        "stt": STTForCausalLM,
+    }
+    model_class = model_class_map.get(model_type)
+    if not model_class:
+        raise ValueError(f"Unknown model type '{model_type}' in config.")
+
+    log.info(f"Explicitly loading model class: {model_class.__name__}")
+    model = model_class.from_pretrained(
         args.model_path,
         trust_remote_code=True,
         torch_dtype="auto",

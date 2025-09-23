@@ -8,7 +8,7 @@ class LMEvalAdaptor:
     def __init__(self, model, tokenizer, device):
         self.model = model
         self.tokenizer = tokenizer
-        self.device = device
+        self._device = device
         self._batch_size = 1 # Default, can be overridden by lm-eval
     
     @property
