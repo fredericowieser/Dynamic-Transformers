@@ -286,6 +286,18 @@ def main(cfg: DictConfig):
 
         if cfg.lm_eval.enabled:
             log.info("Starting final benchmark evaluation...")
+
+            # Free up GPU memory before starting the evaluation subprocess
+            log.info("Releasing GPU memory before evaluation...")
+            del model
+            del optimizers_dict
+            del schedulers_dict
+            del train_loader
+            del eval_loader
+            del prepared_items
+            accelerator.free_memory()
+            torch.cuda.empty_cache()
+
             import subprocess
             eval_command = [
                 "python",
