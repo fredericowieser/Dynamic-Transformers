@@ -45,6 +45,11 @@ def main():
     
     # Pass the config as a dictionary to the model constructor
     model_kwargs = config.to_dict()
+    # FIX: Remove the incorrect 'model_type' from the loaded config to avoid a TypeError,
+    # as we are passing the correct one explicitly.
+    if 'model_type' in model_kwargs:
+        del model_kwargs['model_type']
+
     model = model_class(config, model_type=model_type, **model_kwargs)
 
     # 3. Load the state dictionary from the custom model.pt file
