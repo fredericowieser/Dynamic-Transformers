@@ -107,11 +107,13 @@ class SDTPair(nn.Module):
 
             router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
 
+            gating_scores_for_selected = gating_scores.reshape(-1) # Reshape to 1D
+
             final_hidden_states, _, _ = self.dynamic.process_selected(
                 processed_hidden, 
                 batch_indices=batch_idx.reshape(-1),
                 token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores.reshape(-1),
+                gating_scores=gating_scores_for_selected,
                 use_soft_gating=True,
                 **kwargs
             )
@@ -126,11 +128,13 @@ class SDTPair(nn.Module):
                 gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
                 batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
 
+                gating_scores_for_selected = gating_scores.reshape(-1) # Reshape to 1D
+
                 final_hidden_states, _, _ = self.dynamic.process_selected(
                     processed_hidden,
                     batch_indices=batch_idx.reshape(-1),
                     token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores.reshape(-1),
+                    gating_scores=gating_scores_for_selected,
                     use_soft_gating=False,
                     **kwargs
                 )
@@ -146,11 +150,13 @@ class SDTPair(nn.Module):
                 gating_scores, topk_idx = g_cont.topk(k, dim=-1)
                 batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
 
+                gating_scores_for_selected = gating_scores.reshape(-1) # Reshape to 1D
+
                 final_hidden_states, _, _ = self.dynamic.process_selected(
                     processed_hidden,
                     batch_indices=batch_idx.reshape(-1),
                     token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores.reshape(-1),
+                    gating_scores=gating_scores_for_selected,
                     use_soft_gating=True, # Use soft gating as in training
                     **kwargs
                 )

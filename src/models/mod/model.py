@@ -80,11 +80,13 @@ class MoDLayer(nn.Module):
             k = topk_idx.shape[1]
             batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
 
+            gating_scores_for_selected = gating_scores.reshape(-1) # Reshape to 1D
+
             new_states, _, _ = self.block.process_selected(
                 hidden_states,
                 batch_indices=batch_idx.reshape(-1),
                 token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores.reshape(-1),
+                gating_scores=gating_scores_for_selected,
                 use_soft_gating=True,
                 **kwargs
             )
@@ -130,11 +132,13 @@ class MoDLayer(nn.Module):
                 k = topk_idx.shape[1] # k is already determined by topk_idx
                 batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
 
+                gating_scores_for_selected = gating_scores.reshape(-1) # Reshape to 1D
+
                 new_states, _, _ = self.block.process_selected(
                     hidden_states,
                     batch_indices=batch_idx.reshape(-1),
                     token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores.reshape(-1),
+                    gating_scores=gating_scores_for_selected,
                     use_soft_gating=True, # Use soft gating as in training
                     **kwargs
                 )

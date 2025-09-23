@@ -102,7 +102,8 @@ class STTLayer(nn.Module):
                 router_stats['selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
             else:
                 k = max(1, int(T * self.predictive_router.capacity))
-                gating_scores_for_selected, topk_idx = g_cont.topk(k, dim=-1)
+                gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+                gating_scores_for_selected = gating_scores_values.reshape(-1) # Reshape to 1D
                 batch_indices = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
                 token_indices = topk_idx.reshape(-1)
                 router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
@@ -136,7 +137,8 @@ class STTLayer(nn.Module):
                     router_stats['inferred_selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
                 else:
                     k = max(1, int(T * self.causal_router.capacity))
-                    gating_scores_for_selected, topk_idx = causal_logits.topk(k, dim=-1)
+                    gating_scores_values, topk_idx = causal_logits.topk(k, dim=-1)
+                    gating_scores_for_selected = gating_scores_values.reshape(-1) # Reshape to 1D
                     batch_indices = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k).reshape(-1)
                     token_indices = topk_idx.reshape(-1)
                     router_stats['inferred_selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
@@ -176,7 +178,8 @@ class STTLayer(nn.Module):
                     router_stats['selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
                 else:
                     k = max(1, int(T * self.predictive_router.capacity))
-                    gating_scores_for_selected, topk_idx = g_cont.topk(k, dim=-1)
+                    gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+                    gating_scores_for_selected = gating_scores_values.reshape(-1) # Reshape to 1D
                     batch_indices = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
                     token_indices = topk_idx.reshape(-1)
                     router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
