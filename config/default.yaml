@@ -19,14 +19,16 @@ model:
   attn_implementation: "eager" # eager, flash_attention_2
   use_cache: False
 
-  # Common Dynamic Model Parameters
+  # --- Common Dynamic Model Parameters ---
   capacity: 0.5
   prior_ffn_intermediate_size_factor: 0.25
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
+  learn_o_ce: true
+  learn_m_cu: true
 
-  # Model-Specific Parameters
+  # --- Model-Specific Parameters ---
   sdt:
     prior_loss_weight: 0.05
   
@@ -41,10 +43,10 @@ model:
   # Beta schedule for SDT and STT routers
   beta_schedule:
     type: "cosine"
-    beta_ce_start: 0.3
-    beta_ce_end: 6.0
-    beta_cu_start: 0.3
-    beta_cu_end: 6.0
+    beta_ce_start: 0.1
+    beta_ce_end: 10.0
+    beta_cu_start: 0.1
+    beta_cu_end: 10.0
     warmup_steps: 1000
 
   # Configuration for training from scratch
@@ -133,7 +135,7 @@ training:
       mod_causal_router: 1.0e-3
       prior: 1.0e-3
       transition_network: 1.0e-3
-      predictive_router: 1.0e-3
+      predictive_router: 1.0e-2
 
 system:
   device: "auto" # auto, cuda, mps, cpu

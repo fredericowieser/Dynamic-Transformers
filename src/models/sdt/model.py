@@ -120,35 +120,35 @@ class SDTForCausalLM(BaseForCausalLM):
                 beta_ce = sched_cfg.beta_ce_start
                 beta_cu = sched_cfg.beta_cu_start
 
+        layer_args = {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "cache_position": cache_position,
+            "position_embeddings": position_embeddings,
+            "output_attentions": output_attentions,
+            "beta_ce": beta_ce,
+            "beta_cu": beta_cu,
+            **kwargs,
+        }
+
         for layer in self.model.layers:
             if isinstance(layer, SDTPair):
-                # SDTPair handles its own layer and the one after it
-                dyn_mask = mask_mapping[layer.dynamic.layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.dynamic.layer.attention_type]
                 hidden_states, prior_loss, stats = layer(
                     hidden_states,
-                    attention_mask=dyn_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
-                    use_cache=use_cache,
-                    beta_ce=beta_ce,
-                    beta_cu=beta_cu,
+                    **layer_args,
                 )
                 if prior_loss is not None:
                     total_aux += self.model_params.get('sdt', {}).get('prior_loss_weight', 0.0) * prior_loss
                 last_stats = stats
             elif isinstance(layer, nn.Identity):
-                # This layer was consumed by an SDTPair, so we skip it.
                 continue
             else: # Standard Qwen2DecoderLayer
-                attn_mask = mask_mapping[layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    attention_mask=attn_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
+                    **layer_args,
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 

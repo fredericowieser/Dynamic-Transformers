@@ -153,31 +153,33 @@ class STTForCausalLM(BaseForCausalLM):
                 beta_ce = sched_cfg.beta_ce_start
                 beta_cu = sched_cfg.beta_cu_start
 
+        layer_args = {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "cache_position": cache_position,
+            "position_embeddings": position_embeddings,
+            "output_attentions": output_attentions,
+            "beta_ce": beta_ce,
+            "beta_cu": beta_cu,
+            **kwargs,
+        }
+
         for layer in self.model.layers:
             if isinstance(layer, STTLayer):
-                attn_mask = mask_mapping[layer.block.layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
                 hidden_states, aux_loss, rstats = layer(
                     hidden_states,
-                    attention_mask=attn_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
-                    use_cache=use_cache,
-                    beta_ce=beta_ce,
-                    beta_cu=beta_cu,
+                    **layer_args,
                 )
                 if aux_loss is not None:
                     total_aux_loss += aux_loss
                 all_router_stats.update(rstats)
             else: # Standard Qwen2DecoderLayer
-                attn_mask = mask_mapping[layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    attention_mask=attn_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
+                    **layer_args,
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 

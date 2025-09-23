@@ -142,30 +142,32 @@ class MoDForCausalLM(BaseForCausalLM):
         total_aux = torch.tensor(0.0, device=hidden_states.device)
         all_mod_metrics = []
         
+        layer_args = {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "cache_position": cache_position,
+            "position_embeddings": position_embeddings,
+            "output_attentions": output_attentions,
+            **kwargs,
+        }
+
         for layer in self.model.layers:
             if isinstance(layer, MoDLayer):
-                attn_mask = mask_mapping[layer.block.layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
                 hidden_states, aux, mod_metrics = layer(
                     hidden_states,
                     training=self.training,
-                    attention_mask=attn_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
-                    use_cache=use_cache,
+                    **layer_args,
                 )
                 total_aux += aux
                 if self.training: # Only collect metrics during training
                     all_mod_metrics.append(mod_metrics)
             else: # Standard Qwen2DecoderLayer
-                attn_mask = mask_mapping[layer.attention_type]
+                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    attention_mask=attn_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
+                    **layer_args,
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
                 

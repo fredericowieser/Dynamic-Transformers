@@ -54,8 +54,19 @@ class BaseSurpriseRouter(BaseRouter):
     """Abstracts the common surprise-based routing logic for SDT and STT."""
     def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
         super().__init__(config, capacity_attr, model_cfg=model_cfg)
-        self.raw_o_ce = nn.Parameter(torch.tensor(float(model_cfg.get('o_ce_init', 1.0))))
-        self.raw_m_cu = nn.Parameter(torch.tensor(float(model_cfg.get('m_cu_init', 1.0))))
+        
+        o_ce_init_val = torch.tensor(float(model_cfg.get('o_ce_init', 1.0)))
+        if model_cfg.get('learn_o_ce', False):
+            self.raw_o_ce = nn.Parameter(o_ce_init_val)
+        else:
+            self.register_buffer('raw_o_ce', o_ce_init_val)
+
+        m_cu_init_val = torch.tensor(float(model_cfg.get('m_cu_init', 1.1)))
+        if model_cfg.get('learn_m_cu', False):
+            self.raw_m_cu = nn.Parameter(m_cu_init_val)
+        else:
+            self.register_buffer('raw_m_cu', m_cu_init_val)
+
         self.ma_window = int(model_cfg.get('ma_window', 100))
     
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
