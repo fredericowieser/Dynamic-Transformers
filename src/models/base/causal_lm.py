@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, PretrainedConfig
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Config,
     Qwen2Model,
