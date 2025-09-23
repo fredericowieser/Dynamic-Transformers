@@ -131,16 +131,16 @@ class STTForCausalLM(BaseForCausalLM):
             sched_cfg = self.config.beta_schedule
             global_step = kwargs.get('global_step', 0)
             max_steps = kwargs.get('max_steps', 100000)
-            warmup = sched_cfg.warmup_steps
+            warmup = sched_cfg['warmup_steps']
             
             if global_step > warmup:
                 progress = (global_step - warmup) / (max_steps - warmup)
                 progress = min(progress, 1.0)
-                beta_ce = sched_cfg.beta_ce_start + progress * (sched_cfg.beta_ce_end - sched_cfg.beta_ce_start)
-                beta_cu = sched_cfg.beta_cu_start + progress * (sched_cfg.beta_cu_end - sched_cfg.beta_cu_start)
+                beta_ce = sched_cfg['beta_ce_start'] + progress * (sched_cfg['beta_ce_end'] - sched_cfg['beta_ce_start'])
+                beta_cu = sched_cfg['beta_cu_start'] + progress * (sched_cfg['beta_cu_end'] - sched_cfg['beta_cu_start'])
             else:
-                beta_ce = sched_cfg.beta_ce_start
-                beta_cu = sched_cfg.beta_cu_start
+                beta_ce = sched_cfg['beta_ce_start']
+                beta_cu = sched_cfg['beta_cu_start']
 
         layer_args = {
             "position_ids": position_ids,
