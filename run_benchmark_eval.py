@@ -4,7 +4,6 @@ import logging
 import os
 import torch
 import numpy as np
-import wandb
 from lm_eval import simple_evaluate
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
@@ -82,27 +81,7 @@ def print_summary(results_dict):
     summary_lines.append("-" * len(separator))
     log.info("\n".join(summary_lines))
 
-def get_wandb_run(model_path: str):
-    """Initializes and resumes a wandb run from info stored in the model directory."""
-    wandb_info_path = os.path.join(model_path, "wandb_info.json")
-    if not os.path.exists(wandb_info_path):
-        log.warning("wandb_info.json not found in model directory. Cannot resume wandb run.")
-        return None
-    with open(wandb_info_path, "r") as f:
-        wandb_info = json.load(f)
-    
-    try:
-        run = wandb.init(
-            project=wandb_info["project"],
-            entity=wandb_info["entity"],
-            id=wandb_info["run_id"],
-            resume="must"
-        )
-        log.info(f"Successfully resumed wandb run '{run.name}' (ID: {run.id}).")
-        return run
-    except Exception as e:
-        log.error(f"Failed to resume wandb run. Error: {e}")
-        return None
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run lm-eval benchmarks on a trained model.")
@@ -167,41 +146,12 @@ def main():
     final_results_structure = {"results": all_results}
     serializable_results = _make_json_serializable(final_results_structure)
 
-    # Log and save results
-    log.info("--- Evaluation Results ---")
+    # Print summary table to stderr for console logging
+    log.info("--- Final Benchmark Summary ---")
     print_summary(serializable_results)
 
-    run = get_wandb_run(args.model_path)
-    if run:
-        output_dir = run.dir
-        output_filename = "final_benchmark_results.json"
-        output_path = os.path.join(output_dir, output_filename)
-
-        with open(output_path, "w") as f:
-            json.dump(serializable_results, f, indent=2)
-        
-        log.info(f"Results saved to {output_path}")
-        log.info("Uploading results to wandb...")
-        
-        summary_metrics = {}
-        for task, res in serializable_results.get("results", {}).items():
-            for metric, value in res.items():
-                 if isinstance(value, (int, float)):
-                    summary_metrics[f"lm_eval/final/{task}/{metric}"] = value
-        run.summary.update(summary_metrics)
-
-        artifact = wandb.Artifact(name=f"{run.name}-evaluation", type="evaluation-results")
-        artifact.add_file(output_path)
-        run.log_artifact(artifact)
-        
-        run.finish()
-    else:
-        output_dir = os.path.join(args.model_path, "eval_results")
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "final_benchmark_results.json")
-        with open(output_path, "w") as f:
-            json.dump(serializable_results, f, indent=2)
-        log.info(f"Results saved to {output_path}")
+    # Print final JSON results to stdout for capture by the parent process
+    print(json.dumps(serializable_results))
 
 if __name__ == "__main__":
     main()

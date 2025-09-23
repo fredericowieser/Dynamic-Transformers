@@ -289,16 +289,13 @@ def main(cfg: DictConfig):
 
             # Free up GPU memory before starting the evaluation subprocess
             log.info("Releasing GPU memory before evaluation...")
-            del model
-            del optimizers_dict
-            del schedulers_dict
-            del train_loader
-            del eval_loader
-            del prepared_items
+            del model, optimizers_dict, schedulers_dict, train_loader, eval_loader, prepared_items
             accelerator.free_memory()
             torch.cuda.empty_cache()
 
             import subprocess
+            import json
+
             eval_command = [
                 "python",
                 "run_benchmark_eval.py",
@@ -308,9 +305,43 @@ def main(cfg: DictConfig):
             ]
             log.info(f"Running evaluation command: {' '.join(eval_command)}")
             try:
-                subprocess.run(eval_command, check=True)
-            except subprocess.CalledProcessError as e:
-                log.error(f"Benchmark evaluation script failed with error: {e}")
+                result = subprocess.run(
+                    eval_command, 
+                    check=True, 
+                    capture_output=True, 
+                    text=True
+                )
+                eval_results_json = result.stdout
+                eval_results = json.loads(eval_results_json)
+                
+                log.info("Benchmark evaluation complete.")
+
+                # Log results to wandb from the main process
+                if cfg.logging.wandb.enabled and wandb.run is not None:
+                    log.info("Uploading evaluation results to wandb...")
+                    
+                    summary_metrics = {}
+                    for task, res in eval_results.get("results", {}).items():
+                        for metric, value in res.items():
+                            if isinstance(value, (int, float)):
+                                summary_metrics[f"lm_eval/final/{task}/{metric}"] = value
+                    wandb.run.summary.update(summary_metrics)
+
+                    # Save results to a file and log as an artifact
+                    output_filename = "final_benchmark_results.json"
+                    output_path = save_path / output_filename
+                    with open(output_path, "w") as f:
+                        json.dump(eval_results, f, indent=2)
+                    
+                    artifact = wandb.Artifact(name=f"{wandb.run.name}-evaluation", type="evaluation-results")
+                    artifact.add_file(str(output_path))
+                    wandb.run.log_artifact(artifact)
+                    log.info("Evaluation results uploaded to wandb.")
+
+            except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+                log.error(f"Benchmark evaluation script failed or produced invalid output: {e}")
+                if isinstance(e, subprocess.CalledProcessError):
+                    log.error(f"Evaluation script stderr:\n{e.stderr}")
 
     # Push to Hugging Face Hub if enabled
     if cfg.push_to_hub.enabled and accelerator.is_main_process:
