@@ -145,8 +145,8 @@ class BaseForCausalLM(PreTrainedModel):
             out.update(aux)
 
         # Add auxiliary losses to the total loss and prepare for logging
-        if self.training and aux and 'unscaled_losses' in aux:
-            unscaled_losses = aux.pop('unscaled_losses')
+        if self.training and 'unscaled_losses' in out:
+            unscaled_losses = out.pop('unscaled_losses') # Pop from the final output dict
             for loss_name, unscaled_loss in unscaled_losses.items():
                 # Determine the weight (lambda) for this loss
                 # e.g., for 'mod_router_bce_loss', look for 'mod.aux_loss_weight' in config
