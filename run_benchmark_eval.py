@@ -139,6 +139,12 @@ def main():
         "hellaswag": 10,
     }
 
+    # If ONLY quick_test is specified, override to use zero-shot for its tasks
+    if args.tasks == "quick_test":
+        log.info("Quick test specified, overriding to use zero-shot for all tasks in the suite.")
+        shot_counts["arc_challenge"] = 0
+        shot_counts["hellaswag"] = 0
+
     all_results = {}
     for task_name in task_names:
         # Get the task-specific shot count, defaulting to 0 if not specified

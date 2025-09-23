@@ -11,7 +11,7 @@ run:
   run_final_evaluation: True
 
 model:
-  type: sdt  # standard, mod, sdt, stt
+  type: stt  # standard, mod, sdt, stt
   size: 0.5B
   from_scratch: false
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
@@ -19,14 +19,14 @@ model:
   attn_implementation: "eager" # eager, flash_attention_2
   use_cache: False
 
-  # --- Common Dynamic Model Parameters ---
+  # Common Dynamic Model Parameters
   capacity: 0.5
   prior_ffn_intermediate_size_factor: 0.25
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
 
-  # --- Model-Specific Parameters ---
+  # Model-Specific Parameters
   sdt:
     prior_loss_weight: 0.05
   
