@@ -288,6 +288,14 @@ def main(cfg: DictConfig):
                                 best_eval_loss,
                                 Path(cfg.run.output_dir) / "best_model"
                             )
+                            # --- Salvage: Save config.json for lm_eval --- 
+                            # This is a temporary fix for models saved before config.json was included in save_checkpoint
+                            # It ensures the best_model directory has a config.json with the correct model_type
+                            best_model_path = Path(cfg.run.output_dir) / "best_model"
+                            unwrapped_model.config.model_type = cfg.model.type # Ensure model_type is set
+                            unwrapped_model.config.save_pretrained(best_model_path)
+                            log.info(f"Salvaged config.json saved to {best_model_path}")
+                            # --- End Salvage ---
                     accelerator.wait_for_everyone()
 
 

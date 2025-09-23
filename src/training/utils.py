@@ -143,6 +143,9 @@ def save_checkpoint(
     model_path = save_path / "model.pt"
     torch.save(model.state_dict(), model_path)
 
+    # Save model config (permanent fix)
+    model.config.save_pretrained(save_path)
+
     # Save training state
     state_path = save_path / "training_state.pt"
     optimizer_states = {name: opt.state_dict() for name, opt in optimizers.items() if opt is not None}
