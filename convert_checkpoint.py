@@ -27,10 +27,23 @@ def main():
     log.info("Loading model config...")
     config = AutoConfig.from_pretrained(args.checkpoint_path, trust_remote_code=True)
 
-    # 2. Instantiate model from config
-    # trust_remote_code=True is essential for AutoModelForCausalLM to find our custom classes
-    log.info(f"Instantiating model of type: {config.model_type}")
-    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    # 2. Instantiate the correct model class based on the config
+    model_type = getattr(config, "model_type", "standard")
+    model_class_map = {
+        "standard": StandardTransformerForCausalLM,
+        "mod": MoDForCausalLM,
+        "sdt": SDTForCausalLM,
+        "stt": STTForCausalLM,
+    }
+    model_class = model_class_map.get(model_type)
+    if not model_class:
+        raise ValueError(f"Unknown model type '{model_type}' in config.")
+
+    log.info(f"Instantiating model of type: {model_type} ({model_class.__name__})")
+    
+    # Pass the config as a dictionary to the model constructor
+    model_kwargs = config.to_dict()
+    model = model_class(config, model_type=model_type, **model_kwargs)
 
     # 3. Load the state dictionary from the custom model.pt file
     state_dict_path = os.path.join(args.checkpoint_path, "model.pt")
