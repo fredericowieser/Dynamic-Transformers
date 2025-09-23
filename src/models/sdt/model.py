@@ -174,8 +174,8 @@ class SDTForCausalLM(BaseForCausalLM):
         cfg = self.config
 
         beta_ce, beta_cu = 1.0, 1.0 # Default if no schedule is found
-        if hasattr(cfg, 'beta_schedule'):
-            sched_cfg = cfg.beta_schedule
+        if hasattr(self.config, 'beta_schedule'):
+            sched_cfg = self.config.beta_schedule
             global_step = kwargs.get('global_step', 0)
             max_steps = kwargs.get('max_steps', 100000) # max_steps from training loop
             warmup = sched_cfg['warmup_steps']
