@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
     # FIX: Add a separate argument for the tokenizer path
     parser.add_argument("--tokenizer_path", type=str, default="Qwen/Qwen2.5-0.5B", help="Path or Hub name of the tokenizer to use.")
-    parser.add_argument("--tasks", type=str, default="quick_test", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
+    parser.add_argument("--tasks", type=str, default="general", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     args = parser.parse_args()
     
