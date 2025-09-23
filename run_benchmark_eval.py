@@ -130,16 +130,36 @@ def main():
     except Exception:
         model_args_dict["torch_dtype"] = "auto" # Fallback
     
-    # Run evaluation
-    results = simple_evaluate(
-        model="hf",
-        model_args=model_args_dict,
-        tasks=task_names,
-        batch_size=args.batch_size,
-        device="cuda:0" if torch.cuda.is_available() else "cpu",
-    )
+    # Shot counts to align with official Qwen 2.5 evaluations
+    shot_counts = {
+        "mmlu": 5,
+        "arc_challenge": 25,
+        "truthfulqa_mc2": 0,
+        "winogrande": 5,
+        "hellaswag": 10,
+    }
+
+    all_results = {}
+    for task_name in task_names:
+        # Get the task-specific shot count, defaulting to 0 if not specified
+        num_fewshot = shot_counts.get(task_name, 0)
+        log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
+
+        results = simple_evaluate(
+            model="hf",
+            model_args=model_args_dict,
+            tasks=[task_name],
+            num_fewshot=num_fewshot,
+            batch_size=args.batch_size,
+            device="cuda:0" if torch.cuda.is_available() else "cpu",
+        )
+        
+        if "results" in results:
+            all_results.update(results["results"])
     
-    serializable_results = _make_json_serializable(results)
+    # Re-create the top-level structure that the rest of the script expects
+    final_results_structure = {"results": all_results}
+    serializable_results = _make_json_serializable(final_results_structure)
 
     # Log and save results
     log.info("--- Evaluation Results ---")
