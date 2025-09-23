@@ -29,8 +29,8 @@ model:
   learn_m_cu: true
 
   # --- Causal Router Control ---
-  train_causal_router: true
-  use_causal_router_in_validation: true
+  train_causal_router: false
+  use_causal_router_in_validation: false
 
   # --- Model-Specific Parameters ---
   sdt:
@@ -41,7 +41,7 @@ model:
     tpn_loss_weight: 0.05
     causal_loss_weight: 0.01
     g_threshold: 0.5 # Value between 0 and 1
-    use_g_threshold_selection: false # If true, use g_threshold instead of top-k
+    use_g_threshold_selection: true # If true, use g_threshold instead of top-k
     g_reg_loss_weight: 0.05 # Weight for g_cont regularization loss
 
   mod:
