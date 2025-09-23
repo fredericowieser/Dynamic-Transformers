@@ -22,7 +22,7 @@ TASK_SUITES = {
     "general": ["arc_challenge", "hellaswag", "mmlu", "winogrande", "truthfulqa_mc2"],
     "math": ["gsm8k", "math_qa"],
     "code": ["humaneval", "mbpp"],
-    "quick_test": ["arc_challenge", "hellaswag"]
+    "quick_test": ["truthfulqa_mc2"]
 }
 
 def _make_json_serializable(obj):
@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory.")
     # FIX: Add a separate argument for the tokenizer path
     parser.add_argument("--tokenizer_path", type=str, default="Qwen/Qwen2.5-0.5B", help="Path or Hub name of the tokenizer to use.")
-    parser.add_argument("--tasks", type=str, default="general", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
+    parser.add_argument("--tasks", type=str, default="quick_test", help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
     args = parser.parse_args()
     
@@ -125,8 +125,7 @@ def main():
     # If ONLY quick_test is specified, override to use zero-shot for its tasks
     if args.tasks == "quick_test":
         log.info("Quick test specified, overriding to use zero-shot for all tasks in the suite.")
-        shot_counts["arc_challenge"] = 0
-        shot_counts["hellaswag"] = 0
+        shot_counts["truthfulqa_mc2"] = 0
 
     all_results = {}
     for task_name in task_names:
