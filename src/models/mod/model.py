@@ -117,8 +117,8 @@ class MoDLayer(nn.Module):
 class MoDForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
 
-    def __init__(self, config, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config, model_type: str, **kwargs):
+        super().__init__(config, model_type=model_type, **kwargs)
         # Replace standard layers with MoD layers in-place
         for i in range(self.config.num_hidden_layers):
             if i % 2 == 1:

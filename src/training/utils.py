@@ -81,10 +81,10 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     log.debug(f"Instantiating {model_class.__name__} with kwargs: {model_kwargs}")
 
     if from_scratch:
-        model = model_class(config, **model_kwargs)
+        model = model_class(config, model_type=model_type, **model_kwargs)
     else:
         # For pretrained, we still need to load the base weights
-        model = model_class(config, **model_kwargs)
+        model = model_class(config, model_type=model_type, **model_kwargs)
         log.info(f"Initializing {model_type.upper()} from pretrained {model_cfg.pretrained_model_name_or_path}")
         base_model = Qwen2ForCausalLM.from_pretrained(model_cfg.pretrained_model_name_or_path, torch_dtype=torch_dtype)
         
