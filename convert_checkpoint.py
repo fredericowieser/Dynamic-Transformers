@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="Convert a custom .pt checkpoint to a standard Hugging Face model format.")
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the directory containing the model.pt and config.json files.")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the converted, standard-format model.")
+    parser.add_argument("--model_type", type=str, required=True, choices=["stt", "sdt", "mod", "standard"], help="The type of model to convert (e.g., 'stt'). This is required to build the correct architecture.")
     parser.add_argument("--tokenizer_path", type=str, default="Qwen/Qwen2.5-0.5B", help="Name or path of the tokenizer to save with the model.")
     args = parser.parse_args()
 
@@ -27,8 +28,8 @@ def main():
     log.info("Loading model config...")
     config = AutoConfig.from_pretrained(args.checkpoint_path, trust_remote_code=True)
 
-    # 2. Instantiate the correct model class based on the config
-    model_type = getattr(config, "model_type", "standard")
+    # 2. Instantiate the correct model class based on the manually provided model_type
+    model_type = args.model_type
     model_class_map = {
         "standard": StandardTransformerForCausalLM,
         "mod": MoDForCausalLM,
@@ -37,7 +38,8 @@ def main():
     }
     model_class = model_class_map.get(model_type)
     if not model_class:
-        raise ValueError(f"Unknown model type '{model_type}' in config.")
+        # This check is redundant due to argparse 'choices', but good for safety
+        raise ValueError(f"Unknown model type '{model_type}'.")
 
     log.info(f"Instantiating model of type: {model_type} ({model_class.__name__})")
     
