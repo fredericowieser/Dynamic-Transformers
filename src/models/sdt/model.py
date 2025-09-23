@@ -193,16 +193,16 @@ class SDTForCausalLM(BaseForCausalLM):
         return hidden_states, aux
 
     def get_trainable_parameters(self):
-        params_map = {'prior': [], 'router': [], 'causal_router': [], 'base_model': []}
+        params_map = {'sdt_prior': [], 'sdt_router': [], 'sdt_causal_router': [], 'base_model': []}
         for n, p in self.named_parameters():
             if not p.requires_grad:
                 continue
             if 'prior' in n:
-                params_map['prior'].append(p)
+                params_map['sdt_prior'].append(p)
             elif 'causal_router' in n:
-                params_map['causal_router'].append(p)
+                params_map['sdt_causal_router'].append(p)
             elif 'router' in n:
-                params_map['router'].append(p)
+                params_map['sdt_router'].append(p)
             else:
                 params_map['base_model'].append(p)
         return [{'name': k, 'params': v} for k, v in params_map.items() if v]

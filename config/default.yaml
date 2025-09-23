@@ -132,11 +132,20 @@ training:
     # NOTE: The learning rates for MoD components are guesses, as the original paper did not specify them.
     lrs: # Learning rates per parameter group
       base_model: 1.0e-5
+
+      # MoD Learning Rates
       mod_router: 1.0e-3
       mod_causal_router: 1.0e-3
-      prior: 1.0e-3
-      transition_network: 1.0e-3
-      predictive_router: 1.0e-2
+
+      # SDT Learning Rates
+      sdt_prior: 1.0e-3
+      sdt_router: 1.0e-3
+      sdt_causal_router: 1.0e-5
+
+      # STT Learning Rates
+      stt_transition_network: 1.0e-3
+      stt_predictive_router: 1.0e-2
+      stt_causal_router: 1.0e-5
 
 system:
   device: "auto" # auto, cuda, mps, cpu

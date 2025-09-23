@@ -186,20 +186,20 @@ class STTForCausalLM(BaseForCausalLM):
     def get_trainable_parameters(self):
         # Groups for optimizer
         params_map = {
-            'transition_network': [],
-            'predictive_router': [],
-            'causal_router': [],
+            'stt_transition_network': [],
+            'stt_predictive_router': [],
+            'stt_causal_router': [],
             'base_model': [],
         }
         for n, p in self.named_parameters():
             if not p.requires_grad:
                 continue
             if 'transition_network' in n:
-                params_map['transition_network'].append(p)
+                params_map['stt_transition_network'].append(p)
             elif 'predictive_router' in n:
-                params_map['predictive_router'].append(p)
+                params_map['stt_predictive_router'].append(p)
             elif 'causal_router' in n:
-                params_map['causal_router'].append(p)
+                params_map['stt_causal_router'].append(p)
             else:
                 params_map['base_model'].append(p)
         return [{'name': k, 'params': v} for k, v in params_map.items() if v]
