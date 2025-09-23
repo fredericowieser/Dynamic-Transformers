@@ -11,7 +11,6 @@ class MoDRouter(BaseRouter):
     def __init__(self, config, layer_idx: int, model_params: Dict):
         super().__init__(config, capacity_attr='capacity', model_cfg=model_params)
         self.router = nn.Linear(config.hidden_size, 1, bias=False)
-        self.aux_loss_weight = model_params.get('mod', {}).get('aux_loss_weight', 0.01)
 
     def forward(self, hidden_states, **kwargs):
         logits = self.router(hidden_states).squeeze(-1)
@@ -26,14 +25,10 @@ class MoDRouter(BaseRouter):
         binary_targets = torch.zeros_like(logits)
         binary_targets.scatter_(1, topk_idx, 1.0)
 
-        # Auxiliary loss to train the router, as described in MoD paper, Section 3.5.
-        # This loss encourages the router to produce high scores for tokens that are
-        # selected (top-k) and low scores for those that are not. This makes the
-        # router's behavior more predictable for causal inference.
-        # The equation is: L_aux = BCE(logits, topk_mask) * weight
-        aux_loss = F.binary_cross_entropy_with_logits(logits, binary_targets) * self.aux_loss_weight
+        # Return the raw, unscaled loss
+        router_bce_loss = F.binary_cross_entropy_with_logits(logits, binary_targets)
         
-        return logits, aux_loss, binary_targets, gating_scores, topk_idx
+        return logits, router_bce_loss, binary_targets, gating_scores, topk_idx
 
 class MoDCausalRouter(nn.Module):
     """
@@ -61,24 +56,19 @@ class MoDLayer(nn.Module):
         self.block = DynamicBlock(hf_layer)
         self.router = MoDRouter(config, layer_idx=0, model_params=model_params)
         self.causal_router = MoDCausalRouter(config)
-        self.predictor_loss_weight = model_params.get('mod', {}).get('predictor_loss_weight', 0.01)
-
 
     def forward(self, hidden_states, training: bool, **kwargs):
-        total_aux_loss = torch.tensor(0.0, device=hidden_states.device)
+        layer_losses = {}
         layer_metrics = {}
 
         if training:
-            # Main router pass (non-causal top-k)
-            scores, main_aux_loss, binary_targets, gating_scores, topk_idx = self.router(hidden_states)
-            total_aux_loss += main_aux_loss
+            scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(hidden_states)
+            layer_losses['mod_router_bce_loss'] = router_bce_loss
             
-            # Causal router (predictor) pass to train it for inference
             predictor_logits = self.causal_router(hidden_states.detach())
             predictor_loss = F.binary_cross_entropy_with_logits(predictor_logits, binary_targets.detach())
-            total_aux_loss += predictor_loss * self.predictor_loss_weight
+            layer_losses['mod_causal_predictor_loss'] = predictor_loss
 
-            # Gather tokens based on main router for the forward pass
             B, T, D = hidden_states.shape
             k = topk_idx.shape[1]
             batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
@@ -92,7 +82,6 @@ class MoDLayer(nn.Module):
                 **kwargs
             )
             
-            # Logging metrics from the training router
             router_probs = torch.sigmoid(scores)
             num_selected = int(self.router.capacity * scores.shape[1])
             layer_metrics = {
@@ -101,11 +90,9 @@ class MoDLayer(nn.Module):
                 'router_probs_mean': router_probs.mean().item(),
                 'router_probs_std': router_probs.std().item(),
                 'selected_tokens_proportion': num_selected / scores.shape[1],
-                'predictor_loss': predictor_loss.item(),
             }
 
         else: # Inference
-            # Use the trained causal router for causal routing
             predictor_logits = self.causal_router(hidden_states)
             is_selected = predictor_logits > 0
             
@@ -120,12 +107,11 @@ class MoDLayer(nn.Module):
                 **kwargs
             )
             
-            # Logging metrics from the inference predictor
             layer_metrics = {
                 'inferred_selected_tokens_proportion': (is_selected.sum() / is_selected.numel()).item()
             }
 
-        return new_states, total_aux_loss, layer_metrics
+        return new_states, layer_losses, layer_metrics
 
 
 class MoDForCausalLM(BaseForCausalLM):
@@ -139,7 +125,7 @@ class MoDForCausalLM(BaseForCausalLM):
                 self.model.layers[i] = MoDLayer(self.model.layers[i], config, self.model_params)
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
-        total_aux = torch.tensor(0.0, device=hidden_states.device)
+        all_losses = []
         all_mod_metrics = []
         
         layer_args = {
@@ -155,13 +141,13 @@ class MoDForCausalLM(BaseForCausalLM):
         for layer in self.model.layers:
             if isinstance(layer, MoDLayer):
                 layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
-                hidden_states, aux, mod_metrics = layer(
+                hidden_states, losses, mod_metrics = layer(
                     hidden_states,
                     training=self.training,
                     **layer_args,
                 )
-                total_aux += aux
-                if self.training: # Only collect metrics during training
+                if self.training:
+                    all_losses.append(losses)
                     all_mod_metrics.append(mod_metrics)
             else: # Standard Qwen2DecoderLayer
                 layer_args["attention_mask"] = mask_mapping[layer.attention_type]
@@ -171,13 +157,18 @@ class MoDForCausalLM(BaseForCausalLM):
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
                 
-        aux = {'aux_loss': total_aux} if self.training else {}
-        
-        if all_mod_metrics:
+        aux = {}
+        if self.training:
+            # Aggregate losses
+            agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
+            aux['unscaled_losses'] = agg_losses
+
+            # Aggregate metrics
             agg_metrics = {}
-            metric_keys = all_mod_metrics[0].keys()
-            for key in metric_keys:
-                agg_metrics[f"mod/{key}"] = torch.tensor([m[key] for m in all_mod_metrics]).mean().item()
+            if all_mod_metrics:
+                metric_keys = all_mod_metrics[0].keys()
+                for key in metric_keys:
+                    agg_metrics[f"mod/{key}"] = torch.tensor([m[key] for m in all_mod_metrics]).mean().item()
             aux['router_stats'] = agg_metrics
             
         return hidden_states, aux

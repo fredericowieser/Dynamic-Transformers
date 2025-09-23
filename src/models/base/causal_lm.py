@@ -128,19 +128,44 @@ class BaseForCausalLM(PreTrainedModel):
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
-        # Cross-entropy loss
-        loss = None
+        # Cross-entropy loss for the main language modeling task
+        lm_loss = None
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
-        out = {"logits": logits, "lm_loss": loss, "loss": loss}
+        # Start with the base LM loss
+        total_loss = lm_loss
+        
+        # Prepare output dictionary
+        out = {"logits": logits, "lm_loss": lm_loss}
         if aux:
             out.update(aux)
-            if loss is not None and 'aux_loss' in aux and aux['aux_loss'] is not None:
-                out['loss'] = out['loss'] + aux['aux_loss']
+
+        # Add auxiliary losses to the total loss and prepare for logging
+        if self.training and aux and 'unscaled_losses' in aux:
+            unscaled_losses = aux.pop('unscaled_losses')
+            for loss_name, unscaled_loss in unscaled_losses.items():
+                # Determine the weight (lambda) for this loss
+                # e.g., for 'mod_router_bce_loss', look for 'mod.aux_loss_weight' in config
+                model_type = loss_name.split('_')[0] # mod, sdt, stt
+                weight_key = loss_name.replace(f"{model_type}_", "").replace("_loss", "_loss_weight")
+                loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
+
+                # Add to total loss
+                if unscaled_loss is not None and loss_weight > 0:
+                    scaled_loss = unscaled_loss * loss_weight
+                    total_loss += scaled_loss
+                    out[f"loss/{loss_name}_scaled"] = scaled_loss
+                    out[f"loss_weight/{loss_name}"] = loss_weight
+                
+                out[f"loss/{loss_name}_unscaled"] = unscaled_loss
+
+        # Final total loss
+        out['loss'] = total_loss
+
         return out
 
     def _run_layers(

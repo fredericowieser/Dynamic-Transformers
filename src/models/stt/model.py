@@ -6,7 +6,7 @@ import logging
 
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer, Qwen2RMSNorm
 from ..base.block import DynamicBlock
-from ..base.routers import BaseSurpriseRouter, CausalRouter
+from ..base.routers import BaseSurpriseRouter, STTCausalRouter
 from ..base.priors import BasePriorNetwork
 from ..base.causal_lm import BaseForCausalLM
 
@@ -50,16 +50,16 @@ class STTLayer(nn.Module):
         self.block = DynamicBlock(hf_layer)
         self.transition_network = STTTransitionNetwork(config, model_params=model_params)
         self.predictive_router = STTPredictiveRouter(config, layer_idx=0, model_params=model_params)
-        self.causal_router = CausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
+        self.causal_router = STTCausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
         self.config = config
         self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
         original_hidden = hidden_states
         router_stats = {}
+        layer_losses = {}
 
         if self.training:
-            # In training, STT processes all tokens to compute residuals for router training
             out = self.block(hidden_states, **kwargs)
             processed_hidden = out[0] if isinstance(out, tuple) else out
             
@@ -69,28 +69,20 @@ class STTLayer(nn.Module):
                 [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]], dim=1
             )
             predicted_residual = self.transition_network(prev_final_states)
-            tpn_loss = F.mse_loss(predicted_residual, actual_residual.detach())
-
-            beta_ce = kwargs.get('beta_ce', 1.0)
-            beta_cu = kwargs.get('beta_cu', 1.0)
+            layer_losses['stt_tpn_loss'] = F.mse_loss(predicted_residual, actual_residual.detach())
 
             g_cont, binary_targets, pred_stats = self.predictive_router(
-                actual_residual, predicted_residual, beta_ce=beta_ce, beta_cu=beta_cu
+                actual_residual, predicted_residual, **kwargs
             )
             router_stats.update(pred_stats)
 
             causal_logits, _, causal_stats = self.causal_router(original_hidden)
             router_stats.update(causal_stats)
-            causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
-
-            aux_loss = (self.model_params.get('stt', {}).get('tpn_loss_weight', 0.05) * tpn_loss) + \
-                       (self.model_params.get('stt', {}).get('causal_loss_weight', 0.01) * causal_loss)
+            layer_losses['stt_causal_router_loss'] = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
             
-            # In training, we don't skip tokens, just calculate loss
             final_hidden_states = processed_hidden
         
         else: # Inference
-            # Use the causal router to select tokens, then process only those tokens
             causal_logits, _, causal_stats = self.causal_router(original_hidden)
             router_stats.update(causal_stats)
             
@@ -108,16 +100,14 @@ class STTLayer(nn.Module):
                 use_soft_gating=False,
                 **kwargs
             )
-            aux_loss = None
 
-        return final_hidden_states, aux_loss, router_stats
+        return final_hidden_states, layer_losses, router_stats
 
 class STTForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
-        # Replace standard layers with STT layers in-place
         for i in range(self.config.num_hidden_layers):
             if i % 2 == 1:
                 self.model.layers[i] = STTLayer(self.model.layers[i], config, self.model_params)
@@ -134,7 +124,7 @@ class STTForCausalLM(BaseForCausalLM):
         output_attentions: bool,
         **kwargs,
     ):
-        total_aux_loss = 0.0
+        all_losses = []
         all_router_stats: Dict[str, Any] = {}
 
         beta_ce, beta_cu = 1.0, 1.0
@@ -165,16 +155,17 @@ class STTForCausalLM(BaseForCausalLM):
             **kwargs,
         }
 
-        for layer in self.model.layers:
+        for i, layer in enumerate(self.model.layers):
             if isinstance(layer, STTLayer):
                 layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
-                hidden_states, aux_loss, rstats = layer(
+                hidden_states, losses, rstats = layer(
                     hidden_states,
                     **layer_args,
                 )
-                if aux_loss is not None:
-                    total_aux_loss += aux_loss
-                all_router_stats.update(rstats)
+                if self.training:
+                    all_losses.append(losses)
+                    for key, value in rstats.items():
+                        all_router_stats[f"stt/layer_{i}/{key}"] = value
             else: # Standard Qwen2DecoderLayer
                 layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
@@ -183,10 +174,14 @@ class STTForCausalLM(BaseForCausalLM):
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 
-        aux = {"aux_loss": total_aux_loss, "router_stats": all_router_stats}
+        aux = {}
         if self.training:
+            agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
+            aux['unscaled_losses'] = agg_losses
+            aux['router_stats'] = all_router_stats
             aux['beta_ce'] = beta_ce
             aux['beta_cu'] = beta_cu
+
         return hidden_states, aux
 
     def get_trainable_parameters(self):

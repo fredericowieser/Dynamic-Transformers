@@ -9,7 +9,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
 )
 from ..base.block import DynamicBlock
 from ..base.priors import BasePriorNetwork
-from ..base.routers import BaseSurpriseRouter
+from ..base.routers import BaseSurpriseRouter, CausalRouter
 from ..base.causal_lm import BaseForCausalLM
 
 class SDTPriorNetwork(BasePriorNetwork):
@@ -33,7 +33,15 @@ class SDTRouter(BaseSurpriseRouter):
         D_ch = torch.sum((actual_residual - predicted_residual).pow(2), dim=-1) / d
 
         g_cont, stats = self._get_vpr_signals(D_st, D_ch, beta_ce, beta_cu)
-        return g_cont, None, stats
+        
+        # Also return binary targets for training the causal router
+        B, T = g_cont.shape
+        k = max(1, int(T * self.capacity))
+        _, topk_idx = g_cont.topk(k, dim=-1)
+        binary_targets = torch.zeros_like(g_cont)
+        binary_targets.scatter_(1, topk_idx, 1.0)
+        
+        return g_cont, binary_targets, stats
 
 class SDTDecisionLayer(nn.Module):
     def __init__(self, config, model_params: Dict, layer_idx: int):
@@ -62,46 +70,67 @@ class SDTPair(nn.Module):
         self.decision = SDTDecisionLayer(config, model_params, layer_idx)
         self.router = SDTRouter(config, model_params=model_params)
         self.dynamic = DynamicBlock(hf_layer)
+        self.causal_router = CausalRouter(config, layer_idx=layer_idx, capacity_attr='capacity', model_cfg=model_params)
+        self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
         processed_hidden, actual_res, predicted_res, prior_loss = self.decision(hidden_states, **kwargs)
         
-        g_cont, _, stats = self.router(actual_res, predicted_res, **kwargs)
+        layer_losses = {"sdt_prior_loss": prior_loss}
+        router_stats = {}
 
-        B, T, D = hidden_states.shape
-        k = max(1, int(T * self.router.capacity))
-        gating_scores, topk_idx = g_cont.topk(k, dim=-1)
-        
-        batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+        if self.training:
+            g_cont, binary_targets, surprise_stats = self.router(actual_res, predicted_res, **kwargs)
+            router_stats.update(surprise_stats)
 
-        final_hidden_states, _, _ = self.dynamic.process_selected(
-            processed_hidden, 
-            batch_indices=batch_idx.reshape(-1),
-            token_indices=topk_idx.reshape(-1),
-            gating_scores=gating_scores.reshape(-1),
-            use_soft_gating=self.training,
-            **kwargs
-        )
-        return final_hidden_states, prior_loss, stats
+            causal_logits, _, _ = self.causal_router(hidden_states.detach())
+            causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
+            layer_losses['sdt_causal_router_loss'] = causal_loss
+            
+            B, T, D = hidden_states.shape
+            k = max(1, int(T * self.router.capacity))
+            gating_scores, topk_idx = g_cont.topk(k, dim=-1)
+            batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+
+            final_hidden_states, _, _ = self.dynamic.process_selected(
+                processed_hidden, 
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores.reshape(-1),
+                use_soft_gating=True,
+                **kwargs
+            )
+        else: # Inference
+            causal_logits, _, _ = self.causal_router(hidden_states)
+            
+            B, T, D = hidden_states.shape
+            k = max(1, int(T * self.causal_router.capacity))
+            gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
+            batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
+
+            final_hidden_states, _, _ = self.dynamic.process_selected(
+                processed_hidden,
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores.reshape(-1),
+                use_soft_gating=False,
+                **kwargs
+            )
+
+        return final_hidden_states, layer_losses, router_stats
 
 class SDTForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
-        # Replace layer pairs in-place
         for i in range(0, self.config.num_hidden_layers - 1, 2):
-            # The SDTPair wraps the *next* layer, but we replace the current one
-            # to maintain the processing sequence.
             self.model.layers[i] = SDTPair(self.model.layers[i+1], config, self.model_params, i)
-            # The original layer at i+1 is now inside the SDTPair, but the reference
-            # in the list should be removed to avoid shared tensor errors.
-            # We replace it with an Identity to maintain layer indices, though it will be skipped.
             self.model.layers[i+1] = nn.Identity()
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
-        total_aux = 0.0
-        last_stats = {}
+        all_losses = []
+        all_router_stats = {}
         cfg = self.config
 
         beta_ce, beta_cu = 1.0, 1.0
@@ -132,16 +161,18 @@ class SDTForCausalLM(BaseForCausalLM):
             **kwargs,
         }
 
-        for layer in self.model.layers:
+        for i, layer in enumerate(self.model.layers):
             if isinstance(layer, SDTPair):
                 layer_args["attention_mask"] = mask_mapping[layer.dynamic.layer.attention_type]
-                hidden_states, prior_loss, stats = layer(
+                hidden_states, losses, stats = layer(
                     hidden_states,
                     **layer_args,
                 )
-                if prior_loss is not None:
-                    total_aux += self.model_params.get('sdt', {}).get('prior_loss_weight', 0.0) * prior_loss
-                last_stats = stats
+                if self.training:
+                    all_losses.append(losses)
+                    for key, value in stats.items():
+                        all_router_stats[f"sdt/layer_{i}/{key}"] = value
+
             elif isinstance(layer, nn.Identity):
                 continue
             else: # Standard Qwen2DecoderLayer
@@ -152,19 +183,25 @@ class SDTForCausalLM(BaseForCausalLM):
                 )
                 hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 
-        aux = {"aux_loss": total_aux, "router_stats": last_stats}
+        aux = {}
         if self.training:
+            agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
+            aux['unscaled_losses'] = agg_losses
+            aux['router_stats'] = all_router_stats
             aux['beta_ce'] = beta_ce
             aux['beta_cu'] = beta_cu
+
         return hidden_states, aux
 
     def get_trainable_parameters(self):
-        params_map = {'prior': [], 'router': [], 'base_model': []}
+        params_map = {'prior': [], 'router': [], 'causal_router': [], 'base_model': []}
         for n, p in self.named_parameters():
             if not p.requires_grad:
                 continue
             if 'prior' in n:
                 params_map['prior'].append(p)
+            elif 'causal_router' in n:
+                params_map['causal_router'].append(p)
             elif 'router' in n:
                 params_map['router'].append(p)
             else:

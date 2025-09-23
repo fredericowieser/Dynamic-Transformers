@@ -39,7 +39,27 @@ class BaseRouter(nn.Module, ABC):
                batch_idx.reshape(-1), topk_idx.reshape(-1), topk_vals.reshape(-1)
 
 class CausalRouter(BaseRouter):
-    """Unified CausalRouter for MoD, SDT, and STT inference."""
+    """
+    A simple causal router for MoD and SDT inference. It's a small MLP
+    that predicts whether a token should be processed based on its own
+    hidden state.
+    """
+    def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict = None):
+        super().__init__(config, capacity_attr, model_cfg=model_cfg)
+        self.hidden_size = config.hidden_size
+        self.router = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size // 4),
+            nn.GELU(),
+            nn.Linear(self.hidden_size // 4, 1)
+        )
+
+    def forward(self, hidden_states: torch.Tensor, **kwargs):
+        logits = self.router(hidden_states).squeeze(-1)
+        return logits, None, {}
+
+
+class STTCausalRouter(BaseRouter):
+    """Causal router for STT inference, which uses the previous token's state to predict the routing decision for the current token."""
     def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict = None):
         super().__init__(config, capacity_attr, model_cfg=model_cfg)
         self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
@@ -87,4 +107,4 @@ class BaseSurpriseRouter(BaseRouter):
         S_CU = torch.sigmoid(torch.tensor(beta_cu, device=CU.device) * CU)
         
         g_cont = S_CE + S_CU - (S_CE * S_CU)
-        return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "o_ce_pos": o_ce_pos.item(), "m_cu_pos": m_cu_pos.item()}
+        return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "g_cont_mean": g_cont.mean().item(), "o_ce_pos": o_ce_pos.item(), "m_cu_pos": m_cu_pos.item()}
