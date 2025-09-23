@@ -103,8 +103,8 @@ class BaseSurpriseRouter(BaseRouter):
         CE = D_st - (D_ch - torch.log(o_ce_pos + 1e-10))
         CU = D_st - (m_cu_pos * self._moving_average(D_st.detach()))
         
-        S_CE = torch.sigmoid(torch.tensor(beta_ce, device=CE.device) * CE)
-        S_CU = torch.sigmoid(torch.tensor(beta_cu, device=CU.device) * CU)
+        S_CE = torch.sigmoid(beta_ce * CE)
+        S_CU = torch.sigmoid(beta_cu * CU)
         
         g_cont = S_CE + S_CU - (S_CE * S_CU)
         return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "g_cont_mean": g_cont.mean().item(), "o_ce_pos": o_ce_pos.item(), "m_cu_pos": m_cu_pos.item()}

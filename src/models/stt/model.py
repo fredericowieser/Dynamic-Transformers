@@ -28,8 +28,8 @@ class STTPredictiveRouter(BaseSurpriseRouter):
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         actual_residual = args[0]
         predicted_residual = args[1]
-        beta_ce = kwargs.get('beta_ce')
-        beta_cu = kwargs.get('beta_cu')
+        beta_ce = kwargs['beta_ce']
+        beta_cu = kwargs['beta_cu']
 
         d = float(actual_residual.shape[-1])
         D_st = torch.sum(actual_residual.pow(2), dim=-1) / d
@@ -127,7 +127,6 @@ class STTForCausalLM(BaseForCausalLM):
         all_losses = []
         all_router_stats: Dict[str, Any] = {}
 
-        beta_ce, beta_cu = 1.0, 1.0
         if self.training and hasattr(self.config, 'beta_schedule'):
             sched_cfg = self.config.beta_schedule
             global_step = kwargs.get('global_step', 0)

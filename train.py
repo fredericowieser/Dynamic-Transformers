@@ -211,11 +211,34 @@ def main(cfg: DictConfig):
                             else:
                                 log_metrics[f"train/{key}"] = value # Already a float
                         elif "router_stats" in key and isinstance(value, dict):
+                            per_layer_stats = {}
+                            other_stats = {}
+
+                            # Separate per-layer stats from other stats
                             for stat_key, stat_value in value.items():
+                                if "/layer_" in stat_key and isinstance(stat_value, (float, int)):
+                                    # e.g., key is "sdt/layer_1/S_CE_mean"
+                                    # metric_name is "sdt/S_CE_mean"
+                                    parts = stat_key.split('/')
+                                    metric_name = f"{parts[0]}/{parts[2]}"
+                                    if metric_name not in per_layer_stats:
+                                        per_layer_stats[metric_name] = []
+                                    per_layer_stats[metric_name].append(stat_value)
+                                    # Log the individual value to the "extra" section
+                                    log_metrics[f"extra/router_stats/{stat_key}"] = stat_value
+                                else:
+                                    other_stats[stat_key] = stat_value
+                            
+                            # Log the non-per-layer stats directly to train/
+                            for stat_key, stat_value in other_stats.items():
                                 if isinstance(stat_value, (float, int)):
                                     log_metrics[f"train/router_stats/{stat_key}"] = stat_value
-                                elif isinstance(stat_value, list) and len(stat_value) > 0:
-                                    log_metrics[f"train/router_stats/{stat_key}_avg"] = sum(stat_value) / len(stat_value)
+
+                            # Calculate and log the mean of the per-layer stats to train/
+                            for metric_name, values_list in per_layer_stats.items():
+                                if values_list:
+                                    mean_value = sum(values_list) / len(values_list)
+                                    log_metrics[f"train/router_stats/{metric_name}_mean"] = mean_value
 
                     if cfg.model.type in ["sdt", "stt"]:
                         beta_ce = metrics.get('beta_ce', 0.0)
