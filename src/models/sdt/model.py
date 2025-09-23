@@ -70,7 +70,12 @@ class SDTPair(nn.Module):
         self.decision = SDTDecisionLayer(config, model_params, layer_idx)
         self.router = SDTRouter(config, model_params=model_params)
         self.dynamic = DynamicBlock(hf_layer)
-        self.causal_router = CausalRouter(config, layer_idx=layer_idx, capacity_attr='capacity', model_cfg=model_params)
+        
+        self.train_causal_router = model_params.get('train_causal_router', True)
+        if self.train_causal_router:
+            self.causal_router = CausalRouter(config, layer_idx=layer_idx, capacity_attr='capacity', model_cfg=model_params)
+        else:
+            self.causal_router = None
         self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
@@ -83,14 +88,24 @@ class SDTPair(nn.Module):
             g_cont, binary_targets, surprise_stats = self.router(actual_res, predicted_res, **kwargs)
             router_stats.update(surprise_stats)
 
-            causal_logits, _, _ = self.causal_router(hidden_states.detach())
-            causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
-            layer_losses['sdt_causal_router_loss'] = causal_loss
+            if self.causal_router is not None:
+                causal_logits, _, _ = self.causal_router(hidden_states.detach())
+                causal_loss = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
+                layer_losses['sdt_causal_router_loss'] = causal_loss
+                
+                # Calculate causal router accuracy
+                causal_preds = (torch.sigmoid(causal_logits) > 0.5).float()
+                causal_accuracy = (causal_preds == binary_targets.detach()).float().mean().item()
+                router_stats['causal_router_accuracy'] = causal_accuracy
             
+            router_stats['g_cont'] = g_cont.mean().item()
+
             B, T, D = hidden_states.shape
             k = max(1, int(T * self.router.capacity))
             gating_scores, topk_idx = g_cont.topk(k, dim=-1)
             batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+
+            router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
 
             final_hidden_states, _, _ = self.dynamic.process_selected(
                 processed_hidden, 
@@ -101,21 +116,45 @@ class SDTPair(nn.Module):
                 **kwargs
             )
         else: # Inference
-            causal_logits, _, _ = self.causal_router(hidden_states)
-            
-            B, T, D = hidden_states.shape
-            k = max(1, int(T * self.causal_router.capacity))
-            gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
-            batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
+            use_causal = self.model_params.get('use_causal_router_in_validation', True)
 
-            final_hidden_states, _, _ = self.dynamic.process_selected(
-                processed_hidden,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores.reshape(-1),
-                use_soft_gating=False,
-                **kwargs
-            )
+            if use_causal and self.causal_router is not None:
+                causal_logits, _, _ = self.causal_router(hidden_states)
+                
+                B, T, D = hidden_states.shape
+                k = max(1, int(T * self.causal_router.capacity))
+                gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
+                batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
+
+                final_hidden_states, _, _ = self.dynamic.process_selected(
+                    processed_hidden,
+                    batch_indices=batch_idx.reshape(-1),
+                    token_indices=topk_idx.reshape(-1),
+                    gating_scores=gating_scores.reshape(-1),
+                    use_soft_gating=False,
+                    **kwargs
+                )
+                router_stats['inferred_selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
+            else: # Use training-time router for validation
+                # Run the main router to get selection decisions
+                g_cont, binary_targets, surprise_stats = self.router(actual_res, predicted_res, **kwargs)
+                router_stats.update(surprise_stats)
+                router_stats['g_cont'] = g_cont.mean().item()
+
+                B, T, D = hidden_states.shape
+                k = max(1, int(T * self.router.capacity))
+                gating_scores, topk_idx = g_cont.topk(k, dim=-1)
+                batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+
+                final_hidden_states, _, _ = self.dynamic.process_selected(
+                    processed_hidden,
+                    batch_indices=batch_idx.reshape(-1),
+                    token_indices=topk_idx.reshape(-1),
+                    gating_scores=gating_scores.reshape(-1),
+                    use_soft_gating=True, # Use soft gating as in training
+                    **kwargs
+                )
+                router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
 
         return final_hidden_states, layer_losses, router_stats
 
@@ -130,7 +169,8 @@ class SDTForCausalLM(BaseForCausalLM):
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
         all_losses = []
-        all_router_stats = {}
+        all_router_stats: Dict[str, Any] = {}
+        all_g_cont_values = [] # Initialize for collecting g_cont
         cfg = self.config
 
         beta_ce, beta_cu = 1.0, 1.0 # Default if no schedule is found
@@ -173,6 +213,10 @@ class SDTForCausalLM(BaseForCausalLM):
                     all_losses.append(losses)
                     for key, value in stats.items():
                         all_router_stats[f"sdt/layer_{i}/{key}"] = value
+                    
+                    # Collect g_cont for logging
+                    if 'g_cont' in stats:
+                        all_g_cont_values.append(stats['g_cont'])
 
             elif isinstance(layer, nn.Identity):
                 continue
@@ -192,6 +236,10 @@ class SDTForCausalLM(BaseForCausalLM):
             aux['beta_ce'] = beta_ce
             aux['beta_cu'] = beta_cu
 
+            # Add g_cont mean across layers to router_stats
+            if all_g_cont_values:
+                aux['router_stats']['sdt_g_cont_mean_across_layers'] = sum(all_g_cont_values) / len(all_g_cont_values)
+
         return hidden_states, aux
 
     def get_trainable_parameters(self):
@@ -201,7 +249,7 @@ class SDTForCausalLM(BaseForCausalLM):
                 continue
             if 'prior' in n:
                 params_map['sdt_prior'].append(p)
-            elif 'causal_router' in n:
+            elif 'causal_router' in n and self.model_params.get('train_causal_router', True):
                 params_map['sdt_causal_router'].append(p)
             elif 'router' in n:
                 params_map['sdt_router'].append(p)

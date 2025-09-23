@@ -267,14 +267,27 @@ def main(cfg: DictConfig):
                     accelerator.wait_for_everyone()
                     unwrapped_model = accelerator.unwrap_model(model)
 
-                    val_loss, val_perplexity = evaluate_perplexity(unwrapped_model, eval_loader, accelerator)
+                    val_loss, val_perplexity, val_unscaled_losses, val_router_stats = evaluate_perplexity(unwrapped_model, eval_loader, accelerator)
 
                     if accelerator.is_main_process:
                         if cfg.logging.wandb.enabled and wandb.run is not None:
-                            wandb.log({
+                            val_log_metrics = {
                                 "val/loss": val_loss,
                                 "val/perplexity": val_perplexity,
-                            }, step=global_step)
+                            }
+                            # Log unscaled losses
+                            for k, v in val_unscaled_losses.items():
+                                val_log_metrics[f"val/unscaled_losses/{k}"] = v
+                            
+                            # Log router stats
+                            for k, v in val_router_stats.items():
+                                # Separate per-layer stats from other stats for validation logging
+                                if "/layer_" in k:
+                                    val_log_metrics[f"extra/val_router_stats/{k}"] = v
+                                else:
+                                    val_log_metrics[f"val/router_stats/{k}"] = v
+
+                            wandb.log(val_log_metrics, step=global_step)
                         accelerator.print(f"Validation Loss: {val_loss:.4f}, Validation Perplexity: {val_perplexity:.2f}")
 
                         if val_loss < best_eval_loss:

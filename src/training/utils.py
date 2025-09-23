@@ -261,9 +261,12 @@ def calculate_metrics(model, batch, global_step=0, max_steps=1):
 
 
 def evaluate_perplexity(model, dataloader, accelerator):
-    """Calculates validation loss and perplexity."""
+    """Calculates validation loss and perplexity, and collects auxiliary metrics."""
     model.eval()
     losses = []
+    all_unscaled_losses = {}
+    all_router_stats = {}
+
     for batch in dataloader:
         with torch.no_grad():
             metrics = calculate_metrics(model, batch)
@@ -272,14 +275,34 @@ def evaluate_perplexity(model, dataloader, accelerator):
         if loss is not None:
             losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
 
+        # Collect unscaled losses
+        if 'unscaled_losses' in metrics:
+            for k, v in metrics['unscaled_losses'].items():
+                if k not in all_unscaled_losses:
+                    all_unscaled_losses[k] = []
+                all_unscaled_losses[k].append(v)
+
+        # Collect router stats
+        if 'router_stats' in metrics:
+            for k, v in metrics['router_stats'].items():
+                if k not in all_router_stats:
+                    all_router_stats[k] = []
+                all_router_stats[k].append(v)
+
     if not losses:
-        return 0.0, 1.0
+        return 0.0, 1.0, {}, {} # Return empty dicts if no losses
 
     avg_loss = torch.mean(torch.cat(losses))
     perplexity = torch.exp(avg_loss)
+
+    # Aggregate unscaled losses
+    aggregated_unscaled_losses = {k: torch.mean(torch.stack(v)).item() if v and isinstance(v[0], torch.Tensor) else (sum(v) / len(v) if v else 0.0) for k, v in all_unscaled_losses.items()}
+    
+    # Aggregate router stats (mean for now, can be more sophisticated if needed)
+    aggregated_router_stats = {k: (torch.mean(torch.stack(v)).item() if v and isinstance(v[0], torch.Tensor) else (sum(v) / len(v) if v else 0.0)) for k, v in all_router_stats.items()}
     
     model.train() # Reset model to training mode
-    return avg_loss.item(), perplexity.item()
+    return avg_loss.item(), perplexity.item(), aggregated_unscaled_losses, aggregated_router_stats
 
 def save_wandb_info(wandb_run, save_path: Path):
     """Saves essential wandb run info to a file."""

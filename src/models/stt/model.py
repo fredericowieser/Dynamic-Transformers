@@ -50,7 +50,12 @@ class STTLayer(nn.Module):
         self.block = DynamicBlock(hf_layer)
         self.transition_network = STTTransitionNetwork(config, model_params=model_params)
         self.predictive_router = STTPredictiveRouter(config, layer_idx=0, model_params=model_params)
-        self.causal_router = STTCausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
+        
+        self.train_causal_router = model_params.get('train_causal_router', True)
+        if self.train_causal_router:
+            self.causal_router = STTCausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
+        else:
+            self.causal_router = None
         self.config = config
         self.model_params = model_params
 
@@ -60,7 +65,8 @@ class STTLayer(nn.Module):
         layer_losses = {}
 
         if self.training:
-            out = self.block(hidden_states, **kwargs)
+            # First pass through the block to get processed_hidden and residuals
+            out = self.block(hidden_states, **kwargs) # This is the first TF block
             processed_hidden = out[0] if isinstance(out, tuple) else out
             
             actual_residual = processed_hidden - original_hidden
@@ -76,32 +82,114 @@ class STTLayer(nn.Module):
             )
             router_stats.update(pred_stats)
 
-            causal_logits, _, causal_stats = self.causal_router(original_hidden)
-            router_stats.update(causal_stats)
-            layer_losses['stt_causal_router_loss'] = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
-            
-            final_hidden_states = processed_hidden
-        
-        else: # Inference
-            causal_logits, _, causal_stats = self.causal_router(original_hidden)
-            router_stats.update(causal_stats)
-            
-            B, T, D = hidden_states.shape
-            k = max(1, int(T * self.causal_router.capacity))
-            gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
-            
-            batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
+            if self.causal_router is not None:
+                causal_logits, _, causal_stats = self.causal_router(original_hidden)
+                router_stats.update(causal_stats)
+                layer_losses['stt_causal_router_loss'] = F.binary_cross_entropy_with_logits(causal_logits, binary_targets.detach())
+                
+                causal_preds = (torch.sigmoid(causal_logits) > 0.5).float()
+                causal_accuracy = (causal_preds == binary_targets.detach()).float().mean().item()
+                router_stats['causal_router_accuracy'] = causal_accuracy
 
+            B, T = g_cont.shape
+            use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
+            g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
+
+            if use_g_threshold:
+                selected_mask = (g_cont >= g_threshold)
+                batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
+                gating_scores_for_selected = g_cont[selected_mask]
+                router_stats['selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
+            else:
+                k = max(1, int(T * self.predictive_router.capacity))
+                gating_scores_for_selected, topk_idx = g_cont.topk(k, dim=-1)
+                batch_indices = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
+                token_indices = topk_idx.reshape(-1)
+                router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
+
+            # Apply the second TF block only to selected tokens
             final_hidden_states, _, _ = self.block.process_selected(
-                original_hidden,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores.reshape(-1),
-                use_soft_gating=False,
+                original_hidden, # STT uses original_hidden for process_selected
+                batch_indices=batch_indices,
+                token_indices=token_indices,
+                gating_scores=gating_scores_for_selected,
+                use_soft_gating=True,
                 **kwargs
             )
+            return final_hidden_states, layer_losses, router_stats, g_cont # Return g_cont tensor
+        
+        else: # Inference
+            use_causal = self.model_params.get('use_causal_router_in_validation', True)
+            use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
+            g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
 
-        return final_hidden_states, layer_losses, router_stats
+            if use_causal and self.causal_router is not None:
+                causal_logits, _, causal_stats = self.causal_router(original_hidden)
+                router_stats.update(causal_stats)
+                
+                B, T, D = hidden_states.shape
+
+                if use_g_threshold:
+                    selected_mask = (causal_logits >= g_threshold)
+                    batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
+                    gating_scores_for_selected = causal_logits[selected_mask]
+                    router_stats['inferred_selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
+                else:
+                    k = max(1, int(T * self.causal_router.capacity))
+                    gating_scores_for_selected, topk_idx = causal_logits.topk(k, dim=-1)
+                    batch_indices = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k).reshape(-1)
+                    token_indices = topk_idx.reshape(-1)
+                    router_stats['inferred_selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
+
+                final_hidden_states, _, _ = self.block.process_selected(
+                    original_hidden,
+                    batch_indices=batch_indices,
+                    token_indices=token_indices,
+                    gating_scores=gating_scores_for_selected,
+                    use_soft_gating=False,
+                    **kwargs
+                )
+                return final_hidden_states, layer_losses, router_stats, None # No g_cont tensor in inference
+            else: # Use training-time predictive router for validation
+                # Compute residuals needed for predictive router
+                out = self.block(hidden_states, **kwargs)
+                processed_hidden = out[0] if isinstance(out, tuple) else out
+                actual_residual = processed_hidden - original_hidden
+
+                prev_final_states = torch.cat(
+                    [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]], dim=1
+                )
+                predicted_residual = self.transition_network(prev_final_states)
+
+                # Run predictive router
+                g_cont, binary_targets, pred_stats = self.predictive_router(
+                    actual_residual, predicted_residual, **kwargs
+                )
+                router_stats.update(pred_stats)
+
+                B, T, D = hidden_states.shape
+
+                if use_g_threshold:
+                    selected_mask = (g_cont >= g_threshold)
+                    batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
+                    gating_scores_for_selected = g_cont[selected_mask]
+                    router_stats['selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
+                else:
+                    k = max(1, int(T * self.predictive_router.capacity))
+                    gating_scores_for_selected, topk_idx = g_cont.topk(k, dim=-1)
+                    batch_indices = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
+                    token_indices = topk_idx.reshape(-1)
+                    router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
+
+                final_hidden_states, _, _ = self.block.process_selected(
+                    original_hidden,
+                    batch_indices=batch_indices,
+                    token_indices=token_indices,
+                    gating_scores=gating_scores_for_selected,
+                    use_soft_gating=True, # Use soft gating as in training
+                    **kwargs
+                )
+                return final_hidden_states, layer_losses, router_stats, g_cont # Return g_cont tensor
 
 class STTForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
@@ -126,10 +214,11 @@ class STTForCausalLM(BaseForCausalLM):
     ):
         all_losses = []
         all_router_stats: Dict[str, Any] = {}
+        all_g_cont_values = [] # To collect g_cont for regularization
 
         beta_ce, beta_cu = 1.0, 1.0 # Default if no schedule is found
-        if hasattr(self.config, 'beta_schedule'):
-            sched_cfg = self.config.beta_schedule
+        if hasattr(cfg, 'beta_schedule'):
+            sched_cfg = cfg.beta_schedule
             global_step = kwargs.get('global_step', 0)
             max_steps = kwargs.get('max_steps', 100000) # max_steps from training loop
             warmup = sched_cfg['warmup_steps']
@@ -159,29 +248,38 @@ class STTForCausalLM(BaseForCausalLM):
         for i, layer in enumerate(self.model.layers):
             if isinstance(layer, STTLayer):
                 layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
-                hidden_states, losses, rstats = layer(
+                hidden_states, losses, rstats, g_cont_tensor = layer(
                     hidden_states,
                     **layer_args,
                 )
-                if self.training:
-                    all_losses.append(losses)
-                    for key, value in rstats.items():
-                        all_router_stats[f"stt/layer_{i}/{key}"] = value
+                all_losses.append(losses)
+                for key, value in rstats.items():
+                    all_router_stats[f"stt/layer_{i}/{key}"] = value
+                
+                # Collect g_cont for regularization if available
+                if g_cont_tensor is not None:
+                    all_g_cont_values.append(g_cont_tensor)
+
             else: # Standard Qwen2DecoderLayer
                 layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
                     **layer_args,
                 )
-                hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
+                hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else hidden_states
 
         aux = {}
-        if self.training:
-            agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
-            aux['unscaled_losses'] = agg_losses
-            aux['router_stats'] = all_router_stats
-            aux['beta_ce'] = beta_ce
-            aux['beta_cu'] = beta_cu
+        agg_losses = {k: torch.mean(torch.stack([l[k] for l in all_losses])) for k in all_losses[0] if all_losses}
+        aux['unscaled_losses'] = agg_losses
+        aux['router_stats'] = all_router_stats
+        aux['beta_ce'] = beta_ce
+        aux['beta_cu'] = beta_cu
+
+        # Add g_cont regularization loss if applicable
+        if self.training and all_g_cont_values:
+            avg_g_cont_across_layers = torch.mean(torch.stack(all_g_cont_values))
+            aux['unscaled_losses']['stt_g_reg_loss'] = avg_g_cont_across_layers
+            aux['router_stats']['stt_g_cont_mean_across_layers'] = avg_g_cont_across_layers.item()
 
         return hidden_states, aux
 
@@ -200,7 +298,7 @@ class STTForCausalLM(BaseForCausalLM):
                 params_map['stt_transition_network'].append(p)
             elif 'predictive_router' in n:
                 params_map['stt_predictive_router'].append(p)
-            elif 'causal_router' in n:
+            elif 'causal_router' in n and self.model_params.get('train_causal_router', True):
                 params_map['stt_causal_router'].append(p)
             else:
                 params_map['base_model'].append(p)
