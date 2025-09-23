@@ -89,10 +89,15 @@ class SDTForCausalLM(BaseForCausalLM):
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
-        self._pairs = nn.ModuleDict({
-            str(i): SDTPair(self.model.layers[i+1], config, self.model_params, i) 
-            for i in range(0, self.config.num_hidden_layers, 2)
-        })
+        # Replace layer pairs in-place
+        for i in range(0, self.config.num_hidden_layers - 1, 2):
+            # The SDTPair wraps the *next* layer, but we replace the current one
+            # to maintain the processing sequence.
+            self.model.layers[i] = SDTPair(self.model.layers[i+1], config, self.model_params, i)
+            # The original layer at i+1 is now inside the SDTPair, but the reference
+            # in the list should be removed to avoid shared tensor errors.
+            # We replace it with an Identity to maintain layer indices, though it will be skipped.
+            self.model.layers[i+1] = nn.Identity()
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
         total_aux = 0.0
@@ -115,22 +120,37 @@ class SDTForCausalLM(BaseForCausalLM):
                 beta_ce = sched_cfg.beta_ce_start
                 beta_cu = sched_cfg.beta_cu_start
 
-        for i in range(0, cfg.num_hidden_layers, 2):
-            pair = self._pairs[str(i)]
-            dyn_mask = mask_mapping[self.model.layers[i+1].attention_type]
-            
-            hidden_states, prior_loss, stats = pair(
-                hidden_states,
-                attention_mask=dyn_mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings,
-                use_cache=use_cache,
-                beta_ce=beta_ce,
-                beta_cu=beta_cu,
-            )
-            if prior_loss is not None:
-                total_aux += self.model_params.get('sdt', {}).get('prior_loss_weight', 0.0) * prior_loss
-            last_stats = stats
+        for layer in self.model.layers:
+            if isinstance(layer, SDTPair):
+                # SDTPair handles its own layer and the one after it
+                dyn_mask = mask_mapping[layer.dynamic.layer.attention_type]
+                hidden_states, prior_loss, stats = layer(
+                    hidden_states,
+                    attention_mask=dyn_mask,
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings,
+                    use_cache=use_cache,
+                    beta_ce=beta_ce,
+                    beta_cu=beta_cu,
+                )
+                if prior_loss is not None:
+                    total_aux += self.model_params.get('sdt', {}).get('prior_loss_weight', 0.0) * prior_loss
+                last_stats = stats
+            elif isinstance(layer, nn.Identity):
+                # This layer was consumed by an SDTPair, so we skip it.
+                continue
+            else: # Standard Qwen2DecoderLayer
+                attn_mask = mask_mapping[layer.attention_type]
+                layer_outputs = layer(
+                    hidden_states=hidden_states,
+                    attention_mask=attn_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                )
+                hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 
         aux = {"aux_loss": total_aux, "router_stats": last_stats}
         if self.training:

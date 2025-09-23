@@ -133,19 +133,21 @@ class MoDForCausalLM(BaseForCausalLM):
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
-        self._mod_wrappers = nn.ModuleDict({
-            str(i): MoDLayer(self.model.layers[i], config, self.model_params) for i in range(self.config.num_hidden_layers) if i % 2 == 1
-        })
+        # Replace standard layers with MoD layers in-place
+        for i in range(self.config.num_hidden_layers):
+            if i % 2 == 1:
+                self.model.layers[i] = MoDLayer(self.model.layers[i], config, self.model_params)
 
     def _run_layers(self, hidden_states, mask_mapping, position_ids, past_key_values, use_cache, cache_position, position_embeddings, output_attentions, **kwargs):
         total_aux = torch.tensor(0.0, device=hidden_states.device)
         all_mod_metrics = []
         
-        for i, layer in enumerate(self.model.layers):
-            attn_mask = mask_mapping[layer.attention_type]
-            if str(i) in self._mod_wrappers:
-                hidden_states, aux, mod_metrics = self._mod_wrappers[str(i)](
-                    hidden_states, training=self.training,
+        for layer in self.model.layers:
+            if isinstance(layer, MoDLayer):
+                attn_mask = mask_mapping[layer.block.layer.attention_type]
+                hidden_states, aux, mod_metrics = layer(
+                    hidden_states,
+                    training=self.training,
                     attention_mask=attn_mask,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings,
@@ -154,8 +156,9 @@ class MoDForCausalLM(BaseForCausalLM):
                 total_aux += aux
                 if self.training: # Only collect metrics during training
                     all_mod_metrics.append(mod_metrics)
-            else:
-                hidden_states = layer(
+            else: # Standard Qwen2DecoderLayer
+                attn_mask = mask_mapping[layer.attention_type]
+                layer_outputs = layer(
                     hidden_states=hidden_states,
                     attention_mask=attn_mask,
                     position_ids=position_ids,
@@ -164,15 +167,14 @@ class MoDForCausalLM(BaseForCausalLM):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                 )
+                hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
                 
         aux = {'aux_loss': total_aux} if self.training else {}
         
         if all_mod_metrics:
             agg_metrics = {}
-            # Get keys from the first layer's metrics
             metric_keys = all_mod_metrics[0].keys()
             for key in metric_keys:
-                # Average the metric across all MoD layers
                 agg_metrics[f"mod/{key}"] = torch.tensor([m[key] for m in all_mod_metrics]).mean().item()
             aux['router_stats'] = agg_metrics
             
