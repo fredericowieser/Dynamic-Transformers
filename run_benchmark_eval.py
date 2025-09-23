@@ -77,8 +77,16 @@ def main():
     model_args_dict = {
         "pretrained": args.model_path,
         "trust_remote_code": True,
-        "torch_dtype": "auto",
     }
+
+    # Only set torch_dtype if not specified in the model's config.json
+    # to avoid a multiple-values-for-keyword-argument error.
+    try:
+        config = AutoConfig.from_pretrained(args.model_path)
+        if not hasattr(config, "torch_dtype") or config.torch_dtype is None:
+            model_args_dict["torch_dtype"] = "auto"
+    except Exception:
+        model_args_dict["torch_dtype"] = "auto" # Fallback
     
     # Run evaluation
     results = simple_evaluate(
