@@ -13,6 +13,7 @@ from src.models.mod.model import MoDForCausalLM
 from src.models.sdt.model import SDTForCausalLM
 from src.models.stt.model import STTForCausalLM
 from src.models.standard.model import StandardTransformerForCausalLM
+from src.training.eval_utils import LMEvalAdaptor
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -82,7 +83,6 @@ def print_summary(results_dict):
     log.info("\n".join(summary_lines))
 
 
-
 def main():
     parser = argparse.ArgumentParser(description="Run lm-eval benchmarks on a trained model.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model directory (output from save_pretrained).")
@@ -95,19 +95,18 @@ def main():
     )))
     log.info(f"Running evaluation on tasks: {task_names}")
 
-    model_args_dict = {
-        "pretrained": args.model_path,
-        "trust_remote_code": True,
-    }
-
-    # Only set torch_dtype if not specified in the model's config.json
-    # to avoid a multiple-values-for-keyword-argument error.
-    try:
-        config = AutoConfig.from_pretrained(args.model_path)
-        if not hasattr(config, "torch_dtype") or config.torch_dtype is None:
-            model_args_dict["torch_dtype"] = "auto"
-    except Exception:
-        model_args_dict["torch_dtype"] = "auto" # Fallback
+    # FIX: Manually load the model and tokenizer to ensure the correct custom classes are used,
+    # then wrap them in the LMEvalAdaptor to bypass lm-eval's faulty auto-discovery.
+    log.info(f"Loading model and tokenizer from: {args.model_path}")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        trust_remote_code=True,
+        torch_dtype="auto",
+        device_map="auto"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    adaptor = LMEvalAdaptor(model, tokenizer, device)
     
     # Shot counts to align with official Qwen 2.5 evaluations
     shot_counts = {
@@ -131,12 +130,11 @@ def main():
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
         results = simple_evaluate(
-            model="hf",
-            model_args=model_args_dict,
+            model=adaptor, # Pass the adaptor object directly
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
-            device="cuda:0" if torch.cuda.is_available() else "cpu",
+            device=device,
         )
         
         if "results" in results:
