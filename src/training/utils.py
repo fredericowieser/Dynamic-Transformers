@@ -46,8 +46,7 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     # serialization errors when saving the config.
     model_cfg_dict = OmegaConf.to_container(model_cfg, resolve=True)
     for key, value in model_cfg_dict.items():
-        if hasattr(config, key):
-            setattr(config, key, value)
+        setattr(config, key, value)
 
     
     # Handle special cases like attention implementation

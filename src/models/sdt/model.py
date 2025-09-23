@@ -133,6 +133,7 @@ class SDTForCausalLM(BaseForCausalLM):
         all_router_stats = {}
         cfg = self.config
 
+        beta_ce, beta_cu = 1.0, 1.0 # Initialize with default values
         if self.training and hasattr(cfg, 'beta_schedule'):
             sched_cfg = cfg.beta_schedule
             global_step = kwargs.get('global_step', 0)
