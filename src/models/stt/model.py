@@ -127,12 +127,14 @@ class STTForCausalLM(BaseForCausalLM):
         all_losses = []
         all_router_stats: Dict[str, Any] = {}
 
-        if self.training and hasattr(self.config, 'beta_schedule'):
+        beta_ce, beta_cu = 1.0, 1.0 # Default if no schedule is found
+        if hasattr(self.config, 'beta_schedule'):
             sched_cfg = self.config.beta_schedule
             global_step = kwargs.get('global_step', 0)
-            max_steps = kwargs.get('max_steps', 100000)
+            max_steps = kwargs.get('max_steps', 100000) # max_steps from training loop
             warmup = sched_cfg['warmup_steps']
             
+            # Calculate betas based on schedule, regardless of training mode
             if global_step > warmup:
                 progress = (global_step - warmup) / (max_steps - warmup)
                 progress = min(progress, 1.0)
