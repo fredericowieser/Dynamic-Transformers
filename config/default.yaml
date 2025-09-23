@@ -29,8 +29,8 @@ model:
   learn_m_cu: true
 
   # --- Causal Router Control ---
-  train_causal_router: false
-  use_causal_router_in_validation: false
+  train_causal_router: true
+  use_causal_router_in_validation: true
 
   # --- Model-Specific Parameters ---
   sdt:
