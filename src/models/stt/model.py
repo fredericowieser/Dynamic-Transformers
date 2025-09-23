@@ -36,12 +36,7 @@ class STTPredictiveRouter(BaseSurpriseRouter):
         D_ch = torch.sum((actual_residual - predicted_residual).pow(2), dim=-1) / d
 
         g_cont, stats = self._get_vpr_signals(D_st, D_ch, beta_ce, beta_cu)
-        B, T = g_cont.shape
-        k = max(1, int(T * self.capacity))
-        _, topk_idx = g_cont.topk(k, dim=-1)
-        binary_targets = torch.zeros_like(g_cont)
-        binary_targets.scatter_(1, topk_idx, 1.0)
-        return g_cont, binary_targets, stats
+        return g_cont, stats
 
 class STTLayer(nn.Module):
     """Wraps an HF layer and adds STT routing."""
@@ -63,6 +58,9 @@ class STTLayer(nn.Module):
         original_hidden = hidden_states
         router_stats = {}
         layer_losses = {}
+        
+        use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
+        g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
 
         if self.training:
             # First pass through the block to get processed_hidden and residuals
@@ -77,10 +75,21 @@ class STTLayer(nn.Module):
             predicted_residual = self.transition_network(prev_final_states)
             layer_losses['stt_tpn_loss'] = F.mse_loss(predicted_residual, actual_residual.detach())
 
-            g_cont, binary_targets, pred_stats = self.predictive_router(
+            g_cont, pred_stats = self.predictive_router(
                 actual_residual, predicted_residual, **kwargs
             )
             router_stats.update(pred_stats)
+
+            # FIX: Generate binary targets for the causal router based on the configured
+            # routing mode (threshold vs. top-k), ensuring the student learns the correct objective.
+            B, T = g_cont.shape
+            if use_g_threshold:
+                binary_targets = (g_cont >= g_threshold).float()
+            else: # Top-K
+                k = max(1, int(T * self.predictive_router.capacity))
+                _, topk_idx = g_cont.topk(k, dim=-1)
+                binary_targets = torch.zeros_like(g_cont)
+                binary_targets.scatter_(1, topk_idx, 1.0)
 
             if self.causal_router is not None:
                 causal_logits, _, causal_stats = self.causal_router(original_hidden)
@@ -91,10 +100,7 @@ class STTLayer(nn.Module):
                 causal_accuracy = (causal_preds == binary_targets.detach()).float().mean().item()
                 router_stats['causal_router_accuracy'] = causal_accuracy
 
-            B, T = g_cont.shape
-            use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
-            g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
-
+            # Determine selected tokens for the second pass based on the teacher's g_cont
             if use_g_threshold:
                 selected_mask = (g_cont >= g_threshold)
                 batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
@@ -121,8 +127,6 @@ class STTLayer(nn.Module):
         
         else: # Inference
             use_causal = self.model_params.get('use_causal_router_in_validation', True)
-            use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
-            g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
 
             if use_causal and self.causal_router is not None:
                 causal_logits, _, causal_stats = self.causal_router(original_hidden)
@@ -131,14 +135,12 @@ class STTLayer(nn.Module):
                 B, T, D = hidden_states.shape
 
                 if use_g_threshold:
-                    selected_mask = (causal_logits >= g_threshold)
+                    selected_mask = (torch.sigmoid(causal_logits) >= g_threshold)
                     batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-                    gating_scores_for_selected = causal_logits[selected_mask]
                     router_stats['inferred_selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
                 else:
                     k = max(1, int(T * self.causal_router.capacity))
-                    gating_scores_values, topk_idx = causal_logits.topk(k, dim=-1)
-                    gating_scores_for_selected = gating_scores_values.reshape(-1) # Reshape to 1D
+                    _, topk_idx = causal_logits.topk(k, dim=-1)
                     batch_indices = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k).reshape(-1)
                     token_indices = topk_idx.reshape(-1)
                     router_stats['inferred_selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
@@ -147,7 +149,7 @@ class STTLayer(nn.Module):
                     original_hidden,
                     batch_indices=batch_indices,
                     token_indices=token_indices,
-                    gating_scores=gating_scores_for_selected,
+                    gating_scores=None, # No gating scores for hard gating
                     use_soft_gating=False,
                     **kwargs
                 )
@@ -164,7 +166,7 @@ class STTLayer(nn.Module):
                 predicted_residual = self.transition_network(prev_final_states)
 
                 # Run predictive router
-                g_cont, binary_targets, pred_stats = self.predictive_router(
+                g_cont, pred_stats = self.predictive_router(
                     actual_residual, predicted_residual, **kwargs
                 )
                 router_stats.update(pred_stats)
@@ -174,12 +176,10 @@ class STTLayer(nn.Module):
                 if use_g_threshold:
                     selected_mask = (g_cont >= g_threshold)
                     batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-                    gating_scores_for_selected = g_cont[selected_mask]
                     router_stats['selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
                 else:
                     k = max(1, int(T * self.predictive_router.capacity))
-                    gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
-                    gating_scores_for_selected = gating_scores_values.reshape(-1) # Reshape to 1D
+                    _, topk_idx = g_cont.topk(k, dim=-1)
                     batch_indices = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
                     token_indices = topk_idx.reshape(-1)
                     router_stats['selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
@@ -188,8 +188,10 @@ class STTLayer(nn.Module):
                     original_hidden,
                     batch_indices=batch_indices,
                     token_indices=token_indices,
-                    gating_scores=gating_scores_for_selected,
-                    use_soft_gating=True, # Use soft gating as in training
+                    gating_scores=None, # No gating scores for hard gating
+                    # FIX: Use hard gating (use_soft_gating=False) during validation to get a realistic
+                    # measure of the routing performance, which is crucial for benchmarking the POC.
+                    use_soft_gating=False,
                     **kwargs
                 )
                 return final_hidden_states, layer_losses, router_stats, g_cont # Return g_cont tensor
