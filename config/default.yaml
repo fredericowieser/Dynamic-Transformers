@@ -45,10 +45,10 @@ model:
   beta_schedule:
     type: "cosine"
     beta_ce_start: 0.1
-    beta_ce_end: 10.0
+    beta_ce_end: 100.0
     beta_cu_start: 0.1
-    beta_cu_end: 10.0
-    warmup_steps: 1000
+    beta_cu_end: 100.0
+    warmup_steps: 100
 
   # Configuration for training from scratch
   scratch_config:
@@ -116,7 +116,7 @@ training:
   num_epochs: 1
   max_steps: -1
   accumulate_grad_batches: 32
-  eval_interval: 100
+  eval_interval: 200
   use_gradient_clipping: False
   gradient_clip_val: 1.0
   gradient_checkpointing: True
@@ -173,5 +173,5 @@ push_to_hub:
 
 lm_eval:
   enabled: true
-  tasks: "quick_test" # Comma-separated list of tasks or suites
+  tasks: "general" # Comma-separated list of tasks or suites
   batch_size: 8
