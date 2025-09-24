@@ -39,10 +39,10 @@ model:
   
   stt:
     tpn_loss_weight: 0.05
-    causal_loss_weight: 0.01
+    causal_router_loss_weight: 0.01 # Renamed from causal_loss_weight to match code
     g_threshold: 0.75 # Value between 0 and 1
     use_g_threshold_selection: true # If true, use g_threshold instead of top-k
-    g_reg_loss_weight: 0.001 # Weight for g_cont regularization loss
+    g_reg_loss_weight: 0.001 # Weight for g_cont regularization loss, increased for sparsity
 
   mod:
     aux_loss_weight: 0.01
@@ -122,7 +122,7 @@ training:
   mode: finetune # finetune or scratch
   num_epochs: 1
   max_steps: 5
-  accumulate_grad_batches: 128
+  accumulate_grad_batches: 1
   eval_interval: 3
   use_gradient_clipping: False
   gradient_clip_val: 1.0
