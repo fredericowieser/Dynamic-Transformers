@@ -84,9 +84,6 @@ class DynamicBlock(nn.Module):
                 self.layer.self_attn._attn_implementation = original_attn_impl
 
         processed_tokens = out[0].squeeze(0) if isinstance(out, tuple) else out.squeeze(0)
-        if not self.layer.training:
-            log.debug(f"processed_tokens: shape={processed_tokens.shape}, dtype={processed_tokens.dtype}, mean={processed_tokens.mean():.4f}")
-
         present_key_value = out[1] if kwargs.get('use_cache', False) and isinstance(out, tuple) and len(out) > 1 else None
         attention_weights = out[2] if isinstance(out, tuple) and len(out) > 2 else None
 
@@ -102,7 +99,6 @@ class DynamicBlock(nn.Module):
         else:
             final_hidden_states[batch_indices, token_indices] = processed_tokens
 
-        if not self.layer.training:
-            log.debug(f"final_hidden_states: shape={final_hidden_states.shape}, dtype={final_hidden_states.dtype}, mean={final_hidden_states.mean():.4f}")
+
 
         return final_hidden_states, present_key_value, attention_weights
