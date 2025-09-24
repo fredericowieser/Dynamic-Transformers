@@ -88,39 +88,27 @@ def main():
     log.info(f"Batch loaded to device: {device}. Keys: {batch.keys()}, Shapes: {{k: v.shape for k, v in batch.items()}}")
 
     # --- Run Forward Pass ---
-    log.info("--- Initiating validation forward pass... ---")
+    log.info("--- Initiating validation forward pass on ALL batches... ---")
     with torch.no_grad():
-        try:
-            outputs = model(**batch)
-            log.info("--- Forward pass complete. --- ")
+        for i, batch in enumerate(eval_loader):
+            log.info(f"--- Processing Batch {i+1}/{len(eval_loader)} ---")
+            batch = {k: v.to(device) for k, v in batch.items()}
 
-            # --- Analyze Outputs ---
-            loss = outputs.get('loss')
-            lm_loss = outputs.get('lm_loss')
-            logits = outputs.get('logits')
+            try:
+                outputs = model(**batch)
+                loss = outputs.get('loss')
+                
+                if loss is not None:
+                    log.info(f"Batch {i+1} Loss: {loss.item()}")
+                    if torch.isinf(loss) or torch.isnan(loss):
+                        log.error(f"FATAL: Infinite or NaN loss detected in batch {i+1}. This is the poison pill!")
+                        break # Stop after finding the bad batch
+                else:
+                    log.warning(f"Loss not found in outputs for batch {i+1}.")
 
-            if loss is not None:
-                log.info(f"Final Loss: {loss.item()}")
-            else:
-                log.warning("Final loss not found in model outputs.")
-            
-            if lm_loss is not None:
-                log.info(f"Final LM Loss: {lm_loss.item()}")
-            else:
-                log.warning("LM loss not found in model outputs.")
-
-            if logits is not None:
-                log.info(f"Logits: shape={logits.shape}, dtype={logits.dtype}, mean={logits.mean():.4f}, min={logits.min():.4f}, max={logits.max():.4f}")
-                # Check for NaN/Inf in logits
-                if torch.isnan(logits).any():
-                    log.error("FATAL: NaN values detected in logits!")
-                if torch.isinf(logits).any():
-                    log.error("FATAL: Inf values detected in logits!")
-            else:
-                log.warning("Logits not found in model outputs.")
-
-        except Exception as e:
-            log.error(f"An exception occurred during the forward pass: {e}", exc_info=True)
+            except Exception as e:
+                log.error(f"An exception occurred during the forward pass on batch {i+1}: {e}", exc_info=True)
+                break
 
 if __name__ == "__main__":
     main()
