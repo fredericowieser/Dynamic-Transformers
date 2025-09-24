@@ -4,6 +4,9 @@ import torch._dynamo
 from typing import Tuple, Optional
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+import logging
+
+log = logging.getLogger(__name__)
 
 class DynamicBlock(nn.Module):
     """
