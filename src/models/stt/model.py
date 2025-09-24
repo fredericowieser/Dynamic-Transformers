@@ -22,8 +22,8 @@ class STTTransitionNetwork(BasePriorNetwork):
         return self.mlp(self.norm(x))
 
 class STTPredictiveRouter(BaseSurpriseRouter):
-    def __init__(self, config, layer_idx: int, model_params: Dict):
-        super().__init__(config, capacity_attr='capacity', model_cfg=model_params)
+    def __init__(self, config, layer_idx: int, capacity_attr: str):
+        super().__init__(config, capacity_attr=capacity_attr)
 
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         actual_residual = args[0]
