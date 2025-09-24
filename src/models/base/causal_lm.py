@@ -24,6 +24,7 @@ class BaseForCausalLM(PreTrainedModel):
         self.config.model_type = model_type
         self.model_params = kwargs
         self.model = Qwen2Model(config)
+        self.model.config.model_type = model_type
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         if config.tie_word_embeddings:

@@ -43,8 +43,7 @@ class DynamicBlock(nn.Module):
         
         selected_attn_mask = _prepare_4d_causal_attention_mask(None, (1, num_selected), selected_tokens_batched, 0)
 
-        # DIAGNOSTIC: Force attention_mask to None to test hypothesis
-        selected_attn_mask = None
+
         
         selected_pos_ids = None
         if position_ids is not None:
