@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 
 class STTTransitionNetwork(BasePriorNetwork):
     """Implements the STT transition network with pre-normalization: MLP(RMSNorm(x))."""
-    def __init__(self, config, model_params: Dict):
-        super().__init__(config, model_cfg=model_params)
+    def __init__(self, config):
+        super().__init__(config)
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -40,19 +40,18 @@ class STTPredictiveRouter(BaseSurpriseRouter):
 
 class STTLayer(nn.Module):
     """Wraps an HF layer and adds STT routing."""
-    def __init__(self, hf_layer: Qwen2DecoderLayer, config, model_params: Dict):
+    def __init__(self, hf_layer: Qwen2DecoderLayer, config):
         super().__init__()
         self.block = DynamicBlock(hf_layer)
-        self.transition_network = STTTransitionNetwork(config, model_params=model_params)
-        self.predictive_router = STTPredictiveRouter(config, layer_idx=0, model_params=model_params)
+        self.transition_network = STTTransitionNetwork(config)
+        self.predictive_router = STTPredictiveRouter(config, layer_idx=0, capacity_attr='capacity')
         
-        self.train_causal_router = model_params.get('train_causal_router', True)
+        self.train_causal_router = getattr(config, 'train_causal_router', True)
         if self.train_causal_router:
-            self.causal_router = STTCausalRouter(config, layer_idx=0, capacity_attr='capacity', model_cfg=model_params)
+            self.causal_router = STTCausalRouter(config, layer_idx=0, capacity_attr='capacity')
         else:
             self.causal_router = None
         self.config = config
-        self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
         original_hidden = hidden_states
@@ -218,7 +217,7 @@ class STTForCausalLM(BaseForCausalLM):
         super().__init__(config, model_type=model_type, **kwargs)
         for i in range(self.config.num_hidden_layers):
             if i % 2 == 1:
-                self.model.layers[i] = STTLayer(self.model.layers[i], config, self.model_params)
+                self.model.layers[i] = STTLayer(self.model.layers[i], config)
 
     def _run_layers(
         self,

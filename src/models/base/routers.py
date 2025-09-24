@@ -14,10 +14,10 @@ log = logging.getLogger(__name__)
 
 class BaseRouter(nn.Module, ABC):
     """Abstract base class for all routing modules."""
-    def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
+    def __init__(self, config, capacity_attr: str):
         super().__init__()
         self.config = config
-        self.capacity = model_cfg.get(capacity_attr, 0.5)
+        self.capacity = getattr(config, capacity_attr, 0.5)
 
     @abstractmethod
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
@@ -44,8 +44,8 @@ class CausalRouter(BaseRouter):
     that predicts whether a token should be processed based on its own
     hidden state.
     """
-    def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict = None):
-        super().__init__(config, capacity_attr, model_cfg=model_cfg)
+    def __init__(self, config, layer_idx: int, capacity_attr: str):
+        super().__init__(config, capacity_attr)
         self.hidden_size = config.hidden_size
         self.router = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size // 4),
@@ -60,8 +60,8 @@ class CausalRouter(BaseRouter):
 
 class STTCausalRouter(BaseRouter):
     """Causal router for STT inference, which uses the previous token's state to predict the routing decision for the current token."""
-    def __init__(self, config, layer_idx: int, capacity_attr: str, model_cfg: Dict = None):
-        super().__init__(config, capacity_attr, model_cfg=model_cfg)
+    def __init__(self, config, layer_idx: int, capacity_attr: str):
+        super().__init__(config, capacity_attr)
         self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
@@ -72,22 +72,22 @@ class STTCausalRouter(BaseRouter):
 
 class BaseSurpriseRouter(BaseRouter):
     """Abstracts the common surprise-based routing logic for SDT and STT."""
-    def __init__(self, config, capacity_attr: str, model_cfg: Dict = None):
-        super().__init__(config, capacity_attr, model_cfg=model_cfg)
+    def __init__(self, config, capacity_attr: str):
+        super().__init__(config, capacity_attr)
         
-        o_ce_init_val = torch.tensor(float(model_cfg.get('o_ce_init', 1.0)))
-        if model_cfg.get('learn_o_ce', False):
+        o_ce_init_val = torch.tensor(float(getattr(config, 'o_ce_init', 1.0)))
+        if getattr(config, 'learn_o_ce', False):
             self.raw_o_ce = nn.Parameter(o_ce_init_val)
         else:
             self.register_buffer('raw_o_ce', o_ce_init_val)
 
-        m_cu_init_val = torch.tensor(float(model_cfg.get('m_cu_init', 1.1)))
-        if model_cfg.get('learn_m_cu', False):
+        m_cu_init_val = torch.tensor(float(getattr(config, 'm_cu_init', 1.1)))
+        if getattr(config, 'learn_m_cu', False):
             self.raw_m_cu = nn.Parameter(m_cu_init_val)
         else:
             self.register_buffer('raw_m_cu', m_cu_init_val)
 
-        self.ma_window = int(model_cfg.get('ma_window', 100))
+        self.ma_window = int(getattr(config, 'ma_window', 100))
     
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
         B, T = d_st.shape
