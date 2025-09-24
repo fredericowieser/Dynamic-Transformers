@@ -320,6 +320,7 @@ def main(cfg: DictConfig):
 
         # Brute-force fix for incorrect model_type in saved config.json
         if accelerator.is_main_process:
+            import json
             try:
                 config_path = save_path / "config.json"
                 with open(config_path, "r") as f:
