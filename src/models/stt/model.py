@@ -125,10 +125,6 @@ class STTLayer(nn.Module):
             return final_hidden_states, layer_losses, router_stats, g_cont # Return g_cont tensor
         
         else: # Inference
-            if not self.training:
-                log.debug("--- STTLayer VALIDATION TRACE ---")
-                log.debug(f"original_hidden: shape={original_hidden.shape}, dtype={original_hidden.dtype}, mean={original_hidden.mean():.4f}, min={original_hidden.min():.4f}, max={original_hidden.max():.4f}")
-
             use_causal = getattr(self.config, 'use_causal_router_in_validation', True)
 
             if use_causal and self.causal_router is not None:
