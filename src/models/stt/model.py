@@ -214,7 +214,7 @@ class STTLayer(nn.Module):
 class STTForCausalLM(BaseForCausalLM):
     _supports_flash_attn_2 = True
 
-    def __init__(self, config, model_type: str, **kwargs):
+    def __init__(self, config, model_type: str = None, **kwargs):
         super().__init__(config, model_type=model_type, **kwargs)
         for i in range(self.config.num_hidden_layers):
             if i % 2 == 1:

@@ -19,9 +19,10 @@ log = logging.getLogger(__name__)
 class BaseForCausalLM(PreTrainedModel):
     config_class = Qwen2Config
 
-    def __init__(self, config: PretrainedConfig, model_type: str, **kwargs):
+    def __init__(self, config: PretrainedConfig, model_type: str = None, **kwargs):
         super().__init__(config, **kwargs)
-        self.config.model_type = model_type
+        # Make model compatible with HF from_pretrained by allowing model_type to be optional
+        self.config.model_type = model_type or config.model_type
         self.model_params = kwargs
         self.model = Qwen2Model(config)
         self.model.config.model_type = model_type
