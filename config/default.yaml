@@ -78,7 +78,7 @@ model:
 
 data:
   name: "pretrain_mix"
-  batch_size: 16
+  batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
   validation_split_percentage: 2
@@ -122,7 +122,7 @@ training:
   mode: finetune # finetune or scratch
   num_epochs: 1
   max_steps: 5
-  accumulate_grad_batches: 64
+  accumulate_grad_batches: 128
   eval_interval: 3
   use_gradient_clipping: False
   gradient_clip_val: 1.0
