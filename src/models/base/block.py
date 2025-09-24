@@ -34,19 +34,10 @@ class DynamicBlock(nn.Module):
         Processes a packed tensor of selected tokens. This method is used when the number
         of selected tokens is dynamic per sequence. Flash attention is disabled to prevent errors.
         """
-        if not self.layer.training:
-            log.debug("--- DynamicBlock.process_selected TRACE ---")
-            log.debug(f"hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, mean={hidden_states.mean():.4f}")
-            log.debug(f"batch_indices: shape={batch_indices.shape}, numel={batch_indices.numel()}")
-            log.debug(f"token_indices: shape={token_indices.shape}, numel={token_indices.numel()}")
-
         if batch_indices.numel() == 0:
             return hidden_states, None, None
 
         selected_tokens = hidden_states[batch_indices, token_indices]
-        if not self.layer.training:
-            log.debug(f"selected_tokens: shape={selected_tokens.shape}, dtype={selected_tokens.dtype}, mean={selected_tokens.mean():.4f}")
-
         num_selected = selected_tokens.shape[0]
         selected_tokens_batched = selected_tokens.unsqueeze(0)
 
