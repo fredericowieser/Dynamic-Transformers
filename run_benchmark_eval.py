@@ -7,20 +7,16 @@ import numpy as np
 from lm_eval import simple_evaluate
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-# Import custom models and their config class
+# Import custom models to make them available for AutoModelForCausalLM to find.
+# This allows `trust_remote_code=True` to work correctly when the script is run as a subprocess.
 from src.models.mod.model import MoDForCausalLM
 from src.models.sdt.model import SDTForCausalLM
 from src.models.stt.model import STTForCausalLM
 from src.models.standard.model import StandardTransformerForCausalLM
-from src.models.base.causal_lm import Qwen2Config # All our models use Qwen2Config
 from src.training.eval_utils import LMEvalAdaptor
 
-# EXPLICITLY REGISTER CUSTOM MODEL ARCHITECTURE
-# This is the robust way to ensure Transformers finds the custom code when run as a subprocess.
-AutoConfig.register("stt", Qwen2Config)
-AutoModelForCausalLM.register(Qwen2Config, STTForCausalLM)
-
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 log = logging.getLogger(__name__)
 
 # Task groups
