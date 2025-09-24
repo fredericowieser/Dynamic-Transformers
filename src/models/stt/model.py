@@ -58,8 +58,8 @@ class STTLayer(nn.Module):
         router_stats = {}
         layer_losses = {}
         
-        use_g_threshold = self.model_params.get('stt', {}).get('use_g_threshold_selection', False)
-        g_threshold = self.model_params.get('stt', {}).get('g_threshold', 0.5)
+        use_g_threshold = getattr(self.config, 'use_g_threshold_selection', False)
+        g_threshold = getattr(self.config, 'g_threshold', 0.5)
 
         if self.training:
             # First pass through the block to get processed_hidden and residuals
@@ -129,7 +129,7 @@ class STTLayer(nn.Module):
                 log.debug("--- STTLayer VALIDATION TRACE ---")
                 log.debug(f"original_hidden: shape={original_hidden.shape}, dtype={original_hidden.dtype}, mean={original_hidden.mean():.4f}, min={original_hidden.min():.4f}, max={original_hidden.max():.4f}")
 
-            use_causal = self.model_params.get('use_causal_router_in_validation', True)
+            use_causal = getattr(self.config, 'use_causal_router_in_validation', True)
 
             if use_causal and self.causal_router is not None:
                 causal_logits, _, causal_stats = self.causal_router(original_hidden)
