@@ -31,10 +31,19 @@ class DynamicBlock(nn.Module):
         Processes a packed tensor of selected tokens. This method is used when the number
         of selected tokens is dynamic per sequence. Flash attention is disabled to prevent errors.
         """
+        if not self.layer.training:
+            log.debug("--- DynamicBlock.process_selected TRACE ---")
+            log.debug(f"hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, mean={hidden_states.mean():.4f}")
+            log.debug(f"batch_indices: shape={batch_indices.shape}, numel={batch_indices.numel()}")
+            log.debug(f"token_indices: shape={token_indices.shape}, numel={token_indices.numel()}")
+
         if batch_indices.numel() == 0:
             return hidden_states, None, None
 
         selected_tokens = hidden_states[batch_indices, token_indices]
+        if not self.layer.training:
+            log.debug(f"selected_tokens: shape={selected_tokens.shape}, dtype={selected_tokens.dtype}, mean={selected_tokens.mean():.4f}")
+
         num_selected = selected_tokens.shape[0]
         selected_tokens_batched = selected_tokens.unsqueeze(0)
 
@@ -43,8 +52,6 @@ class DynamicBlock(nn.Module):
         
         selected_attn_mask = _prepare_4d_causal_attention_mask(None, (1, num_selected), selected_tokens_batched, 0)
 
-
-        
         selected_pos_ids = None
         if position_ids is not None:
             # Ensure position_ids has at least 2 dimensions before trying to access them
@@ -83,6 +90,9 @@ class DynamicBlock(nn.Module):
                 self.layer.self_attn._attn_implementation = original_attn_impl
 
         processed_tokens = out[0].squeeze(0) if isinstance(out, tuple) else out.squeeze(0)
+        if not self.layer.training:
+            log.debug(f"processed_tokens: shape={processed_tokens.shape}, dtype={processed_tokens.dtype}, mean={processed_tokens.mean():.4f}")
+
         present_key_value = out[1] if kwargs.get('use_cache', False) and isinstance(out, tuple) and len(out) > 1 else None
         attention_weights = out[2] if isinstance(out, tuple) and len(out) > 2 else None
 
@@ -97,5 +107,8 @@ class DynamicBlock(nn.Module):
             final_hidden_states[batch_indices, token_indices] = updated_tokens
         else:
             final_hidden_states[batch_indices, token_indices] = processed_tokens
+
+        if not self.layer.training:
+            log.debug(f"final_hidden_states: shape={final_hidden_states.shape}, dtype={final_hidden_states.dtype}, mean={final_hidden_states.mean():.4f}")
 
         return final_hidden_states, present_key_value, attention_weights

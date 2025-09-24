@@ -317,6 +317,22 @@ def main(cfg: DictConfig):
         unwrapped_model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
 
+        # Brute-force fix for incorrect model_type in saved config.json
+        if accelerator.is_main_process:
+            try:
+                config_path = save_path / "config.json"
+                with open(config_path, "r") as f:
+                    config_data = json.load(f)
+                
+                correct_model_type = cfg.model.type
+                if config_data.get("model_type") != correct_model_type:
+                    log.warning(f"Overwriting incorrect model_type in config.json. Was: {config_data.get('model_type')}, should be: {correct_model_type}")
+                    config_data["model_type"] = correct_model_type
+                    with open(config_path, "w") as f:
+                        json.dump(config_data, f, indent=2)
+            except Exception as e:
+                log.error(f"Failed to manually correct model_type in config.json: {e}")
+
         if cfg.logging.wandb.enabled and wandb.run is not None:
             from src.training.utils import save_wandb_info
             save_wandb_info(wandb.run, save_path)

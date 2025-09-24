@@ -126,24 +126,39 @@ class STTLayer(nn.Module):
             return final_hidden_states, layer_losses, router_stats, g_cont # Return g_cont tensor
         
         else: # Inference
+            if not self.training:
+                log.debug("--- STTLayer VALIDATION TRACE ---")
+                log.debug(f"original_hidden: shape={original_hidden.shape}, dtype={original_hidden.dtype}, mean={original_hidden.mean():.4f}, min={original_hidden.min():.4f}, max={original_hidden.max():.4f}")
+
             use_causal = self.model_params.get('use_causal_router_in_validation', True)
 
             if use_causal and self.causal_router is not None:
                 causal_logits, _, causal_stats = self.causal_router(original_hidden)
                 router_stats.update(causal_stats)
                 
+                if not self.training:
+                    log.debug(f"causal_logits: shape={causal_logits.shape}, dtype={causal_logits.dtype}, mean={causal_logits.mean():.4f}, min={causal_logits.min():.4f}, max={causal_logits.max():.4f}")
+
                 B, T, D = hidden_states.shape
 
                 if use_g_threshold:
                     selected_mask = (torch.sigmoid(causal_logits) >= g_threshold)
+                    if not self.training:
+                        log.debug(f"selected_mask (threshold={g_threshold}): shape={selected_mask.shape}, dtype={selected_mask.dtype}, sum={selected_mask.sum()}")
                     batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
                     router_stats['inferred_selected_tokens_proportion'] = (selected_mask.sum() / (B * T)).item()
                 else:
                     k = max(1, int(T * self.causal_router.capacity))
-                    _, topk_idx = causal_logits.topk(k, dim=-1)
+                    gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
+                    if not self.training:
+                        log.debug(f"topk_idx (k={k}): shape={topk_idx.shape}, dtype={topk_idx.dtype}")
                     batch_indices = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k).reshape(-1)
                     token_indices = topk_idx.reshape(-1)
                     router_stats['inferred_selected_tokens_proportion'] = (topk_idx.numel() / (B * T))
+
+                if not self.training:
+                    log.debug(f"batch_indices: shape={batch_indices.shape}, numel={batch_indices.numel()}")
+                    log.debug(f"token_indices: shape={token_indices.shape}, numel={token_indices.numel()}")
 
                 final_hidden_states, _, _ = self.block.process_selected(
                     original_hidden,
