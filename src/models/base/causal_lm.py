@@ -1,20 +1,15 @@
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Optional, List, Tuple
-import logging
-
-from transformers import PreTrainedModel, PretrainedConfig
+from transformers import PretrainedConfig, PreTrainedModel
 from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2Config,
-    Qwen2Model,
-    Qwen2DecoderLayer,
-    Qwen2RMSNorm,
-    create_causal_mask,
-    create_sliding_window_causal_mask,
-    Qwen2ForCausalLM,
-)
+    Qwen2Config, Qwen2DecoderLayer, Qwen2ForCausalLM, Qwen2Model, Qwen2RMSNorm,
+    create_causal_mask, create_sliding_window_causal_mask)
 
 log = logging.getLogger(__name__)
+
 
 class BaseForCausalLM(PreTrainedModel):
     config_class = Qwen2Config
@@ -114,8 +109,13 @@ class BaseForCausalLM(PreTrainedModel):
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
 
         # Run layers (allow subclasses to interpose dynamic logic)
-        layer_kwargs = {**kwargs, "attention_mask": causal_mask_mapping["full_attention"], "position_ids": position_ids, "position_embeddings": position_embeddings}
-        
+        layer_kwargs = {
+            **kwargs,
+            "attention_mask": causal_mask_mapping["full_attention"],
+            "position_ids": position_ids,
+            "position_embeddings": position_embeddings,
+        }
+
         hidden_states, aux = self._run_layers(
             hidden_states=hidden_states,
             mask_mapping=causal_mask_mapping,
@@ -141,45 +141,50 @@ class BaseForCausalLM(PreTrainedModel):
 
         # Start with the base LM loss
         total_loss = lm_loss
-        
+
         # Prepare output dictionary
         out = {"logits": logits, "lm_loss": lm_loss}
         if aux:
             out.update(aux)
 
         # Add auxiliary losses to the total loss and prepare for logging
-        if self.training and 'unscaled_losses' in out:
+        if self.training and "unscaled_losses" in out:
             log.debug("--- LOSS DEBUG: ENTERING AUX LOSS BLOCK ---")
-            unscaled_losses = out.pop('unscaled_losses') # Pop from the final output dict
+            unscaled_losses = out.pop("unscaled_losses")  # Pop from the final output dict
             log.debug(f"--- LOSS DEBUG: unscaled_losses dict: {unscaled_losses}")
             for loss_name, unscaled_loss in unscaled_losses.items():
                 # Determine the weight (lambda) for this loss
                 # e.g., for 'mod_router_bce_loss', look for 'mod.aux_loss_weight' in config
-                model_type = loss_name.split('_')[0] # mod, sdt, stt
-                weight_key = loss_name.replace(f"{model_type}_", "").replace("_loss", "_loss_weight")
+                model_type = loss_name.split("_")[0]  # mod, sdt, stt
+                weight_key = loss_name.replace(f"{model_type}_", "").replace(
+                    "_loss", "_loss_weight"
+                )
                 loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
                 log.debug(f"--- LOSS DEBUG: Processing {loss_name} with weight {loss_weight}")
 
                 # Add to total loss
                 if unscaled_loss is not None and loss_weight > 0:
                     scaled_loss = unscaled_loss * loss_weight
-                    log.debug(f"--- LOSS DEBUG: lm_loss={total_loss}, unscaled={unscaled_loss}, scaled={scaled_loss}")
+                    log.debug(
+                        f"--- LOSS DEBUG: lm_loss={total_loss}, unscaled={unscaled_loss}, scaled={scaled_loss}"
+                    )
                     total_loss = total_loss + scaled_loss
                     log.debug(f"--- LOSS DEBUG: new total_loss={total_loss}")
                     out[f"loss/{loss_name}_scaled"] = scaled_loss
                     out[f"loss_weight/{loss_name}"] = loss_weight
-                
+
                 out[f"loss/{loss_name}_unscaled"] = unscaled_loss
         else:
             log.debug("--- LOSS DEBUG: SKIPPING AUX LOSS BLOCK ---")
             if not self.training:
                 log.debug("--- LOSS DEBUG: Reason: not self.training")
-            if 'unscaled_losses' not in out:
-                log.debug(f"--- LOSS DEBUG: Reason: 'unscaled_losses' not in output dict. Keys: {out.keys()}")
-
+            if "unscaled_losses" not in out:
+                log.debug(
+                    f"--- LOSS DEBUG: Reason: 'unscaled_losses' not in output dict. Keys: {out.keys()}"
+                )
 
         # Final total loss
-        out['loss'] = total_loss
+        out["loss"] = total_loss
         log.debug(f"--- LOSS DEBUG: Final lm_loss={lm_loss}, final total_loss={out['loss']}")
 
         return out

@@ -1,16 +1,19 @@
-import torch
 from typing import List
+
+import torch
+
 
 class LMEvalAdaptor:
     """
     A wrapper class to make a Hugging Face-style model compatible with the lm-eval harness.
     """
+
     def __init__(self, model, tokenizer, device):
         self.model = model
         self.tokenizer = tokenizer
         self._device = device
-        self._batch_size = 1 # Default, can be overridden by lm-eval
-    
+        self._batch_size = 1  # Default, can be overridden by lm-eval
+
     @property
     def eot_token_id(self):
         return self.tokenizer.eos_token_id
@@ -22,7 +25,7 @@ class LMEvalAdaptor:
 
     @property
     def max_gen_toks(self):
-        return 256 # A reasonable default for generation
+        return 256  # A reasonable default for generation
 
     @property
     def batch_size(self):
@@ -53,5 +56,5 @@ class LMEvalAdaptor:
             context,
             max_length=max_length,
             eos_token_id=eos_token_id,
-            do_sample=False, # Use greedy decoding for determinism
+            do_sample=False,  # Use greedy decoding for determinism
         )

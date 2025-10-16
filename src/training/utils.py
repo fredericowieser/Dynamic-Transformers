@@ -1,18 +1,14 @@
 import json
-import os
-import torch
 import logging
+import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
-from omegaconf import DictConfig, OmegaConf, OmegaConf, OmegaConf
+from typing import Any, Dict, List, Optional, Tuple
 
-from transformers import (
-    AutoTokenizer,
-    Qwen2Config,
-    Qwen2ForCausalLM,
-    get_scheduler
-)
+import torch
 from huggingface_hub import HfApi
+from omegaconf import DictConfig, OmegaConf
+from transformers import (AutoTokenizer, Qwen2Config, Qwen2ForCausalLM,
+                          get_scheduler)
 
 from ..models.mod.model import MoDForCausalLM
 from ..models.sdt.model import SDTForCausalLM
@@ -25,9 +21,9 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     """Create and initialize model based on the unified config."""
     model_cfg = cfg.model
     from_scratch = model_cfg.from_scratch
-    torch_dtype = getattr(torch, cfg.system.get('torch_dtype', 'float32'))
+    torch_dtype = getattr(torch, cfg.system.get("torch_dtype", "float32"))
 
-    # 1. Create base Qwen2Config
+    # Create base Qwen2Config
     if from_scratch:
         if model_cfg.size not in model_cfg.scratch_config:
             raise ValueError(f"Unknown model size for scratch: {model_cfg.size}")
@@ -41,23 +37,21 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     else:
         config = Qwen2Config.from_pretrained(model_cfg.pretrained_model_name_or_path)
 
-    # 2. Dynamically update config with all parameters from the 'model' section
+    # Dynamically update config with all parameters from the 'model' section
     # We convert the OmegaConf object to a standard python dict to prevent
     # serialization errors when saving the config.
     model_cfg_dict = OmegaConf.to_container(model_cfg, resolve=True)
     for key, value in model_cfg_dict.items():
         setattr(config, key, value)
 
-    
     # Handle special cases like attention implementation
-    if cfg.system.get('use_flash_attention', False):
-        config.attn_implementation = model_cfg.get('attn_implementation', 'flash_attention_2')
+    if cfg.system.get("use_flash_attention", False):
+        config.attn_implementation = model_cfg.get("attn_implementation", "flash_attention_2")
     else:
-        config.attn_implementation = 'eager'
+        config.attn_implementation = "eager"
     config._attn_implementation = config.attn_implementation
 
-
-    # 3. Instantiate the correct model
+    # Instantiate the correct model
     log.debug(f"Final config attributes before model instantiation: {config.__dict__}")
     model_class_map = {
         "standard": "src.models.standard.model.StandardTransformerForCausalLM",
@@ -70,12 +64,13 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
 
     def get_class(class_path: str):
         from importlib import import_module
-        module_path, class_name = class_path.rsplit('.', 1)
+
+        module_path, class_name = class_path.rsplit(".", 1)
         module = import_module(module_path)
         return getattr(module, class_name)
 
     model_class = get_class(model_class_map[model_type])
-    
+
     # Pass the entire model config dict as kwargs
     model_kwargs = OmegaConf.to_container(model_cfg, resolve=True)
     log.debug(f"Instantiating {model_class.__name__} with kwargs: {model_kwargs}")
@@ -85,44 +80,59 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     else:
         # For pretrained, we still need to load the base weights
         model = model_class(config, model_type=model_type, **model_kwargs)
-        log.info(f"Initializing {model_type.upper()} from pretrained {model_cfg.pretrained_model_name_or_path}")
-        base_model = Qwen2ForCausalLM.from_pretrained(model_cfg.pretrained_model_name_or_path, torch_dtype=torch_dtype)
-        
+        log.info(
+            f"Initializing {model_type.upper()} from pretrained {model_cfg.pretrained_model_name_or_path}"
+        )
+        base_model = Qwen2ForCausalLM.from_pretrained(
+            model_cfg.pretrained_model_name_or_path, torch_dtype=torch_dtype
+        )
+
         # This method needs to exist on the model class
-        if hasattr(model, 'copy_weights_from_pretrained'):
-             model.copy_weights_from_pretrained(base_model)
+        if hasattr(model, "copy_weights_from_pretrained"):
+            model.copy_weights_from_pretrained(base_model)
         else:
-            log.warning(f"Model {model_type} does not have 'copy_weights_from_pretrained' method. Weight transfer might be incomplete.")
+            log.warning(
+                f"Model {model_type} does not have 'copy_weights_from_pretrained' method. Weight transfer might be incomplete."
+            )
             # Fallback to simple load, might fail if architectures differ
             model.load_state_dict(base_model.state_dict(), strict=False)
 
         del base_model
-        
+
     return model
 
 
-def setup_optimizer_and_scheduler(model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator):
+def setup_optimizer_and_scheduler(
+    model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator
+):
     """Setup optimizers and schedulers based on parameter groups from the model."""
     unwrapped_model = accelerator.unwrap_model(model)
     param_groups = unwrapped_model.get_trainable_parameters()
     optimizers, schedulers = {}, {}
     optimizer_cfg = cfg.training.optimizer
-    common_kwargs = {"betas": (optimizer_cfg.adam_beta1, optimizer_cfg.adam_beta2), "eps": optimizer_cfg.adam_epsilon, "weight_decay": optimizer_cfg.weight_decay}
+    common_kwargs = {
+        "betas": (optimizer_cfg.adam_beta1, optimizer_cfg.adam_beta2),
+        "eps": optimizer_cfg.adam_epsilon,
+        "weight_decay": optimizer_cfg.weight_decay,
+    }
 
     for group in param_groups:
-        name = group['name']
-        params = group['params']
-        
+        name = group["name"]
+        params = group["params"]
+
         # Read LR from the new 'lrs' map, with a fallback to the default lr
         lr = optimizer_cfg.lrs.get(name, optimizer_cfg.lr)
-        log.info(f"Creating optimizer for group '{name}' with {sum(p.numel() for p in params)} params and LR {lr:.2e}")
+        log.info(
+            f"Creating optimizer for group '{name}' with {sum(p.numel() for p in params)} params and LR {lr:.2e}"
+        )
 
-        opt = torch.optim.AdamW([{'params': params}], lr=lr, **common_kwargs)
+        opt = torch.optim.AdamW([{"params": params}], lr=lr, **common_kwargs)
         optimizers[name] = opt
         schedulers[name] = get_scheduler(
-            optimizer_cfg.scheduler, optimizer=opt,
+            optimizer_cfg.scheduler,
+            optimizer=opt,
             num_warmup_steps=int(num_training_steps * optimizer_cfg.warmup_ratio),
-            num_training_steps=num_training_steps
+            num_training_steps=num_training_steps,
         )
     return optimizers, schedulers
 
@@ -134,7 +144,7 @@ def save_checkpoint(
     epoch: int,
     step: int,
     best_loss: float,
-    save_path: Path
+    save_path: Path,
 ) -> None:
     """Save training checkpoint."""
     save_path.mkdir(parents=True, exist_ok=True)
@@ -148,16 +158,23 @@ def save_checkpoint(
 
     # Save training state
     state_path = save_path / "training_state.pt"
-    optimizer_states = {name: opt.state_dict() for name, opt in optimizers.items() if opt is not None}
-    scheduler_states = {name: sch.state_dict() for name, sch in schedulers.items() if sch is not None}
+    optimizer_states = {
+        name: opt.state_dict() for name, opt in optimizers.items() if opt is not None
+    }
+    scheduler_states = {
+        name: sch.state_dict() for name, sch in schedulers.items() if sch is not None
+    }
 
-    torch.save({
-        'optimizer_states': optimizer_states,
-        'scheduler_states': scheduler_states,
-        'epoch': epoch,
-        'step': step,
-        'best_loss': best_loss,
-    }, state_path)
+    torch.save(
+        {
+            "optimizer_states": optimizer_states,
+            "scheduler_states": scheduler_states,
+            "epoch": epoch,
+            "step": step,
+            "best_loss": best_loss,
+        },
+        state_path,
+    )
 
     log.info(f"Checkpoint saved to {save_path}")
 
@@ -166,28 +183,28 @@ def load_checkpoint(
     model: torch.nn.Module,
     optimizers: Dict[str, torch.optim.Optimizer],
     schedulers: Dict[str, Any],
-    load_path: Path
+    load_path: Path,
 ) -> Dict[str, Any]:
     """Load training checkpoint."""
     # Load model
     model_path = load_path / "model.pt"
     if model_path.exists():
-        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        model.load_state_dict(torch.load(model_path, map_location="cpu"))
         log.info(f"Model loaded from {model_path}")
 
     # Load training state
     state_path = load_path / "training_state.pt"
     if state_path.exists():
-        state = torch.load(state_path, map_location='cpu')
-        
+        state = torch.load(state_path, map_location="cpu")
+
         # Load optimizer states
-        optimizer_states = state.get('optimizer_states', {})
+        optimizer_states = state.get("optimizer_states", {})
         for name, opt in optimizers.items():
             if opt is not None and name in optimizer_states:
                 opt.load_state_dict(optimizer_states[name])
 
         # Load scheduler states
-        scheduler_states = state.get('scheduler_states', {})
+        scheduler_states = state.get("scheduler_states", {})
         for name, sch in schedulers.items():
             if sch is not None and name in scheduler_states:
                 sch.load_state_dict(scheduler_states[name])
@@ -195,7 +212,7 @@ def load_checkpoint(
         log.info(f"Training state loaded from {state_path}")
         return state
 
-    return {'epoch': 0, 'step': 0, 'best_loss': float('inf')}
+    return {"epoch": 0, "step": 0, "best_loss": float("inf")}
 
 
 def push_to_hub(
@@ -226,7 +243,9 @@ def push_to_hub(
 
     # Clean up local files
     import shutil
+
     shutil.rmtree(model_dir)
+
 
 def calculate_metrics(model, batch, global_step=0, max_steps=1):
     """Performs a forward pass and returns a dictionary of metrics."""
@@ -235,28 +254,28 @@ def calculate_metrics(model, batch, global_step=0, max_steps=1):
         attention_mask=batch.get("attention_mask"),
         labels=batch.get("labels"),
         global_step=global_step,
-        max_steps=max_steps
+        max_steps=max_steps,
     )
-    
+
     metrics = {}
-    
-    loss = outputs.get('loss')
-    lm_loss = outputs.get('lm_loss')
-    
+
+    loss = outputs.get("loss")
+    lm_loss = outputs.get("lm_loss")
+
     if loss is None:
         loss = lm_loss
-    
+
     if lm_loss is None:
         lm_loss = loss
-        
-    metrics['loss'] = loss
-    metrics['lm_loss'] = lm_loss
-    
+
+    metrics["loss"] = loss
+    metrics["lm_loss"] = lm_loss
+
     # Add other metrics from outputs
     for key, value in outputs.items():
-        if key not in ['loss', 'lm_loss', 'logits']:
+        if key not in ["loss", "lm_loss", "logits"]:
             metrics[key] = value
-            
+
     return metrics
 
 
@@ -270,39 +289,54 @@ def evaluate_perplexity(model, dataloader, accelerator):
     for batch in dataloader:
         with torch.no_grad():
             metrics = calculate_metrics(model, batch)
-        
+
         loss = metrics.get("lm_loss")
         if loss is not None:
             losses.append(accelerator.gather(loss.repeat(batch["input_ids"].shape[0])))
 
         # Collect unscaled losses
-        if 'unscaled_losses' in metrics:
-            for k, v in metrics['unscaled_losses'].items():
+        if "unscaled_losses" in metrics:
+            for k, v in metrics["unscaled_losses"].items():
                 if k not in all_unscaled_losses:
                     all_unscaled_losses[k] = []
                 all_unscaled_losses[k].append(v)
 
         # Collect router stats
-        if 'router_stats' in metrics:
-            for k, v in metrics['router_stats'].items():
+        if "router_stats" in metrics:
+            for k, v in metrics["router_stats"].items():
                 if k not in all_router_stats:
                     all_router_stats[k] = []
                 all_router_stats[k].append(v)
 
     if not losses:
-        return 0.0, 1.0, {}, {} # Return empty dicts if no losses
+        return 0.0, 1.0, {}, {}  # Return empty dicts if no losses
 
     avg_loss = torch.mean(torch.cat(losses))
     perplexity = torch.exp(avg_loss)
 
     # Aggregate unscaled losses
-    aggregated_unscaled_losses = {k: torch.mean(torch.stack(v)).item() if v and isinstance(v[0], torch.Tensor) else (sum(v) / len(v) if v else 0.0) for k, v in all_unscaled_losses.items()}
-    
+    aggregated_unscaled_losses = {
+        k: (
+            torch.mean(torch.stack(v)).item()
+            if v and isinstance(v[0], torch.Tensor)
+            else (sum(v) / len(v) if v else 0.0)
+        )
+        for k, v in all_unscaled_losses.items()
+    }
+
     # Aggregate router stats (mean for now, can be more sophisticated if needed)
-    aggregated_router_stats = {k: (torch.mean(torch.stack(v)).item() if v and isinstance(v[0], torch.Tensor) else (sum(v) / len(v) if v else 0.0)) for k, v in all_router_stats.items()}
-    
-    model.train() # Reset model to training mode
+    aggregated_router_stats = {
+        k: (
+            torch.mean(torch.stack(v)).item()
+            if v and isinstance(v[0], torch.Tensor)
+            else (sum(v) / len(v) if v else 0.0)
+        )
+        for k, v in all_router_stats.items()
+    }
+
+    model.train()  # Reset model to training mode
     return avg_loss.item(), perplexity.item(), aggregated_unscaled_losses, aggregated_router_stats
+
 
 def save_wandb_info(wandb_run, save_path: Path):
     """Saves essential wandb run info to a file."""

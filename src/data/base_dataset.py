@@ -9,6 +9,7 @@ from transformers import PreTrainedTokenizerBase
 
 log = logging.getLogger(__name__)
 
+
 class BaseDatasetHandler(ABC):
     """
     An abstract base class for handling Hugging Face datasets.
@@ -16,6 +17,7 @@ class BaseDatasetHandler(ABC):
     It encapsulates the shared logic for loading, processing, and splitting,
     while delegating the specific text formatting to subclasses.
     """
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerBase,
@@ -69,42 +71,48 @@ class BaseDatasetHandler(ABC):
 
         num_proc = os.cpu_count() or 1
 
-        # 1. Format the text using the subclass-specific implementation
-        formatted_datasets = raw_datasets.map(self._process_text_column, batched=False, num_proc=num_proc)
-        
-        # 2. Filter out short/empty examples
-        filtered_datasets = formatted_datasets.filter(lambda x: x.get("text") and len(x["text"]) > 10, num_proc=num_proc)
-        
-        # 3. Tokenize
+        # Format the text using the subclass-specific implementation
+        formatted_datasets = raw_datasets.map(
+            self._process_text_column, batched=False, num_proc=num_proc
+        )
+
+        # Filter out short/empty examples
+        filtered_datasets = formatted_datasets.filter(
+            lambda x: x.get("text") and len(x["text"]) > 10, num_proc=num_proc
+        )
+
+        # Tokenize
         tokenized_datasets = filtered_datasets.map(
             lambda e: self.tokenizer(e["text"]),
             batched=True,
             remove_columns=filtered_datasets["train"].column_names,
-            num_proc=num_proc
+            num_proc=num_proc,
         )
-        
-        # 4. Group into blocks
+
+        # Group into blocks
         lm_datasets = tokenized_datasets.map(self._group_texts, batched=True, num_proc=num_proc)
         full_dataset = lm_datasets["train"]
 
-        # 5. Subset the training data if requested
+        # Subset the training data if requested
         if self.train_subset_ratio and 0.0 < self.train_subset_ratio < 1.0:
             num_samples = int(len(full_dataset) * self.train_subset_ratio)
             full_dataset = full_dataset.select(range(num_samples))
             log.info(f"Subsetting '{self.dataset_name}' to {num_samples} samples.")
 
-        # 6. Split into training and validation sets
+        # Split into training and validation sets
         if self.validation_split_percentage > 0 and len(full_dataset) > 1:
             val_size = int(len(full_dataset) * (self.validation_split_percentage / 100))
-            val_size = max(1, val_size) # Ensure at least one validation sample
+            val_size = max(1, val_size)  # Ensure at least one validation sample
             train_size = len(full_dataset) - val_size
             if train_size <= 0:
                 raise ValueError("Dataset is too small to create a non-empty training split.")
-            
+
             train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
         else:
             train_dataset = full_dataset
             val_dataset = []
 
-        log.info(f"Finished processing '{self.dataset_name}': {len(train_dataset):,} train, {len(val_dataset):,} val samples.")
+        log.info(
+            f"Finished processing '{self.dataset_name}': {len(train_dataset):,} train, {len(val_dataset):,} val samples."
+        )
         return train_dataset, val_dataset

@@ -1,18 +1,22 @@
-import torch
-import torch.nn as nn
-import torch._dynamo
-from typing import Tuple, Optional
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 import logging
+from typing import Optional, Tuple
+
+import torch
+import torch._dynamo
+import torch.nn as nn
+from transformers.modeling_attn_mask_utils import \
+    _prepare_4d_causal_attention_mask
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 log = logging.getLogger(__name__)
+
 
 class DynamicBlock(nn.Module):
     """
     Wraps an existing HF Qwen2DecoderLayer and provides a method for dynamically
     processing a subset of tokens in a sequence.
     """
+
     def __init__(self, layer: Qwen2DecoderLayer):
         super().__init__()
         self.layer = layer  # reference to HF layer (weights are shared)
@@ -41,10 +45,12 @@ class DynamicBlock(nn.Module):
         num_selected = selected_tokens.shape[0]
         selected_tokens_batched = selected_tokens.unsqueeze(0)
 
-        position_ids = kwargs.get('position_ids')
-        position_embeddings = kwargs.get('position_embeddings')
-        
-        selected_attn_mask = _prepare_4d_causal_attention_mask(None, (1, num_selected), selected_tokens_batched, 0)
+        position_ids = kwargs.get("position_ids")
+        position_embeddings = kwargs.get("position_embeddings")
+
+        selected_attn_mask = _prepare_4d_causal_attention_mask(
+            None, (1, num_selected), selected_tokens_batched, 0
+        )
 
         selected_pos_ids = None
         if position_ids is not None:
@@ -58,7 +64,10 @@ class DynamicBlock(nn.Module):
         selected_pos_emb = None
         if position_embeddings is not None:
             cos, sin = position_embeddings
-            selected_pos_emb = (cos[batch_indices, token_indices].unsqueeze(0), sin[batch_indices, token_indices].unsqueeze(0))
+            selected_pos_emb = (
+                cos[batch_indices, token_indices].unsqueeze(0),
+                sin[batch_indices, token_indices].unsqueeze(0),
+            )
 
         # TODO: Investigate how to make packed sequences compatible with flash attention.
         # The current implementation in Hugging Face transformers (4.43.2) throws a
@@ -77,18 +86,22 @@ class DynamicBlock(nn.Module):
                 attention_mask=selected_attn_mask,
                 position_ids=selected_pos_ids,
                 position_embeddings=selected_pos_emb,
-                use_cache=kwargs.get('use_cache', False),
+                use_cache=kwargs.get("use_cache", False),
             )
         finally:
             if original_attn_impl is not None:
                 self.layer.self_attn._attn_implementation = original_attn_impl
 
         processed_tokens = out[0].squeeze(0) if isinstance(out, tuple) else out.squeeze(0)
-        present_key_value = out[1] if kwargs.get('use_cache', False) and isinstance(out, tuple) and len(out) > 1 else None
+        present_key_value = (
+            out[1]
+            if kwargs.get("use_cache", False) and isinstance(out, tuple) and len(out) > 1
+            else None
+        )
         attention_weights = out[2] if isinstance(out, tuple) and len(out) > 2 else None
 
         final_hidden_states = hidden_states.clone()
-        
+
         if use_soft_gating:
             if gating_scores is None:
                 raise ValueError("gating_scores must be provided for soft gating")
@@ -98,7 +111,5 @@ class DynamicBlock(nn.Module):
             final_hidden_states[batch_indices, token_indices] = updated_tokens
         else:
             final_hidden_states[batch_indices, token_indices] = processed_tokens
-
-
 
         return final_hidden_states, present_key_value, attention_weights

@@ -1,7 +1,7 @@
 from .block import DynamicBlock
 from .causal_lm import BaseForCausalLM
 from .priors import BasePriorNetwork
-from .routers import BaseRouter, CausalRouter, BaseSurpriseRouter
+from .routers import BaseRouter, BaseSurpriseRouter, CausalRouter
 
 __all__ = [
     "DynamicBlock",

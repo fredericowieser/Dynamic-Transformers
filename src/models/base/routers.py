@@ -1,19 +1,19 @@
+import copy
+import logging
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from abc import ABC, abstractmethod
-from typing import Tuple, Optional, Dict, Any
-import copy
-from typing import Dict
 from omegaconf import DictConfig, OmegaConf
-import logging
 
 log = logging.getLogger(__name__)
 
-# ... (rest of the imports)
 
 class BaseRouter(nn.Module, ABC):
     """Abstract base class for all routing modules."""
+
     def __init__(self, config, capacity_attr: str):
         super().__init__()
         self.config = config
@@ -26,17 +26,22 @@ class BaseRouter(nn.Module, ABC):
     def select_tokens(self, scores: torch.Tensor, hidden_states: torch.Tensor):
         B, T, D = hidden_states.shape
         k = max(1, int(T * self.capacity))
-        
+
         if k > T:
             k = T
 
         topk_vals, topk_idx = scores.topk(k, dim=-1)
         batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, k)
-        
+
         selected_hidden = hidden_states[batch_idx, topk_idx]
 
-        return selected_hidden.reshape(-1, D), \
-               batch_idx.reshape(-1), topk_idx.reshape(-1), topk_vals.reshape(-1)
+        return (
+            selected_hidden.reshape(-1, D),
+            batch_idx.reshape(-1),
+            topk_idx.reshape(-1),
+            topk_vals.reshape(-1),
+        )
+
 
 class CausalRouter(BaseRouter):
     """
@@ -44,13 +49,14 @@ class CausalRouter(BaseRouter):
     that predicts whether a token should be processed based on its own
     hidden state.
     """
+
     def __init__(self, config, layer_idx: int, capacity_attr: str):
         super().__init__(config, capacity_attr)
         self.hidden_size = config.hidden_size
         self.router = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size // 4),
             nn.GELU(),
-            nn.Linear(self.hidden_size // 4, 1)
+            nn.Linear(self.hidden_size // 4, 1),
         )
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
@@ -60,40 +66,50 @@ class CausalRouter(BaseRouter):
 
 class STTCausalRouter(BaseRouter):
     """Causal router for STT inference, which uses the previous token's state to predict the routing decision for the current token."""
+
     def __init__(self, config, layer_idx: int, capacity_attr: str):
         super().__init__(config, capacity_attr)
         self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         B, T, D = hidden_states.shape
-        prev = torch.cat([torch.zeros(B, 1, D, device=hidden_states.device, dtype=hidden_states.dtype), hidden_states[:, :-1, :]], dim=1)
+        prev = torch.cat(
+            [
+                torch.zeros(B, 1, D, device=hidden_states.device, dtype=hidden_states.dtype),
+                hidden_states[:, :-1, :],
+            ],
+            dim=1,
+        )
         logits = self.router(torch.cat([hidden_states, prev], dim=-1)).squeeze(-1)
         return logits, None, {}
 
+
 class BaseSurpriseRouter(BaseRouter):
     """Abstracts the common surprise-based routing logic for SDT and STT."""
+
     def __init__(self, config, capacity_attr: str):
         super().__init__(config, capacity_attr)
-        
-        o_ce_init_val = torch.tensor(float(getattr(config, 'o_ce_init', 1.0)))
-        if getattr(config, 'learn_o_ce', False):
+
+        o_ce_init_val = torch.tensor(float(getattr(config, "o_ce_init", 1.0)))
+        if getattr(config, "learn_o_ce", False):
             self.raw_o_ce = nn.Parameter(o_ce_init_val)
         else:
-            self.register_buffer('raw_o_ce', o_ce_init_val)
+            self.register_buffer("raw_o_ce", o_ce_init_val)
 
-        m_cu_init_val = torch.tensor(float(getattr(config, 'm_cu_init', 1.1)))
-        if getattr(config, 'learn_m_cu', False):
+        m_cu_init_val = torch.tensor(float(getattr(config, "m_cu_init", 1.1)))
+        if getattr(config, "learn_m_cu", False):
             self.raw_m_cu = nn.Parameter(m_cu_init_val)
         else:
-            self.register_buffer('raw_m_cu', m_cu_init_val)
+            self.register_buffer("raw_m_cu", m_cu_init_val)
 
-        self.ma_window = int(getattr(config, 'ma_window', 100))
-    
+        self.ma_window = int(getattr(config, "ma_window", 100))
+
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
         B, T = d_st.shape
         W = min(self.ma_window, T)
-        if W <= 1: return d_st
-        padded = F.pad(d_st.unsqueeze(1), (W - 1, 0), 'replicate')
+        if W <= 1:
+            return d_st
+        padded = F.pad(d_st.unsqueeze(1), (W - 1, 0), "replicate")
         return F.avg_pool1d(padded, kernel_size=W, stride=1).squeeze(1)
 
     def _get_vpr_signals(self, D_st, D_ch, beta_ce, beta_cu):
@@ -105,6 +121,12 @@ class BaseSurpriseRouter(BaseRouter):
 
         S_CE = torch.sigmoid(beta_ce * CE)
         S_CU = torch.sigmoid(beta_cu * CU)
-        
+
         g_cont = S_CE + S_CU - (S_CE * S_CU)
-        return g_cont, {"S_CE_mean": S_CE.mean().item(), "S_CU_mean": S_CU.mean().item(), "g_cont_mean": g_cont.mean().item(), "o_ce": o_ce.item(), "m_cu": m_cu.item()}
+        return g_cont, {
+            "S_CE_mean": S_CE.mean().item(),
+            "S_CU_mean": S_CU.mean().item(),
+            "g_cont_mean": g_cont.mean().item(),
+            "o_ce": o_ce.item(),
+            "m_cu": m_cu.item(),
+        }

@@ -1,5 +1,5 @@
 import torch.nn as nn
-from transformers import Qwen2ForCausalLM, Qwen2Config
+from transformers import Qwen2Config, Qwen2ForCausalLM
 
 
 class StandardTransformerForCausalLM(Qwen2ForCausalLM):
@@ -16,12 +16,12 @@ class StandardTransformerForCausalLM(Qwen2ForCausalLM):
 
     def _init_weights_if_needed(self, config):
         """Initialize weights using Qwen's approach if training from scratch."""
-        if hasattr(config, 'init_from_scratch') and config.init_from_scratch:
+        if hasattr(config, "init_from_scratch") and config.init_from_scratch:
             self.apply(self._init_weights)
 
     def _init_weights(self, module):
         """Initialize weights matching Qwen's initialization strategy."""
-        std = getattr(self.config, 'initializer_range')
+        std = getattr(self.config, "initializer_range")
 
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=std)
@@ -31,7 +31,7 @@ class StandardTransformerForCausalLM(Qwen2ForCausalLM):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        elif hasattr(module, 'weight') and hasattr(module.weight, 'data'):
+        elif hasattr(module, "weight") and hasattr(module.weight, "data"):
             # For RMSNorm layers
             module.weight.data.fill_(1.0)
 
@@ -61,10 +61,4 @@ class StandardTransformerForCausalLM(Qwen2ForCausalLM):
     def get_trainable_parameters(self):
         """Get parameter groups for training."""
         # All parameters are trainable in standard transformer
-        return [
-            {
-                'params': self.parameters(),
-                'lr_scale': 1.0,
-                'name': 'all'
-            }
-        ]
+        return [{"params": self.parameters(), "lr_scale": 1.0, "name": "all"}]
