@@ -10,6 +10,7 @@ from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.priors import BasePriorNetwork
 from ..base.routers import BaseSurpriseRouter, CausalRouter
+from ..configs import SDTConfig
 
 
 class SDTPriorNetwork(BasePriorNetwork):
@@ -179,6 +180,7 @@ class SDTPair(nn.Module):
 
 
 class SDTForCausalLM(BaseForCausalLM):
+    config_class = SDTConfig
     _supports_flash_attn_2 = True
 
     def __init__(self, config, model_type: str, **kwargs):

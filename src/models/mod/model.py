@@ -8,6 +8,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.routers import BaseRouter
+from ..configs import MoDConfig
 
 
 class MoDRouter(BaseRouter):
@@ -170,6 +171,7 @@ class MoDLayer(nn.Module):
 
 
 class MoDForCausalLM(BaseForCausalLM):
+    config_class = MoDConfig
     _supports_flash_attn_2 = True
 
     def __init__(self, config, model_type: str, **kwargs):

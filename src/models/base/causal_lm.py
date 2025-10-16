@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 
 
 class BaseForCausalLM(PreTrainedModel):
-    config_class = Qwen2Config
 
     def __init__(self, config: PretrainedConfig, model_type: str = None, **kwargs):
         super().__init__(config, **kwargs)

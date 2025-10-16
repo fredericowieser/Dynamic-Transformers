@@ -1,8 +1,11 @@
 import torch.nn as nn
 from transformers import Qwen2Config, Qwen2ForCausalLM
 
+from ..configs import StandardConfig
+
 
 class StandardTransformerForCausalLM(Qwen2ForCausalLM):
+    config_class = StandardConfig
     _supports_flash_attn_2 = True
     """Standard transformer model using Qwen2 architecture.
 

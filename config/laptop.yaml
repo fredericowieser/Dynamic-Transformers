@@ -43,3 +43,6 @@ logging:
   level: DEBUG
   wandb:
     enabled: false
+
+lm_eval:
+  tasks: "quick_test"

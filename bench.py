@@ -12,7 +12,7 @@ from src.models.mod.model import MoDForCausalLM
 from src.models.sdt.model import SDTForCausalLM
 from src.models.standard.model import StandardTransformerForCausalLM
 from src.models.stt.model import STTForCausalLM
-from src.training.eval_utils import LMEvalAdaptor
+from lm_eval.models.huggingface import HFLM
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -114,7 +114,13 @@ def main():
     # Explicitly load the model using the correct custom class to prevent loading a standard
     # model with missing weights. This is the most robust way to handle custom architectures.
     log.info(f"Loading model and tokenizer from: {args.model_path}")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        # Fallback to CPU on MPS to avoid autocast error in lm-eval
+        device = "cpu"
+    else:
+        device = "cpu"
 
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     model_type = getattr(config, "model_type", "standard")
@@ -130,10 +136,10 @@ def main():
 
     log.info(f"Explicitly loading model class: {model_class.__name__}")
     model = model_class.from_pretrained(
-        args.model_path, trust_remote_code=True, torch_dtype="auto", device_map="auto"
+        args.model_path, trust_remote_code=True, torch_dtype="auto", device_map=device
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    adaptor = LMEvalAdaptor(model, tokenizer, device)
+    adaptor = HFLM(pretrained=model, tokenizer=tokenizer)
 
     # Shot counts to align with official Qwen 2.5 evaluations
     shot_counts = {

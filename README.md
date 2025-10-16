@@ -1,320 +1,152 @@
-# Dynamic Transformer
+# Dynamic Transformers
 
-Professional implementation of three transformer architectures: Standard Transformer (Qwen2.5), Dynamic Transformer (DTF), and Mixture of Depths (MoD) with unified training infrastructure.
+This repository provides a research framework for implementing, training, and evaluating several dynamic transformer architectures. The primary goal is to compare these dynamic models against a standard transformer baseline, focusing on computational efficiency and performance.
 
-## 🚀 Quick Start
+The framework is built using PyTorch, Hugging Face `transformers` and `accelerate` for efficient, distributed training. Configuration is managed by `hydra`, allowing for flexible and reproducible experiments.
 
-```bash
-# Clone and setup
-git clone <repository>
-cd Dynamic-Transformer
+## Features
 
-# Quick test with DTF (1000 steps)
-./run_training.sh quick dtf
+- **Multiple Architectures**: Implements several dynamic transformer models alongside a standard baseline:
+    - **Standard Transformer**: A conventional transformer based on the `Qwen2` architecture.
+    - **Mixture-of-Depths (MoD)**: Allows tokens to bypass layers based on a routing mechanism.
+    - **Sparse Dynamic Transformer (SDT)**: Uses a "decision" layer and a "dynamic" layer, where tokens are routed to the dynamic layer based on a surprise-based mechanism.
+    - **Sparse Transition Transformer (STT)**: Uses a transition network to predict the next state of a token and routes tokens to a transformer block based on prediction error.
+- **Flexible Configuration**: Uses `hydra` for managing all experiment parameters, from model architecture and data sources to optimizer settings.
+- **Efficient Training**: Leverages Hugging Face `accelerate` for seamless multi-GPU and mixed-precision training.
+- **Versatile Data Handling**: Supports mixing multiple Hugging Face datasets for pre-training or fine-tuning.
+- **Integrated Evaluation**: Includes a script to run benchmarks on trained models using the `lm-evaluation-harness`.
+- **Experiment Tracking**: Integrates with Weights & Biases (W&B) for logging metrics, losses, and model checkpoints.
 
-# Quick test with MoD
-./run_training.sh quick mod
+## Codebase Structure
 
-# Quick test with Standard Transformer
-./run_training.sh quick standard
-```
-
-## 🏗️ Architecture Overview
-
-This repository implements three transformer variants:
-
-- **Standard Transformer**: Baseline Qwen2.5 architecture with RMSNorm, SwiGLU, and RoPE
-- **Dynamic Transformer (DTF)**: Surprise-based routing using predictive coding principles
-- **Mixture of Depths (MoD)**: Learned importance scoring with top-k token selection
-
-All models share a unified base architecture and training pipeline.
-
-## 📋 Requirements
-
-- Python 3.8+
-- PyTorch 2.0+
-- Transformers 4.30+
-- See `pyproject.toml` for complete dependencies
-
-## 📁 Project Structure
+The project is organized into several key directories:
 
 ```
-Dynamic-Transformer/
-├── README.md                    # This file
-├── DTF-Spec.md                 # DTF architecture specification
-├── MoD-Spec.md                 # MoD architecture specification
-├── Qwen-Spec.md                # Qwen2.5 architecture specification
-├── TRAINING_GUIDE.md           # Detailed training guide
-├── run_training.sh             # Universal training script
-├── train.py                    # Main training entry point
-├── config/                     # Hydra configurations
-│   ├── train.yaml              # Base training config
-│   ├── dtf_scratch.yaml        # DTF from scratch
-│   ├── dtf_transfer.yaml       # DTF transfer learning
-│   ├── mod_scratch.yaml        # MoD from scratch
-│   ├── mod_transfer.yaml       # MoD transfer learning
-│   ├── standard_scratch.yaml   # Standard from scratch
-│   └── standard_transfer.yaml  # Standard transfer learning
-└── src/                        # Source code
-    ├── models/                 # Model implementations
-    │   ├── base/               # Shared base classes
-    │   ├── standard/           # Standard Transformer
-    │   ├── dtf/                # Dynamic Transformer
-    │   └── mod/                # Mixture of Depths
-    ├── training/               # Training utilities
-    └── data/                   # Dataset utilities
+.
+├── config/                 # Hydra configuration files
+│   ├── default.yaml        # Base configuration for all parameters
+│   └── laptop.yaml         # Overrides for local debugging
+├── src/
+│   ├── data/               # Data loading and processing modules
+│   │   ├── base_dataset.py
+│   │   ├── mixed_dataset.py  # Combines multiple datasets
+│   │   └── ...
+│   ├── models/             # Model implementations
+│   │   ├── base/           # Shared components for dynamic models
+│   │   ├── mod/            # Mixture-of-Depths (MoD) model
+│   │   ├── sdt/            # Sparse Dynamic Transformer (SDT) model
+│   │   ├── standard/       # Standard transformer baseline
+│   │   └── stt/            # Sparse Transition Transformer (STT) model
+│   └── training/           # Training utilities
+│       ├── utils.py        # Optimizer setup, checkpointing, etc.
+│       └── eval_utils.py   # Adapter for lm-evaluation-harness
+├── train.py                # Main script for training models
+└── bench.py                # Script for running lm-eval benchmarks
 ```
 
-## 🎯 Usage
+### Key Files
 
-### Universal Training Script
+- **`train.py`**: The main entry point for launching a training run. It handles parsing the `hydra` config, setting up the model, data, optimizer, and running the training loop with `accelerate`.
+- **`bench.py`**: A script to evaluate a trained model checkpoint on standard NLP benchmarks using `lm-eval`. It loads a saved model and runs the specified task suite.
+- **`config/default.yaml`**: The central configuration file. It defines all default parameters for the model, data, training, and system settings. Experiments can be defined by overriding these parameters.
+- **`src/models/`**: This directory contains the core logic for the different transformer architectures. Each model has its own subdirectory and inherits from `BaseForCausalLM` in `src/models/base/causal_lm.py`.
+- **`src/data/mixed_dataset.py`**: This class is responsible for loading, processing, and concatenating multiple datasets from the Hugging Face Hub, as defined in the `data.dataset_configs` section of the configuration.
 
-The `run_training.sh` script provides a unified interface for all training modes:
+## Installation
 
-```bash
-./run_training.sh [MODE] [MODEL_TYPE] [CONFIG]
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/dynamic-transformers.git
+    cd dynamic-transformers
+    ```
 
-# Modes:
-#   quick      - Quick test (1000 steps)
-#   scratch    - Train from scratch
-#   transfer   - Transfer learning from Qwen2.5
-#   custom     - Use custom config file
+2.  **Create a virtual environment and install dependencies:**
+    This project uses `uv` for package management. You can install the necessary packages from `pyproject.toml`. The main dependencies are:
+    - `torch`
+    - `transformers`
+    - `accelerate`
+    - `hydra-core`
+    - `omegaconf`
+    - `datasets`
+    - `wandb`
+    - `lm-eval`
+    - `peft`
 
-# Model Types:
-#   dtf        - Dynamic Transformer
-#   mod        - Mixture of Depths
-#   standard   - Standard Transformer
-#   tdtf       - Temporal Dynamic Transformer (new in this repo)
-```
+    You can install them using `uv`:
+    ```bash
+    uv pip install -r requirements.txt 
+    # Or if you have the pyproject.toml with dependencies listed
+    uv pip install .
+    ```
 
-### Training Examples
+## Usage
 
-#### Quick Testing
-```bash
-# Test DTF for 1000 steps
-./run_training.sh quick dtf
+The framework is designed to be run from the command line using `train.py` and `bench.py`.
 
-# Test MoD for 1000 steps
-./run_training.sh quick mod
+### Configuration
 
-# Test Standard Transformer for 1000 steps
-./run_training.sh quick standard
-```
+All aspects of a run are controlled by `hydra` configuration files located in the `config` directory. The main file is `config/default.yaml`.
 
-#### Laptop 10M Wikitext Training (CPU-friendly)
-This configuration is designed for quick local testing on a CPU, using a very small model (10M parameters) and a subset of the Wikitext dataset.
+To create a new experiment, you can either modify `default.yaml` or, more cleanly, create a new configuration file (e.g., `config/my_experiment.yaml`) that inherits from the default and overrides specific parameters.
 
-```bash
-python train.py --config-name=laptop_10m_wikitext
-```
-
-#### Full Training from Scratch
-```bash
-# Train DTF from scratch (10 epochs)
-./run_training.sh scratch dtf
-
-# Train MoD from scratch (5 epochs)
-./run_training.sh scratch mod
-
-# Train Standard Transformer from scratch
-./run_training.sh scratch standard
-```
-
-#### Transfer Learning from Qwen2.5 (0.5B and above)
-This mode allows you to fine-tune DTF, MoD, or TDTF models by initializing their core transformer layers with weights from a pre-trained Qwen2.5 model (e.g., 0.5B, 1.5B, 3B).
-
-```bash
-# Transfer learn DTF from Qwen2.5-0.5B
-./run_training.sh transfer dtf model.size=0.5B
-
-# Transfer learn MoD from Qwen2.5-1.5B
-./run_training.sh transfer mod model.size=1.5B
-
-# Transfer learn TDTF from Qwen2.5-3B
-./run_training.sh transfer tdtf model.size=3B
-
-# Example: Transfer learn DTF from Qwen2.5-0.5B and freeze base transformer blocks
-# This is useful for focusing training on the dynamic components.
-./run_training.sh transfer dtf model.size=0.5B model.freeze_base_model=True
-```
-
-#### Direct Training with Hydra
-```bash
-# DTF from scratch
-python train.py --config-name=dtf_scratch
-
-# MoD transfer learning
-python train.py --config-name=mod_transfer
-
-# Override parameters
-python train.py --config-name=dtf_scratch training.num_epochs=5 training.batch_size=4
-```
-
-### Custom Configuration
-
-Create a custom config file in `config/`:
-
+For example, to change the model type and learning rate, your `my_experiment.yaml` might look like this:
 ```yaml
 # config/my_experiment.yaml
 defaults:
-  - train
-  - _self_
+  - default
 
 model:
-  type: dtf
-  size: 0.5B
+  type: sdt # Switch to the SDT model
 
 training:
-  from_scratch: true
-  num_epochs: 5
   optimizer:
-    lr: 5e-4
-
-data:
-  batch_size: 16
+    lr: 5.0e-5
 ```
 
-Then run:
+### Training
+
+To start a training run, execute `train.py`. You can specify an experiment config or override parameters directly from the command line.
+
+**Examples:**
+
+- **Run the default configuration (as defined in `config/default.yaml`):**
+  ```bash
+  python train.py
+  ```
+
+- **Run a specific experiment configuration:**
+  ```bash
+  python train.py --config-name=my_experiment
+  ```
+
+- **Override parameters from the command line:**
+  ```bash
+  # Train an STT model with a different batch size and number of steps
+  python train.py model.type=stt data.batch_size=4 training.max_steps=5000
+
+  # Train a model from scratch for debugging on a laptop
+  python train.py --config-name=laptop
+  ```
+
+Training artifacts, logs, and model checkpoints will be saved to the directory specified by `run.output_dir` in the configuration, which defaults to `outputs/RUN_NAME`.
+
+### Evaluation
+
+After training, a final model is saved in Hugging Face format. You can evaluate this model on various benchmarks using `bench.py`.
+
+**Command:**
 ```bash
-./run_training.sh custom dtf my_experiment
+python bench.py --model_path <path_to_saved_model> --tasks <task_suite>
 ```
 
-## 🏛️ Model Architectures
+**Arguments:**
+- `--model_path`: Path to the directory containing the saved model (e.g., `outputs/my-run-name/final_model`).
+- `--tasks`: A comma-separated list of tasks or task suites to run. Available suites are `general`, `math`, `code`, and `quick_test`.
+- `--batch_size`: The batch size for evaluation.
 
-### Standard Transformer
-- **Base**: Qwen2.5 architecture (RMSNorm, SwiGLU, RoPE, GQA)
-- **Use Case**: Baseline comparison and standard language modeling
-- **Details**: See [Qwen-Spec.md](Qwen-Spec.md)
-
-### Dynamic Transformer (DTF)
-- **Innovation**: Surprise-based routing using predictive coding
-- **Key Components**:
-  - Decision layers compute original, posterior, and prior states
-  - Dynamic layers process selected tokens based on routing scores
-  - Surprise metrics (CE/CU) determine computational allocation
-- **Efficiency**: ~12.5% of tokens processed per layer
-- **Details**: See [DTF-Spec.md](DTF-Spec.md)
-
-### Mixture of Depths (MoD)
-- **Innovation**: Learned importance scoring for token selection
-- **Key Components**:
-  - Router networks compute token importance scores
-  - Top-k selection chooses most important tokens
-  - Auxiliary load balancing loss
-- **Efficiency**: ~12.5% of tokens processed per layer
-- **Details**: See [MoD-Spec.md](MoD-Spec.md)
-
-### Temporal Dynamic Transformer (TDTF)
-- **Innovation**: Teacher-student framework for temporal event detection and conditional computation.
-- **Key Components**:
-  - Transition Network (TPN) predicts residual updates.
-  - Predictive Router (teacher) uses surprise metrics (CE/CU) for optimal routing decisions during training.
-  - Causal Router (student) learns to predict teacher's decisions for efficient inference.
-- **Efficiency**: Conditional computation based on temporal events.
-- **Details**: See [TDTF-Spec.md](docs/TDTF-Spec.md)
-
-## 🎛️ Configuration
-
-### Model Parameters
-- `model.type`: Architecture type (`standard`/`dtf`/`mod`/`tdtf`)
-- `model.size`: Model size (`0.5B`/`1.5B`/`3B`/`10M`)
-- `training.from_scratch`: Train from scratch vs transfer learning
-- `model.freeze_base_model`: (New) Set to `True` to freeze the weights of the main Qwen2.5 transformer blocks during transfer learning.
-
-### DTF-Specific Parameters
-- `dtf_capacity`: Fraction of tokens to process (default: 0.125)
-- `beta_ce_init`: Expected change temperature (default: -0.5)
-- `beta_cu_init`: Unexpected change temperature (default: -0.8)
-
-### MoD-Specific Parameters
-- `mod_capacity`: Fraction of tokens to process (default: 0.125)
-- `mod_aux_loss_weight`: Load balancing weight (default: 0.01)
-
-### TDTF-Specific Parameters
-- `tdtf_capacity`: Fraction of tokens to process (default: 0.5)
-- `tpn_loss_weight`: Weight for the Transition Network (TPN) auxiliary loss (default: 0.05)
-- `causal_loss_weight`: Weight for the Causal Router auxiliary loss (default: 0.01)
-- `ma_window`: Window size for the Moving Average calculation in the Predictive Router (default: 100)
-- `o_ce_init`: Initial offset for the Expected Change (CE) criterion (default: 1.025)
-- `m_cu_init`: Initial multiplier for the Unexpected Change (CU) criterion (default: 1.1)
-
-
-## 💾 Platform Support
-
-The training script automatically detects and optimizes for:
-
-- **CUDA GPUs**: BF16, AMP, Flash Attention
-- **Apple Silicon**: Metal Performance Schedulers (MPS), FP32
-- **CPU**: Fallback with appropriate settings
-
-## 📊 Monitoring
-
-Training progress is logged with:
-- Loss metrics and gradients
-- Routing statistics (tokens selected/processed)
-- Model efficiency metrics
-- Hardware utilization
-
-## 🔧 Development
-
-### Adding New Models
-
-1. Create model implementation in `src/models/new_model/`
-2. Inherit from `BaseDynamicModel` or implement standard interface
-3. Create config files: `new_model_scratch.yaml`, `new_model_transfer.yaml`
-4. Register in training utilities
-
-### Model Interface
-
-All models follow a unified interface:
-```python
-class MyModel(BaseDynamicModel):
-    def forward(self, input_ids, **kwargs):
-        # Return: CausalLMOutputWithPast
-        pass
+**Example:**
+```bash
+python bench.py --model_path outputs/experiment-stt-2025-10-16_10-00-00-0.5B/final_model --tasks general,math
 ```
 
-## 📚 Documentation
-
-- **[DTF-Spec.md](DTF-Spec.md)**: Dynamic Transformer architecture details
-- **[MoD-Spec.md](MoD-Spec.md)**: Mixture of Depths architecture details
-- **[Qwen-Spec.md](Qwen-Spec.md)**: Qwen2.5 baseline architecture details
-- **[TDTF-Spec.md](TDTF-Spec.md)**: Temporal Dynamic Transformer architecture details
-- **[TRAINING_GUIDE.md](TRAINING_GUIDE.md)**: Comprehensive training guide
-
-## 🚀 Performance
-
-All models are optimized for efficiency:
-
-- **Standard Transformer**: Full computational baseline
-- **DTF**: ~7-8x computational savings with comparable performance
-- **MoD**: ~7-8x computational savings with learned routing
-- **TDTF**: Designed for efficient temporal processing.
-
-Memory usage scales with model size:
-- **0.5B models**: ~3-4GB GPU memory
-- **1.5B models**: ~8-10GB GPU memory
-- **3B models**: ~16-20GB GPU memory
-- **10M models**: Minimal memory usage, suitable for CPU.
-
-## 📄 License
-
-See LICENSE file for details.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch
-3. Follow existing code style and architecture patterns
-4. Add tests for new functionality
-5. Submit pull request
-
-## 📞 Support
-
-For issues and questions:
-1. Check existing documentation
-2. Review configuration files
-3. Open GitHub issue with:
-   - Error logs
-   - System information
-   - Reproduction steps
+The script will print a summary table of the results and save a detailed JSON file in the model directory.

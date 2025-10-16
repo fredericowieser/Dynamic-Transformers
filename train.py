@@ -363,7 +363,7 @@ def main(cfg: DictConfig):
 
             eval_command = [
                 "python",
-                "run_benchmark_eval.py",
+                "bench.py",
                 "--model_path",
                 str(save_path),
                 "--tasks",

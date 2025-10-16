@@ -44,6 +44,8 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     for key, value in model_cfg_dict.items():
         setattr(config, key, value)
 
+    config.model_type = model_type
+
     # Handle special cases like attention implementation
     if cfg.system.get("use_flash_attention", False):
         config.attn_implementation = model_cfg.get("attn_implementation", "flash_attention_2")

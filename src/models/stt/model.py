@@ -11,6 +11,7 @@ from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.priors import BasePriorNetwork
 from ..base.routers import BaseSurpriseRouter, STTCausalRouter
+from ..configs import STTConfig
 
 log = logging.getLogger(__name__)
 
@@ -223,6 +224,7 @@ class STTLayer(nn.Module):
 
 
 class STTForCausalLM(BaseForCausalLM):
+    config_class = STTConfig
     _supports_flash_attn_2 = True
 
     def __init__(self, config, model_type: str = None, **kwargs):
