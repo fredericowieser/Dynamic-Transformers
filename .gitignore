@@ -58,3 +58,8 @@ docs/_build/
 # PyBuilder
 target/
 maildir
+
+# Specific to this project
+data/
+outputs/
+.DS_Store
