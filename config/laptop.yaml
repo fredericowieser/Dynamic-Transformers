@@ -9,7 +9,7 @@ run:
   name: "laptop-debug-${now:%Y-%m-%d_%H-%M-%S}"
 
 model:
-  type: standard  # standard, mod, sdt, stt
+  type: mod  # standard, mod, sdt, stt
   size: 10M
   from_scratch: true
   attn_implementation: "eager"
@@ -26,12 +26,8 @@ data:
   batch_size: 2
   tokenizer_name: "Qwen/Qwen2.5-0.5B" # Use a real tokenizer
   block_size: 256
-  dataset_configs:
-    - type: "pretrain"
-      dataset_name: "wikitext"
-      dataset_config: "wikitext-103-raw-v1"
-      text_column: "text"
-      train_subset_ratio: 0.001 # Very small subset
+  num_shards_train: 1
+  num_shards_val: 1
 
 training:
   mode: scratch

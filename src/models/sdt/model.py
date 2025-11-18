@@ -24,7 +24,7 @@ class SDTPriorNetwork(BasePriorNetwork):
 
 class SDTRouter(BaseSurpriseRouter):
     def __init__(self, config, model_params: Dict):
-        super().__init__(config, capacity_attr="capacity", model_cfg=model_params)
+        super().__init__(config, capacity_attr="capacity")
 
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         actual_residual, predicted_residual = args[0], args[1]
@@ -183,8 +183,8 @@ class SDTForCausalLM(BaseForCausalLM):
     config_class = SDTConfig
     _supports_flash_attn_2 = True
 
-    def __init__(self, config, model_type: str, **kwargs):
-        super().__init__(config, model_type=model_type, **kwargs)
+    def __init__(self, config, **kwargs):
+        super().__init__(config, **kwargs)
         for i in range(0, self.config.num_hidden_layers - 1, 2):
             self.model.layers[i] = SDTPair(self.model.layers[i + 1], config, self.model_params, i)
             self.model.layers[i + 1] = nn.Identity()

@@ -13,7 +13,7 @@ from ..configs import MoDConfig
 
 class MoDRouter(BaseRouter):
     def __init__(self, config, layer_idx: int, model_params: Dict):
-        super().__init__(config, capacity_attr="capacity", model_cfg=model_params)
+        super().__init__(config, capacity_attr="capacity")
         self.router = nn.Linear(config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states, **kwargs):
@@ -174,8 +174,8 @@ class MoDForCausalLM(BaseForCausalLM):
     config_class = MoDConfig
     _supports_flash_attn_2 = True
 
-    def __init__(self, config, model_type: str, **kwargs):
-        super().__init__(config, model_type=model_type, **kwargs)
+    def __init__(self, config, **kwargs):
+        super().__init__(config, **kwargs)
         # Replace standard layers with MoD layers in-place
         for i in range(self.config.num_hidden_layers):
             if i % 2 == 1:

@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Config, Qwen2DecoderLayer, Qwen2ForCausalLM, Qwen2Model, Qwen2RMSNorm,
     create_causal_mask, create_sliding_window_causal_mask)
@@ -13,13 +14,10 @@ log = logging.getLogger(__name__)
 
 class BaseForCausalLM(PreTrainedModel):
 
-    def __init__(self, config: PretrainedConfig, model_type: str = None, **kwargs):
+    def __init__(self, config: PretrainedConfig, **kwargs):
         super().__init__(config, **kwargs)
-        # Make model compatible with HF from_pretrained by allowing model_type to be optional
-        self.config.model_type = model_type or config.model_type
         self.model_params = kwargs
         self.model = Qwen2Model(config)
-        self.model.config.model_type = model_type
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         if config.tie_word_embeddings:
@@ -69,8 +67,6 @@ class BaseForCausalLM(PreTrainedModel):
 
         # Past KV and cache positions
         if use_cache and past_key_values is None:
-            # We don’t create DynamicCache explicitly here; Qwen2Model does this
-            # but for training we typically keep use_cache=False.
             pass
 
         if cache_position is None:
@@ -80,13 +76,10 @@ class BaseForCausalLM(PreTrainedModel):
             )
 
         if position_ids is None:
-            # unsqueezed to [1, T], now expand to [B, T] for all batches
-            position_ids = cache_position.unsqueeze(0)
-            batch_size = inputs_embeds.shape[0]
-            position_ids = position_ids.expand(batch_size, -1)
+            position_ids = cache_position.unsqueeze(0).expand(inputs_embeds.shape[0], -1)
 
-        # Create mask mapping (same contract as Qwen2Model)
-        if not isinstance(causal_mask_mapping := attention_mask, dict):
+        # Create mask mapping
+        if not isinstance(attention_mask, dict):
             mask_kwargs = {
                 "config": self.model.config,
                 "input_embeds": inputs_embeds,
@@ -100,20 +93,11 @@ class BaseForCausalLM(PreTrainedModel):
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(
                     **mask_kwargs
                 )
+        else:
+            causal_mask_mapping = attention_mask
 
         hidden_states = inputs_embeds
-
-        # Create position embeddings once (stock behavior)
-        # Qwen2Model stores rotary_emb internally
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
-
-        # Run layers (allow subclasses to interpose dynamic logic)
-        layer_kwargs = {
-            **kwargs,
-            "attention_mask": causal_mask_mapping["full_attention"],
-            "position_ids": position_ids,
-            "position_embeddings": position_embeddings,
-        }
 
         hidden_states, aux = self._run_layers(
             hidden_states=hidden_states,
@@ -130,62 +114,48 @@ class BaseForCausalLM(PreTrainedModel):
         hidden_states = self.model.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
-        # Cross-entropy loss for the main language modeling task
+        # If no labels, we are in inference mode (e.g., for lm-eval)
+        if labels is None:
+            return CausalLMOutputWithPast(logits=logits)
+
+        # Otherwise, we are in training mode, calculate loss and return custom dict
         lm_loss = None
-        if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss()
-            lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        loss_fct = nn.CrossEntropyLoss()
+        lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
-        # Start with the base LM loss
         total_loss = lm_loss
-
-        # Prepare output dictionary
         out = {"logits": logits, "lm_loss": lm_loss}
-        if aux:
-            out.update(aux)
 
-        # Add auxiliary losses to the total loss and prepare for logging
-        if self.training and "unscaled_losses" in out:
-            log.debug("--- LOSS DEBUG: ENTERING AUX LOSS BLOCK ---")
-            unscaled_losses = out.pop("unscaled_losses")  # Pop from the final output dict
-            log.debug(f"--- LOSS DEBUG: unscaled_losses dict: {unscaled_losses}")
-            for loss_name, unscaled_loss in unscaled_losses.items():
-                # Determine the weight (lambda) for this loss
-                # e.g., for 'mod_router_bce_loss', look for 'mod.aux_loss_weight' in config
-                model_type = loss_name.split("_")[0]  # mod, sdt, stt
-                weight_key = loss_name.replace(f"{model_type}_", "").replace(
-                    "_loss", "_loss_weight"
-                )
-                loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
-                log.debug(f"--- LOSS DEBUG: Processing {loss_name} with weight {loss_weight}")
+        aux_metrics = {}
+        if self.training and aux:
+            if "unscaled_losses" in aux:
+                unscaled_losses = aux.pop("unscaled_losses")
+                for loss_name, unscaled_loss in unscaled_losses.items():
+                    model_type = loss_name.split("_")[0]
+                    weight_key = loss_name.replace(f"{model_type}_", "").replace("_loss", "_loss_weight")
+                    loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
+                    
+                    if unscaled_loss is not None and loss_weight > 0:
+                        scaled_loss = unscaled_loss * loss_weight
+                        total_loss += scaled_loss
+                        aux_metrics[f"loss/{loss_name}_scaled"] = scaled_loss
+                        aux_metrics[f"loss_weight/{loss_name}"] = loss_weight
+                    
+                    aux_metrics[f"loss/{loss_name}_unscaled"] = unscaled_loss
 
-                # Add to total loss
-                if unscaled_loss is not None and loss_weight > 0:
-                    scaled_loss = unscaled_loss * loss_weight
-                    log.debug(
-                        f"--- LOSS DEBUG: lm_loss={total_loss}, unscaled={unscaled_loss}, scaled={scaled_loss}"
-                    )
-                    total_loss = total_loss + scaled_loss
-                    log.debug(f"--- LOSS DEBUG: new total_loss={total_loss}")
-                    out[f"loss/{loss_name}_scaled"] = scaled_loss
-                    out[f"loss_weight/{loss_name}"] = loss_weight
+            for key, value in aux.items():
+                if key.startswith("router_stats"):
+                    for stat_key, stat_value in value.items():
+                        aux_metrics[f"router/{stat_key}"] = stat_value
+                elif key.startswith("beta"):
+                    aux_metrics[f"beta/{key.replace('beta_', '')}"] = value
 
-                out[f"loss/{loss_name}_unscaled"] = unscaled_loss
-        else:
-            log.debug("--- LOSS DEBUG: SKIPPING AUX LOSS BLOCK ---")
-            if not self.training:
-                log.debug("--- LOSS DEBUG: Reason: not self.training")
-            if "unscaled_losses" not in out:
-                log.debug(
-                    f"--- LOSS DEBUG: Reason: 'unscaled_losses' not in output dict. Keys: {out.keys()}"
-                )
-
-        # Final total loss
         out["loss"] = total_loss
-        log.debug(f"--- LOSS DEBUG: Final lm_loss={lm_loss}, final total_loss={out['loss']}")
-
+        if aux_metrics:
+            out["aux_metrics"] = aux_metrics
+        
         return out
 
     def _run_layers(

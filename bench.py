@@ -176,12 +176,15 @@ def main():
     final_results_structure = {"results": all_results}
     serializable_results = _make_json_serializable(final_results_structure)
 
+    # Save results to a file in the model directory
+    output_path = os.path.join(args.model_path, "eval_results.json")
+    with open(output_path, "w") as f:
+        json.dump(serializable_results, f, indent=2)
+    log.info(f"Evaluation results saved to {output_path}")
+
     # Print summary table to stderr for console logging
     log.info("--- Final Benchmark Summary ---")
     print_summary(serializable_results)
-
-    # Print final JSON results to stdout for capture by the parent process
-    print(json.dumps(serializable_results))
 
 
 if __name__ == "__main__":
