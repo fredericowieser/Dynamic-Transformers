@@ -39,6 +39,7 @@ fi
 
 # Install the repo dependencies
 echo "Installing dependencies with uv..."
+export UV_HTTP_TIMEOUT=600
 uv sync
 
 # Activate venv so that `python` uses the project's venv instead of system python
