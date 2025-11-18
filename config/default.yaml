@@ -82,7 +82,7 @@ data:
   local_dir: "data/fineweb"
   num_shards_train: 10
   num_shards_val: 1
-  batch_size: 16
+  batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
 
@@ -90,7 +90,7 @@ training:
   mode: finetune # finetune or scratch
   num_epochs: 1
   max_steps: -1 # If > 0, overrides num_epochs
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 8
   eval_interval: 500
   use_gradient_clipping: False
   gradient_clip_val: 1.0
