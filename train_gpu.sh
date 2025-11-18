@@ -25,6 +25,8 @@ if ! command -v uv &> /dev/null
 then
     echo "uv could not be found, installing it now..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Source the environment to add uv to the PATH for the current session
+    source "$HOME/.local/bin/env"
 fi
 
 # Create a .venv local virtual environment (if it doesn't exist)
