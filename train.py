@@ -169,7 +169,9 @@ def main(cfg: DictConfig):
                     with torch.no_grad():
                         eval_x, eval_y = eval_batch
                         val_outputs = model(input_ids=eval_x, labels=eval_y)
-                        eval_losses.append(accelerator.gather(val_outputs["loss"]))
+                        # Unsqueeze the loss to make it a 1D tensor before gathering
+                        loss_tensor = val_outputs["loss"].unsqueeze(0)
+                        eval_losses.append(accelerator.gather(loss_tensor))
                 
                 if eval_losses:
                     val_loss = torch.mean(torch.cat(eval_losses))
