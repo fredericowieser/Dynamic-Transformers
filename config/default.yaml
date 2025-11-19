@@ -109,8 +109,9 @@ training:
       base_model: 1.0e-5
 
       # MoD Learning Rates
-      mod_router: 1.0e-3
-      mod_causal_router: 1.0e-3
+      # FIX: Lowered router learning rate to 1.0e-4 to prevent early saturation and instability.
+      mod_router: 1.0e-4
+      mod_causal_router: 1.0e-4
 
       # SDT Learning Rates
       sdt_prior: 1.0e-3
