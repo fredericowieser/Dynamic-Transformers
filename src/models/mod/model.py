@@ -78,7 +78,7 @@ class MoDLayer(nn.Module):
             scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(
                 hidden_states
             )
-            layer_losses["mod_router_bce_loss"] = router_bce_loss
+            layer_losses["mod_aux_loss"] = router_bce_loss
 
             # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
             # This prevents exploding residuals where the scalar multiplier grows unbounded.
@@ -89,7 +89,7 @@ class MoDLayer(nn.Module):
                 predictor_loss = F.binary_cross_entropy_with_logits(
                     predictor_logits, binary_targets.detach()
                 )
-                layer_losses["mod_causal_predictor_loss"] = predictor_loss
+                layer_losses["mod_predictor_loss"] = predictor_loss
 
             B, T, D = hidden_states.shape
             k = topk_idx.shape[1]
@@ -145,11 +145,14 @@ class MoDLayer(nn.Module):
                     hidden_states
                 )
 
+                # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
+                gating_probs = torch.sigmoid(gating_scores)
+
                 B, T, D = hidden_states.shape
                 k = topk_idx.shape[1]  # k is already determined by topk_idx
                 batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
 
-                gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
+                gating_scores_for_selected = gating_probs.reshape(-1)  # Reshape to 1D
 
                 new_states, _, _ = self.block.process_selected(
                     hidden_states,
