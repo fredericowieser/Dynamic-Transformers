@@ -57,7 +57,7 @@ class DynamicBlock(nn.Module):
         is_fixed_k = (num_selected_total > 0) and (num_selected_total % B == 0)
         
         # Use custom kernel only if available, enabled, and for fixed-k routing
-        if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn._attn_implementation == "flash_attention_2" and is_fixed_k:
+        if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
             
             k = num_selected_total // B
             topk_idx = token_indices.view(B, k)
