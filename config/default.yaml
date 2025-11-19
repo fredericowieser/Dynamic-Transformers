@@ -84,7 +84,7 @@ data:
   num_shards_val: 1
   batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
-  block_size: 2048
+  block_size: 1024
 
 training:
   mode: finetune # finetune or scratch
