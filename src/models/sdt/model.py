@@ -78,7 +78,7 @@ class SDTPair(nn.Module):
         self.train_causal_router = model_params.get("train_causal_router", True)
         if self.train_causal_router:
             self.causal_router = CausalRouter(
-                config, layer_idx=layer_idx, capacity_attr="capacity", model_cfg=model_params
+                config, layer_idx=layer_idx, capacity_attr="capacity"
             )
         else:
             self.causal_router = None
