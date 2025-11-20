@@ -15,7 +15,7 @@ from ..configs import SDTConfig
 
 class SDTPriorNetwork(BasePriorNetwork):
     def __init__(self, config, model_params: Dict):
-        super().__init__(config, model_cfg=model_params)
+        super().__init__(config)
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
