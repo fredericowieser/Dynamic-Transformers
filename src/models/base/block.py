@@ -204,7 +204,8 @@ class DynamicBlock(nn.Module):
                 if gating_scores is None:
                     raise ValueError("gating_scores must be provided for soft gating")
                 delta = processed_tokens - selected_tokens
-                gating_probs = torch.sigmoid(gating_scores.unsqueeze(-1).to(delta.dtype))
+                # gating_scores are already probabilities (0-1) from the router
+                gating_probs = gating_scores.unsqueeze(-1).to(delta.dtype)
                 scaled_delta = delta * gating_probs
                 updated_tokens = selected_tokens + scaled_delta
                 final_hidden_states[batch_indices, token_indices] = updated_tokens

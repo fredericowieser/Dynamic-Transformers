@@ -108,34 +108,30 @@ def setup_optimizer_and_scheduler(
     model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator
 ):
     """Setup optimizers and schedulers based on parameter groups from the model."""
-    unwrapped_model = accelerator.unwrap_model(model)
-    param_groups = unwrapped_model.get_trainable_parameters()
-    optimizers, schedulers = {}, {}
+    # Simplify to a single optimizer group for all parameters
     optimizer_cfg = cfg.training.optimizer
     common_kwargs = {
         "betas": (optimizer_cfg.adam_beta1, optimizer_cfg.adam_beta2),
         "eps": optimizer_cfg.adam_epsilon,
         "weight_decay": optimizer_cfg.weight_decay,
     }
-
-    for group in param_groups:
-        name = group["name"]
-        params = group["params"]
-
-        # Read LR from the new 'lrs' map, with a fallback to the default lr
-        lr = optimizer_cfg.lrs.get(name, optimizer_cfg.lr)
-        log.info(
-            f"Creating optimizer for group '{name}' with {sum(p.numel() for p in params)} params and LR {lr:.2e}"
-        )
-
-        opt = torch.optim.AdamW([{"params": params}], lr=lr, **common_kwargs)
-        optimizers[name] = opt
-        schedulers[name] = get_scheduler(
-            optimizer_cfg.scheduler,
-            optimizer=opt,
-            num_warmup_steps=int(num_training_steps * optimizer_cfg.warmup_ratio),
-            num_training_steps=num_training_steps,
-        )
+    
+    lr = optimizer_cfg.lr
+    log.info(f"Creating single optimizer for all model parameters with LR {lr:.2e}")
+    
+    # Create a single optimizer for the entire model
+    # We filter out params that don't require grad just in case
+    params = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr=lr, **common_kwargs)
+    
+    optimizers = {"model": opt}
+    schedulers = {"model": get_scheduler(
+        optimizer_cfg.scheduler,
+        optimizer=opt,
+        num_warmup_steps=int(num_training_steps * optimizer_cfg.warmup_ratio),
+        num_training_steps=num_training_steps,
+    )}
+    
     return optimizers, schedulers
 
 

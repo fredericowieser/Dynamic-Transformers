@@ -29,17 +29,17 @@ model:
   learn_m_cu: true
 
   # --- Causal Router Control ---
-  train_causal_router: true
-  use_causal_router_in_validation: true
+  train_causal_router: false
+  use_causal_router_in_validation: false
 
   # --- Model-Specific Parameters ---
   sdt:
     prior_loss_weight: 0.05
-    causal_loss_weight: 0.01
+    causal_loss_weight: 0.0
   
   stt:
     tpn_loss_weight: 0.05
-    causal_router_loss_weight: 0.01 # Renamed from causal_loss_weight to match code
+    causal_router_loss_weight: 0.0 # Renamed from causal_loss_weight to match code
     g_threshold: 0.75 # Value between 0 and 1
     use_g_threshold_selection: true # If true, use g_threshold instead of top-k
     g_reg_loss_weight: 0.001 # Weight for g_cont regularization loss, increased for sparsity
@@ -99,28 +99,13 @@ training:
   optimizer:
     scheduler: cosine
     weight_decay: 0.01
-    warmup_ratio: 0.05
+    warmup_ratio: 0.1
     adam_beta1: 0.9
     adam_beta2: 0.95
     adam_epsilon: 1e-6
     lr: 1.0e-5 # Default learning rate
     # NOTE: The learning rates for MoD components are guesses, as the original paper did not specify them.
-    lrs: # Learning rates per parameter group
-      base_model: 1.0e-5
-
-      # MoD Learning Rates
-      mod_router: 1.0e-4
-      mod_causal_router: 1.0e-4
-
-      # SDT Learning Rates
-      sdt_prior: 1.0e-3
-      sdt_router: 1.0e-2
-      sdt_causal_router: 1.0e-3
-
-      # STT Learning Rates
-      stt_transition_network: 1.0e-3
-      stt_predictive_router: 1.0e-2
-      stt_causal_router: 1.0e-3
+    lrs: {} # Learning rates per parameter group
 
 system:
   device: "auto" # auto, cuda, mps, cpu

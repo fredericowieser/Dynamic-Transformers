@@ -22,7 +22,7 @@ def _sparse_fwd_kernel(
     off_b = off_hz // n_heads
     off_h = off_hz % n_heads
 
-    # -- 1. Initialize Pointers --
+    # Initialize Pointers
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
     
@@ -34,19 +34,19 @@ def _sparse_fwd_kernel(
     
     K_base = K + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
     V_base = V + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
-    
-    # -- 2. Load Q and Indices --
+
+    # Load Q and Indices
     q_real_pos = tl.load(Idx_ptr, mask=offs_m < n_selected, other=-1)
     q = tl.load(Q_ptr, mask=offs_m[:, None] < n_selected, other=0.0)
 
-    # -- 3. Initialize Accumulators --
+    # Initialize Accumulators
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
 
     qk_scale = sm_scale * 1.44269504
 
-    # -- 4. Loop over K/V History --
+    # Loop over K/V History
     for start_n in range(0, context_len, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         
@@ -78,7 +78,7 @@ def _sparse_fwd_kernel(
         p = p.to(v.dtype)
         acc = tl.dot(p, v, acc)
 
-    # -- 5. Epilogue --
+    # Epilogue
     l_i_reciprocal = 1.0 / l_i
     acc = acc * l_i_reciprocal[:, None]
     m_i += tl.math.log2(l_i)

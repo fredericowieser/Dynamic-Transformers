@@ -38,26 +38,7 @@ class MoDRouter(BaseRouter):
         return logits, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx
 
 
-class MoDCausalRouter(nn.Module):
-    """
-    A small MLP to predict the top-k selection of the main router for causal inference,
-    as described in the MoD paper (Section 3.5, Method 2).
-    It takes the same input as the main router.
-    """
 
-    def __init__(self, config):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        # A simple 2-layer MLP
-        self.fc1 = nn.Linear(self.hidden_size, self.hidden_size // 4)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(self.hidden_size // 4, 1)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(hidden_states)
-        x = self.act(x)
-        x = self.fc2(x)
-        return x.squeeze(-1)
 
 
 class MoDLayer(nn.Module):
@@ -65,12 +46,7 @@ class MoDLayer(nn.Module):
         super().__init__()
         self.block = DynamicBlock(hf_layer)
         self.router = MoDRouter(config, layer_idx=0, model_params=model_params)
-
-        self.train_causal_router = model_params.get("train_causal_router", True)
-        if self.train_causal_router:
-            self.causal_router = MoDCausalRouter(config)
-        else:
-            self.causal_router = None
+        self.causal_router = None
         self.model_params = model_params
 
     def forward(self, hidden_states, training: bool, **kwargs):
@@ -93,12 +69,7 @@ class MoDLayer(nn.Module):
             # This prevents exploding residuals where the scalar multiplier grows unbounded.
             gating_probs = torch.sigmoid(gating_scores)
 
-            if self.causal_router is not None:
-                predictor_logits = self.causal_router(hidden_states.detach())
-                predictor_loss = F.binary_cross_entropy_with_logits(
-                    predictor_logits, binary_targets.detach()
-                )
-                layer_losses["mod_predictor_loss"] = predictor_loss
+            # Causal router logic removed
 
             B, T, D = hidden_states.shape
             k = topk_idx.shape[1]
@@ -127,61 +98,39 @@ class MoDLayer(nn.Module):
             }
 
         else:  # Inference
-            use_causal = self.model_params.get("use_causal_router_in_validation", True)
+            # Causal router logic removed, always use training router for validation/inference in this simplified version
+            scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(
+                hidden_states
+            )
 
-            if use_causal and self.causal_router is not None:
-                predictor_logits = self.causal_router(hidden_states)
-                is_selected = predictor_logits > 0
+            # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
+            gating_probs = torch.sigmoid(gating_scores)
 
-                batch_idx, token_idx = is_selected.nonzero(as_tuple=True)
+            B, T, D = hidden_states.shape
+            k = topk_idx.shape[1]  # k is already determined by topk_idx
+            batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
 
-                new_states, _, _ = self.block.process_selected(
-                    hidden_states,
-                    batch_indices=batch_idx,
-                    token_indices=token_idx,
-                    gating_scores=None,
-                    use_soft_gating=False,
-                    **kwargs,
-                )
+            gating_scores_for_selected = gating_probs.reshape(-1)  # Reshape to 1D
 
-                layer_metrics = {
-                    "inferred_selected_tokens_proportion": (
-                        is_selected.sum() / is_selected.numel()
-                    ).item()
-                }
-            else:  # Use training-time router for validation
-                scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(
-                    hidden_states
-                )
+            new_states, _, _ = self.block.process_selected(
+                hidden_states,
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores_for_selected,
+                use_soft_gating=True,  # Use soft gating as in training
+                **kwargs,
+            )
 
-                # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
-                gating_probs = torch.sigmoid(gating_scores)
-
-                B, T, D = hidden_states.shape
-                k = topk_idx.shape[1]  # k is already determined by topk_idx
-                batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
-
-                gating_scores_for_selected = gating_probs.reshape(-1)  # Reshape to 1D
-
-                new_states, _, _ = self.block.process_selected(
-                    hidden_states,
-                    batch_indices=batch_idx.reshape(-1),
-                    token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores_for_selected,
-                    use_soft_gating=True,  # Use soft gating as in training
-                    **kwargs,
-                )
-
-                router_probs = torch.sigmoid(scores)
-                num_selected = int(self.router.capacity * scores.shape[1])
-                layer_metrics = {
-                    "router_logits_mean": scores.mean().item(),
-                    "router_logits_std": scores.std().item(),
-                    "router_probs_mean": router_probs.mean().item(),
-                    "router_probs_std": router_probs.std().item(),
-                    "selected_tokens_proportion": num_selected / scores.shape[1],
-                    "g_cont": router_probs.mean().item(),
-                }
+            router_probs = torch.sigmoid(scores)
+            num_selected = int(self.router.capacity * scores.shape[1])
+            layer_metrics = {
+                "router_logits_mean": scores.mean().item(),
+                "router_logits_std": scores.std().item(),
+                "router_probs_mean": router_probs.mean().item(),
+                "router_probs_std": router_probs.std().item(),
+                "selected_tokens_proportion": num_selected / scores.shape[1],
+                "g_cont": router_probs.mean().item(),
+            }
 
         return new_states, layer_losses, layer_metrics
 
@@ -287,15 +236,4 @@ class MoDForCausalLM(BaseForCausalLM):
 
         return hidden_states, aux
 
-    def get_trainable_parameters(self):
-        params_map = {"mod_router": [], "mod_causal_router": [], "base_model": []}
-        for n, p in self.named_parameters():
-            if not p.requires_grad:
-                continue
-            if "causal_router" in n and self.model_params.get("train_causal_router", True):
-                params_map["mod_causal_router"].append(p)
-            elif "router" in n:
-                params_map["mod_router"].append(p)
-            else:
-                params_map["base_model"].append(p)
-        return [{"name": k, "params": v} for k, v in params_map.items() if v]
+

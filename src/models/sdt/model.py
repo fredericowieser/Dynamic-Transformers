@@ -9,7 +9,7 @@ from transformers.models.qwen2.modeling_qwen2 import (Qwen2DecoderLayer,
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.priors import BasePriorNetwork
-from ..base.routers import BaseSurpriseRouter, CausalRouter
+from ..base.routers import BaseSurpriseRouter
 from ..configs import SDTConfig
 
 
@@ -74,14 +74,7 @@ class SDTPair(nn.Module):
         self.decision = SDTDecisionLayer(config, model_params, layer_idx)
         self.router = SDTRouter(config, model_params=model_params)
         self.dynamic = DynamicBlock(hf_layer)
-
-        self.train_causal_router = model_params.get("train_causal_router", True)
-        if self.train_causal_router:
-            self.causal_router = CausalRouter(
-                config, layer_idx=layer_idx, capacity_attr="capacity"
-            )
-        else:
-            self.causal_router = None
+        self.causal_router = None
         self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
@@ -98,17 +91,7 @@ class SDTPair(nn.Module):
             )
             router_stats.update(surprise_stats)
 
-            if self.causal_router is not None:
-                causal_logits, _, _ = self.causal_router(hidden_states.detach())
-                causal_loss = F.binary_cross_entropy_with_logits(
-                    causal_logits, binary_targets.detach()
-                )
-                layer_losses["sdt_causal_router_loss"] = causal_loss
-
-                # Calculate causal router accuracy
-                causal_preds = (torch.sigmoid(causal_logits) > 0.5).float()
-                causal_accuracy = (causal_preds == binary_targets.detach()).float().mean().item()
-                router_stats["causal_router_accuracy"] = causal_accuracy
+            # Causal router logic removed
 
             router_stats["g_cont"] = g_cont.mean().item()
 
@@ -130,51 +113,30 @@ class SDTPair(nn.Module):
                 **kwargs,
             )
         else:  # Inference
-            use_causal = self.model_params.get("use_causal_router_in_validation", True)
+            # Causal router logic removed, always use training router for validation/inference
+            # Run the main router to get selection decisions
+            g_cont, binary_targets, surprise_stats = self.router(
+                actual_res, predicted_res, **kwargs
+            )
+            router_stats.update(surprise_stats)
+            router_stats["g_cont"] = g_cont.mean().item()
 
-            if use_causal and self.causal_router is not None:
-                causal_logits, _, _ = self.causal_router(hidden_states)
+            B, T, D = hidden_states.shape
+            k = max(1, int(T * self.router.capacity))
+            gating_scores, topk_idx = g_cont.topk(k, dim=-1)
+            batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
 
-                B, T, D = hidden_states.shape
-                k = max(1, int(T * self.causal_router.capacity))
-                gating_scores, topk_idx = causal_logits.topk(k, dim=-1)
-                batch_idx = torch.arange(B, device=causal_logits.device).unsqueeze(1).expand(-1, k)
+            gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
 
-                gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
-
-                final_hidden_states, _, _ = self.dynamic.process_selected(
-                    processed_hidden,
-                    batch_indices=batch_idx.reshape(-1),
-                    token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores_for_selected,
-                    use_soft_gating=False,
-                    **kwargs,
-                )
-                router_stats["inferred_selected_tokens_proportion"] = topk_idx.numel() / (B * T)
-            else:  # Use training-time router for validation
-                # Run the main router to get selection decisions
-                g_cont, binary_targets, surprise_stats = self.router(
-                    actual_res, predicted_res, **kwargs
-                )
-                router_stats.update(surprise_stats)
-                router_stats["g_cont"] = g_cont.mean().item()
-
-                B, T, D = hidden_states.shape
-                k = max(1, int(T * self.router.capacity))
-                gating_scores, topk_idx = g_cont.topk(k, dim=-1)
-                batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
-
-                gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
-
-                final_hidden_states, _, _ = self.dynamic.process_selected(
-                    processed_hidden,
-                    batch_indices=batch_idx.reshape(-1),
-                    token_indices=topk_idx.reshape(-1),
-                    gating_scores=gating_scores_for_selected,
-                    use_soft_gating=True,  # Use soft gating as in training
-                    **kwargs,
-                )
-                router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
+            final_hidden_states, _, _ = self.dynamic.process_selected(
+                processed_hidden,
+                batch_indices=batch_idx.reshape(-1),
+                token_indices=topk_idx.reshape(-1),
+                gating_scores=gating_scores_for_selected,
+                use_soft_gating=True,  # Use soft gating as in training
+                **kwargs,
+            )
+            router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
 
         return final_hidden_states, layer_losses, router_stats
 
@@ -290,17 +252,4 @@ class SDTForCausalLM(BaseForCausalLM):
 
         return hidden_states, aux
 
-    def get_trainable_parameters(self):
-        params_map = {"sdt_prior": [], "sdt_router": [], "sdt_causal_router": [], "base_model": []}
-        for n, p in self.named_parameters():
-            if not p.requires_grad:
-                continue
-            if "prior" in n:
-                params_map["sdt_prior"].append(p)
-            elif "causal_router" in n and self.model_params.get("train_causal_router", True):
-                params_map["sdt_causal_router"].append(p)
-            elif "router" in n:
-                params_map["sdt_router"].append(p)
-            else:
-                params_map["base_model"].append(p)
-        return [{"name": k, "params": v} for k, v in params_map.items() if v]
+

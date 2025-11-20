@@ -141,13 +141,8 @@ def main(cfg: DictConfig):
 
             if accelerator.is_main_process:
                 log_metrics = {"train/loss": loss.item()}
-                if "aux_metrics" in outputs:
-                    for k, v in outputs["aux_metrics"].items():
-                        log_metrics[f"train/{k}"] = v.item() if hasattr(v, "item") else v
-                
-                for name, opt in optimizers_dict.items():
-                    if opt.param_groups:
-                        log_metrics[f"lr/{name}"] = opt.param_groups[0]["lr"]
+                # Removed aux_metrics logging as requested
+                # Removed LR logging as requested
 
                 if cfg.logging.wandb.enabled:
                     wandb.log(log_metrics, step=global_step)
