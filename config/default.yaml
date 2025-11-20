@@ -92,24 +92,23 @@ training:
   max_steps: 10000 # If > 0, overrides num_epochs
   accumulate_grad_batches: 8
   eval_interval: 500
-  use_gradient_clipping: False
+  use_gradient_clipping: True
   gradient_clip_val: 1.0
   gradient_checkpointing: True
 
   optimizer:
     scheduler: cosine
     weight_decay: 0.01
-    warmup_ratio: 0.01
+    warmup_ratio: 0.05
     adam_beta1: 0.9
     adam_beta2: 0.95
-    adam_epsilon: 1e-8
+    adam_epsilon: 1e-6
     lr: 1.0e-5 # Default learning rate
     # NOTE: The learning rates for MoD components are guesses, as the original paper did not specify them.
     lrs: # Learning rates per parameter group
       base_model: 1.0e-5
 
       # MoD Learning Rates
-      # FIX: Lowered router learning rate to 1.0e-4 to prevent early saturation and instability.
       mod_router: 1.0e-4
       mod_causal_router: 1.0e-4
 

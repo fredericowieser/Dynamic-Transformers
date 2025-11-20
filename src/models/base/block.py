@@ -57,7 +57,9 @@ class DynamicBlock(nn.Module):
         is_fixed_k = (num_selected_total > 0) and (num_selected_total % B == 0)
         
         # Use custom kernel only if available, enabled, and for fixed-k routing
-        if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
+        # Force disable kernel usage for debugging
+        if False: # HARD DISABLE
+        # if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
             
             k = num_selected_total // B
             topk_idx = token_indices.view(B, k)
@@ -202,7 +204,8 @@ class DynamicBlock(nn.Module):
                 if gating_scores is None:
                     raise ValueError("gating_scores must be provided for soft gating")
                 delta = processed_tokens - selected_tokens
-                scaled_delta = delta * gating_scores.unsqueeze(-1).to(delta.dtype)
+                gating_probs = torch.sigmoid(gating_scores.unsqueeze(-1).to(delta.dtype))
+                scaled_delta = delta * gating_probs
                 updated_tokens = selected_tokens + scaled_delta
                 final_hidden_states[batch_indices, token_indices] = updated_tokens
             else:

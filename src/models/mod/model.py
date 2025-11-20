@@ -32,7 +32,10 @@ class MoDRouter(BaseRouter):
         # Return the raw, unscaled loss
         router_bce_loss = F.binary_cross_entropy_with_logits(logits, binary_targets)
 
-        return logits, router_bce_loss, binary_targets, gating_scores, topk_idx
+        # Calculate Z-loss (L2 penalty on logits) to prevent drift
+        router_z_loss = torch.mean(logits**2)
+
+        return logits, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx
 
 
 class MoDCausalRouter(nn.Module):
@@ -75,10 +78,16 @@ class MoDLayer(nn.Module):
         layer_metrics = {}
 
         if training:
-            scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(
-                hidden_states
-            )
+            (
+                scores,
+                router_bce_loss,
+                router_z_loss,
+                binary_targets,
+                gating_scores,
+                topk_idx,
+            ) = self.router(hidden_states)
             layer_losses["mod_aux_loss"] = router_bce_loss
+            layer_losses["mod_z_loss"] = router_z_loss * 1e-4  # Apply coefficient here
 
             # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
             # This prevents exploding residuals where the scalar multiplier grows unbounded.
