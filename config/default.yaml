@@ -11,7 +11,7 @@ run:
   run_final_evaluation: True
 
 model:
-  type: sdt  # standard, mod, sdt, stt
+  type: stt  # standard, mod, sdt, stt
   size: 0.5B
   from_scratch: false
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
