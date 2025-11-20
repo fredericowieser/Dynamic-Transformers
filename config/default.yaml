@@ -80,8 +80,8 @@ data:
   name: "fineweb"
   remote_name: "karpathy/fineweb-edu-100b-shuffle"
   local_dir: "data/fineweb"
-  num_shards_train: 240
-  num_shards_val: 1
+  num_shards_train: 1000
+  num_shards_val: 5
   batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
