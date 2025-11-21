@@ -99,7 +99,7 @@ class MoDLayer(nn.Module):
 
         else:  # Inference
             # Causal router logic removed, always use training router for validation/inference in this simplified version
-            scores, router_bce_loss, binary_targets, gating_scores, topk_idx = self.router(
+            scores, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx = self.router(
                 hidden_states
             )
 
