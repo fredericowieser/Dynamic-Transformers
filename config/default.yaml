@@ -12,7 +12,7 @@ run:
 
 model:
   type: stt  # standard, mod, sdt, stt
-  size: 0.5B
+  size: 1.5B
   from_scratch: true
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
   tie_word_embeddings: True
@@ -63,6 +63,12 @@ model:
     max_position_embeddings: 32768
     rope_theta: 1000000.0
     sliding_window: 131072
+    "1.5B":
+      hidden_size: 1536
+      intermediate_size: 8960
+      num_hidden_layers: 28
+      num_attention_heads: 12
+      num_key_value_heads: 2
     "0.5B":
       hidden_size: 896
       intermediate_size: 4864
