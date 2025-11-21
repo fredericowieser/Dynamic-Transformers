@@ -148,9 +148,7 @@ class STTLayer(nn.Module):
             if use_g_threshold:
                 selected_mask = g_cont >= g_threshold
                 batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-                router_stats["selected_tokens_proportion"] = (
-                    selected_mask.sum() / (B * T)
-                ).item()
+                router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
             else:
                 k = max(1, int(T * self.predictive_router.capacity))
                 _, topk_idx = g_cont.topk(k, dim=-1)
@@ -275,5 +273,3 @@ class STTForCausalLM(BaseForCausalLM):
             aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont_across_layers.item()
 
         return hidden_states, aux
-
-

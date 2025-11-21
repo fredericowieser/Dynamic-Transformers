@@ -93,9 +93,9 @@ def main(cfg: DictConfig):
         model, *optimizers_dict.values(), train_loader, eval_loader, *schedulers_dict.values()
     )
     model = prepared_items[0]
-    prepared_optimizers = prepared_items[1:1+len(optimizers_dict)]
-    train_loader, eval_loader = prepared_items[1+len(optimizers_dict):3+len(optimizers_dict)]
-    prepared_schedulers = prepared_items[3+len(optimizers_dict):]
+    prepared_optimizers = prepared_items[1 : 1 + len(optimizers_dict)]
+    train_loader, eval_loader = prepared_items[1 + len(optimizers_dict) : 3 + len(optimizers_dict)]
+    prepared_schedulers = prepared_items[3 + len(optimizers_dict) :]
 
     optimizers_dict = dict(zip(optimizers_dict.keys(), prepared_optimizers))
     schedulers_dict = dict(zip(schedulers_dict.keys(), prepared_schedulers))
@@ -104,7 +104,7 @@ def main(cfg: DictConfig):
     global_step = 0
     best_eval_loss = float("inf")
     progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_main_process)
-    
+
     model.train()
     for batch in train_loader:
         if global_step >= num_training_steps:
@@ -113,13 +113,13 @@ def main(cfg: DictConfig):
         batch_x, batch_y = batch
         batch_x = batch_x.to(accelerator.device)
         batch_y = batch_y.to(accelerator.device)
-        
+
         with accelerator.accumulate(model):
             outputs = model(
-                input_ids=batch_x, 
-                labels=batch_y, 
-                global_step=global_step, 
-                max_steps=num_training_steps
+                input_ids=batch_x,
+                labels=batch_y,
+                global_step=global_step,
+                max_steps=num_training_steps,
             )
             loss = outputs["loss"]
             accelerator.backward(loss)
@@ -127,7 +127,7 @@ def main(cfg: DictConfig):
             if accelerator.sync_gradients:
                 if cfg.training.use_gradient_clipping:
                     accelerator.clip_grad_norm_(model.parameters(), cfg.training.gradient_clip_val)
-                
+
                 for opt in optimizers_dict.values():
                     opt.step()
                 for sch in schedulers_dict.values():
@@ -146,7 +146,7 @@ def main(cfg: DictConfig):
 
                 if cfg.logging.wandb.enabled:
                     wandb.log(log_metrics, step=global_step)
-                
+
                 accelerator.print(f"Step {global_step}: Loss = {loss.item():.4f}")
 
             if global_step > 0 and global_step % cfg.training.eval_interval == 0:
@@ -154,7 +154,8 @@ def main(cfg: DictConfig):
                 eval_losses = []
                 eval_batches = []
                 for i, eval_batch in enumerate(eval_loader):
-                    if i >= 50: break
+                    if i >= 50:
+                        break
                     eval_x, eval_y = eval_batch
                     eval_x = eval_x.to(accelerator.device)
                     eval_y = eval_y.to(accelerator.device)
@@ -167,15 +168,23 @@ def main(cfg: DictConfig):
                         # Unsqueeze the loss to make it a 1D tensor before gathering
                         loss_tensor = val_outputs["loss"].unsqueeze(0)
                         eval_losses.append(accelerator.gather(loss_tensor))
-                
+
                 if eval_losses:
                     val_loss = torch.mean(torch.cat(eval_losses))
                     val_perplexity = torch.exp(val_loss)
-                    
+
                     if accelerator.is_main_process:
                         if cfg.logging.wandb.enabled:
-                            wandb.log({"val/loss": val_loss.item(), "val/perplexity": val_perplexity.item()}, step=global_step)
-                        accelerator.print(f"Validation Loss: {val_loss.item():.4f}, Perplexity: {val_perplexity.item():.2f}")
+                            wandb.log(
+                                {
+                                    "val/loss": val_loss.item(),
+                                    "val/perplexity": val_perplexity.item(),
+                                },
+                                step=global_step,
+                            )
+                        accelerator.print(
+                            f"Validation Loss: {val_loss.item():.4f}, Perplexity: {val_perplexity.item():.2f}"
+                        )
 
                         if val_loss < best_eval_loss:
                             best_eval_loss = val_loss
@@ -183,7 +192,7 @@ def main(cfg: DictConfig):
                             log.info(f"New best model! Saving to {best_model_path}")
                             accelerator.unwrap_model(model).save_pretrained(best_model_path)
                             tokenizer.save_pretrained(best_model_path)
-                
+
                 model.train()
 
     # Final save and evaluation
@@ -200,10 +209,12 @@ def main(cfg: DictConfig):
                 config_path = save_path / "config.json"
                 with open(config_path, "r") as f:
                     config_data = json.load(f)
-                
+
                 correct_model_type = cfg.model.type
                 if config_data.get("model_type") != correct_model_type:
-                    log.warning(f"Overwriting incorrect model_type in config.json. Was: {config_data.get('model_type')}, should be: {correct_model_type}")
+                    log.warning(
+                        f"Overwriting incorrect model_type in config.json. Was: {config_data.get('model_type')}, should be: {correct_model_type}"
+                    )
                     config_data["model_type"] = correct_model_type
                     with open(config_path, "w") as f:
                         json.dump(config_data, f, indent=2)
@@ -218,22 +229,38 @@ def main(cfg: DictConfig):
             torch.cuda.empty_cache()
 
             import subprocess
-            eval_command = ["python", "bench.py", "--model_path", str(save_path), "--tasks", cfg.lm_eval.tasks, "--batch_size", str(cfg.lm_eval.batch_size)]
+
+            eval_command = [
+                "python",
+                "bench.py",
+                "--model_path",
+                str(save_path),
+                "--tasks",
+                cfg.lm_eval.tasks,
+                "--batch_size",
+                str(cfg.lm_eval.batch_size),
+            ]
             log.info(f"Running evaluation: {' '.join(eval_command)}")
             try:
                 result = subprocess.run(eval_command, check=True, capture_output=True, text=True)
                 log.info("Benchmark evaluation complete.")
                 if cfg.logging.wandb.enabled:
                     eval_results = json.loads(result.stdout)
-                    summary_metrics = {f"lm_eval/final/{task}/{metric}": value for task, res in eval_results.get("results", {}).items() for metric, value in res.items() if isinstance(value, (int, float))}
+                    summary_metrics = {
+                        f"lm_eval/final/{task}/{metric}": value
+                        for task, res in eval_results.get("results", {}).items()
+                        for metric, value in res.items()
+                        if isinstance(value, (int, float))
+                    }
                     wandb.run.summary.update(summary_metrics)
             except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
                 log.error(f"Benchmark evaluation failed: {e}")
                 if isinstance(e, subprocess.CalledProcessError):
                     log.error(f"Stderr: {e.stderr}")
-        
+
         if cfg.logging.wandb.enabled:
             wandb.finish()
+
 
 if __name__ == "__main__":
     main()

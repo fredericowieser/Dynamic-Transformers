@@ -251,5 +251,3 @@ class SDTForCausalLM(BaseForCausalLM):
                 )
 
         return hidden_states, aux
-
-

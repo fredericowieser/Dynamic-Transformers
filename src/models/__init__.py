@@ -1,7 +1,7 @@
 from transformers import AutoConfig
 
 from .base.causal_lm import BaseForCausalLM
-from .configs import MoDConfig, SDTConfig, STTConfig, StandardConfig
+from .configs import MoDConfig, SDTConfig, StandardConfig, STTConfig
 from .mod.model import MoDForCausalLM
 from .sdt.model import SDTForCausalLM
 from .standard.model import StandardTransformerForCausalLM

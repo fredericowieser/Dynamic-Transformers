@@ -115,23 +115,25 @@ def setup_optimizer_and_scheduler(
         "eps": optimizer_cfg.adam_epsilon,
         "weight_decay": optimizer_cfg.weight_decay,
     }
-    
+
     lr = optimizer_cfg.lr
     log.info(f"Creating single optimizer for all model parameters with LR {lr:.2e}")
-    
+
     # Create a single optimizer for the entire model
     # We filter out params that don't require grad just in case
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=lr, **common_kwargs)
-    
+
     optimizers = {"model": opt}
-    schedulers = {"model": get_scheduler(
-        optimizer_cfg.scheduler,
-        optimizer=opt,
-        num_warmup_steps=int(num_training_steps * optimizer_cfg.warmup_ratio),
-        num_training_steps=num_training_steps,
-    )}
-    
+    schedulers = {
+        "model": get_scheduler(
+            optimizer_cfg.scheduler,
+            optimizer=opt,
+            num_warmup_steps=int(num_training_steps * optimizer_cfg.warmup_ratio),
+            num_training_steps=num_training_steps,
+        )
+    }
+
     return optimizers, schedulers
 
 

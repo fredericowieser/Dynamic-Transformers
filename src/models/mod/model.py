@@ -38,9 +38,6 @@ class MoDRouter(BaseRouter):
         return logits, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx
 
 
-
-
-
 class MoDLayer(nn.Module):
     def __init__(self, hf_layer: Qwen2DecoderLayer, config, model_params: Dict):
         super().__init__()
@@ -99,8 +96,8 @@ class MoDLayer(nn.Module):
 
         else:  # Inference
             # Causal router logic removed, always use training router for validation/inference in this simplified version
-            scores, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx = self.router(
-                hidden_states
+            scores, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx = (
+                self.router(hidden_states)
             )
 
             # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
@@ -235,5 +232,3 @@ class MoDForCausalLM(BaseForCausalLM):
             )
 
         return hidden_states, aux
-
-

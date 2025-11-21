@@ -6,13 +6,13 @@ import os
 import numpy as np
 import torch
 from lm_eval import simple_evaluate
+from lm_eval.models.huggingface import HFLM
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from src.models.mod.model import MoDForCausalLM
 from src.models.sdt.model import SDTForCausalLM
 from src.models.standard.model import StandardTransformerForCausalLM
 from src.models.stt.model import STTForCausalLM
-from lm_eval.models.huggingface import HFLM
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)

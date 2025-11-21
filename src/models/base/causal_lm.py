@@ -134,15 +134,17 @@ class BaseForCausalLM(PreTrainedModel):
                 unscaled_losses = aux.pop("unscaled_losses")
                 for loss_name, unscaled_loss in unscaled_losses.items():
                     model_type = loss_name.split("_")[0]
-                    weight_key = loss_name.replace(f"{model_type}_", "").replace("_loss", "_loss_weight")
+                    weight_key = loss_name.replace(f"{model_type}_", "").replace(
+                        "_loss", "_loss_weight"
+                    )
                     loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
-                    
+
                     if unscaled_loss is not None and loss_weight > 0:
                         scaled_loss = unscaled_loss * loss_weight
                         total_loss += scaled_loss
                         aux_metrics[f"loss/{loss_name}_scaled"] = scaled_loss
                         aux_metrics[f"loss_weight/{loss_name}"] = loss_weight
-                    
+
                     aux_metrics[f"loss/{loss_name}_unscaled"] = unscaled_loss
 
             for key, value in aux.items():
@@ -155,7 +157,7 @@ class BaseForCausalLM(PreTrainedModel):
         out["loss"] = total_loss
         if aux_metrics:
             out["aux_metrics"] = aux_metrics
-        
+
         return out
 
     def _run_layers(

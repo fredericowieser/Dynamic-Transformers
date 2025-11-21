@@ -13,6 +13,7 @@ from transformers.models.qwen2.modeling_qwen2 import (Qwen2DecoderLayer,
 # Try to import the custom kernel
 try:
     from src.kernels.sparse_causal_flash_attn import sparse_causal_attention
+
     _SPARSE_ATTN_KERNEL_AVAILABLE = True
 except ImportError:
     _SPARSE_ATTN_KERNEL_AVAILABLE = False
@@ -55,12 +56,12 @@ class DynamicBlock(nn.Module):
 
         # Check if we can use the optimized kernel (fixed k per batch item)
         is_fixed_k = (num_selected_total > 0) and (num_selected_total % B == 0)
-        
+
         # Use custom kernel only if available, enabled, and for fixed-k routing
         # Force disable kernel usage for debugging
-        if False: # HARD DISABLE
-        # if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
-            
+        if False:  # HARD DISABLE
+            # if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
+
             k = num_selected_total // B
             topk_idx = token_indices.view(B, k)
             batch_idx_gather = torch.arange(B, device=hidden_states.device).unsqueeze(1)
@@ -75,16 +76,24 @@ class DynamicBlock(nn.Module):
             normed_hidden_states = input_ln(hidden_states)
 
             # 1. Attention
-            q_full = attn_layer.q_proj(normed_hidden_states).view(B, T, attn_layer.num_heads, attn_layer.head_dim)
-            k_full = attn_layer.k_proj(normed_hidden_states).view(B, T, attn_layer.num_key_value_heads, attn_layer.head_dim)
-            v_full = attn_layer.v_proj(normed_hidden_states).view(B, T, attn_layer.num_key_value_heads, attn_layer.head_dim)
+            q_full = attn_layer.q_proj(normed_hidden_states).view(
+                B, T, attn_layer.num_heads, attn_layer.head_dim
+            )
+            k_full = attn_layer.k_proj(normed_hidden_states).view(
+                B, T, attn_layer.num_key_value_heads, attn_layer.head_dim
+            )
+            v_full = attn_layer.v_proj(normed_hidden_states).view(
+                B, T, attn_layer.num_key_value_heads, attn_layer.head_dim
+            )
 
             cos, sin = kwargs["position_embeddings"]
             position_ids = kwargs["position_ids"]
-            
+
             # Apply rotary embeddings to the full Q/K tensors
-            q_full_rotary, k_full_rotary = apply_rotary_pos_emb(q_full, k_full, cos, sin, position_ids)
-            
+            q_full_rotary, k_full_rotary = apply_rotary_pos_emb(
+                q_full, k_full, cos, sin, position_ids
+            )
+
             # Gather the Q for selected tokens
             q_selected_rotary = q_full_rotary[batch_idx_gather, topk_idx]
 
@@ -98,11 +107,11 @@ class DynamicBlock(nn.Module):
                 k_full_repeated,
                 v_full_repeated,
                 topk_idx,
-                attn_layer.softmax_scale
-            ) # Shape: [B, k, H, D_h]
+                attn_layer.softmax_scale,
+            )  # Shape: [B, k, H, D_h]
 
             attn_output_selected = attn_output_selected.reshape(B, k, -1)
-            attn_output_selected = attn_layer.o_proj(attn_output_selected) # Shape: [B, k, D]
+            attn_output_selected = attn_layer.o_proj(attn_output_selected)  # Shape: [B, k, D]
 
             # 2. First Residual
             selected_residual = residual[batch_idx_gather, topk_idx]
@@ -127,9 +136,11 @@ class DynamicBlock(nn.Module):
                 # gating_scores is flattened, needs to be [B, k, 1]
                 gating_scores_reshaped = gating_scores.view(B, k, 1)
                 delta = delta * gating_scores_reshaped.to(delta.dtype)
-            
+
             updated_tokens = original_selected_tokens + delta
-            final_hidden_states.scatter_(1, topk_idx.unsqueeze(-1).expand(-1, -1, D), updated_tokens)
+            final_hidden_states.scatter_(
+                1, topk_idx.unsqueeze(-1).expand(-1, -1, D), updated_tokens
+            )
 
             # The custom kernel doesn't return these, so we return None
             present_key_value = None

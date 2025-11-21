@@ -1,9 +1,10 @@
+import logging
 import os
 import time
-import requests
-import logging
 from multiprocessing import Pool
 from pathlib import Path
+
+import requests
 
 log = logging.getLogger(__name__)
 
