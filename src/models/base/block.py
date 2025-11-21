@@ -59,7 +59,7 @@ class DynamicBlock(nn.Module):
 
         # Use custom kernel only if available, enabled, and for fixed-k routing
         # Force disable kernel usage for debugging
-        if False:  # HARD DISABLE
+        if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
             # if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
 
             k = num_selected_total // B
