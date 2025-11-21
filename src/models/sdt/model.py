@@ -63,7 +63,7 @@ class SDTDecisionLayer(nn.Module):
         actual_residual = processed_hidden - original_hidden
         predicted_residual = prior_hidden - original_hidden
 
-        prior_loss = F.mse_loss(prior_hidden, processed_hidden.detach())
+        prior_loss = F.mse_loss(predicted_residual, actual_residual.detach())
 
         return processed_hidden, actual_residual, predicted_residual, prior_loss
 

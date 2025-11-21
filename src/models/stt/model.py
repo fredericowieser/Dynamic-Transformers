@@ -53,8 +53,6 @@ class STTLayer(nn.Module):
         self.block = DynamicBlock(hf_layer)
         self.transition_network = STTTransitionNetwork(config)
         self.predictive_router = STTPredictiveRouter(config, layer_idx=0, capacity_attr="capacity")
-
-        self.predictive_router = STTPredictiveRouter(config, layer_idx=0, capacity_attr="capacity")
         self.causal_router = None
         self.config = config
 
