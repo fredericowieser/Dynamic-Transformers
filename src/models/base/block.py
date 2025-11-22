@@ -4,11 +4,12 @@ from typing import Optional, Tuple
 import torch
 import torch._dynamo
 import torch.nn as nn
-from transformers.modeling_attn_mask_utils import \
-    _prepare_4d_causal_attention_mask
-from transformers.models.qwen2.modeling_qwen2 import (Qwen2DecoderLayer,
-                                                      apply_rotary_pos_emb,
-                                                      repeat_kv)
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+from transformers.models.qwen2.modeling_qwen2 import (
+    Qwen2DecoderLayer,
+    apply_rotary_pos_emb,
+    repeat_kv,
+)
 
 # Try to import the custom kernel
 try:

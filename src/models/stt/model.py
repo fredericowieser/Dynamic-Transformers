@@ -64,107 +64,57 @@ class STTLayer(nn.Module):
         use_g_threshold = getattr(self.config, "use_g_threshold_selection", False)
         g_threshold = getattr(self.config, "g_threshold", 0.5)
 
+        # First pass through the block to get processed_hidden and residuals
+        out = self.block(hidden_states, **kwargs)
+        processed_hidden = out[0] if isinstance(out, tuple) else out
+
+        actual_residual = processed_hidden - original_hidden
+
+        prev_final_states = torch.cat(
+            [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]], dim=1
+        )
+        predicted_residual = self.transition_network(prev_final_states)
         if self.training:
-            # First pass through the block to get processed_hidden and residuals
-            out = self.block(hidden_states, **kwargs)  # This is the first TF block
-            processed_hidden = out[0] if isinstance(out, tuple) else out
-
-            actual_residual = processed_hidden - original_hidden
-
-            prev_final_states = torch.cat(
-                [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]], dim=1
-            )
-            predicted_residual = self.transition_network(prev_final_states)
             layer_losses["stt_tpn_loss"] = F.mse_loss(predicted_residual, actual_residual.detach())
 
-            g_cont, pred_stats = self.predictive_router(
-                actual_residual, predicted_residual, **kwargs
-            )
-            router_stats.update(pred_stats)
+        g_cont, pred_stats = self.predictive_router(
+            actual_residual, predicted_residual, **kwargs
+        )
+        router_stats.update(pred_stats)
 
-            # Generate binary targets for the causal router based on the configured
-            # routing mode (threshold vs. top-k), ensuring the student learns the correct objective.
-            B, T = g_cont.shape
-            if use_g_threshold:
-                binary_targets = (g_cont >= g_threshold).float()
-            else:  # Top-K
-                k = max(1, int(T * self.predictive_router.capacity))
-                _, topk_idx = g_cont.topk(k, dim=-1)
-                binary_targets = torch.zeros_like(g_cont)
-                binary_targets.scatter_(1, topk_idx, 1.0)
-
-            # Causal router logic removed
-
-            # Determine selected tokens for the second pass based on the teacher's g_cont
-            if use_g_threshold:
-                selected_mask = g_cont >= g_threshold
-                batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-                gating_scores_for_selected = g_cont[selected_mask]
+        B, T, D = hidden_states.shape
+        # Determine selected tokens for the second pass based on g_cont
+        if use_g_threshold:
+            selected_mask = g_cont >= g_threshold
+            batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
+            gating_scores_for_selected = g_cont[selected_mask]
+            if B * T > 0:
                 router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
-            else:
-                k = max(1, int(T * self.predictive_router.capacity))
-                gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
-                gating_scores_for_selected = gating_scores_values.reshape(-1)  # Reshape to 1D
-                batch_indices = (
-                    torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
-                )
-                token_indices = topk_idx.reshape(-1)
+        else:
+            k = max(1, int(T * self.predictive_router.capacity))
+            gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+            gating_scores_for_selected = gating_scores_values.reshape(-1)
+            batch_indices = (
+                torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
+            )
+            token_indices = topk_idx.reshape(-1)
+            if B * T > 0:
                 router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
 
-            # Apply the second TF block only to selected tokens
-            final_hidden_states, _, _ = self.block.process_selected(
-                original_hidden,  # STT uses original_hidden for process_selected
-                batch_indices=batch_indices,
-                token_indices=token_indices,
-                gating_scores=gating_scores_for_selected,
-                use_soft_gating=True,
-                **kwargs,
-            )
-            return final_hidden_states, layer_losses, router_stats, g_cont  # Return g_cont tensor
+        # Apply the second TF block only to selected tokens, always using soft gating
+        final_hidden_states, _, _ = self.block.process_selected(
+            original_hidden,  # STT uses original_hidden for process_selected
+            batch_indices=batch_indices,
+            token_indices=token_indices,
+            gating_scores=gating_scores_for_selected,
+            use_soft_gating=True,  # Unification point
+            **kwargs,
+        )
 
-        else:  # Inference
-            # Causal router logic removed, always use training router for validation/inference
-            # Compute residuals needed for predictive router
-            out = self.block(hidden_states, **kwargs)
-            processed_hidden = out[0] if isinstance(out, tuple) else out
-            actual_residual = processed_hidden - original_hidden
+        # Only return g_cont for regularization loss during training
+        g_cont_for_loss = g_cont if self.training else None
 
-            prev_final_states = torch.cat(
-                [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]],
-                dim=1,
-            )
-            predicted_residual = self.transition_network(prev_final_states)
-
-            # Run predictive router
-            g_cont, pred_stats = self.predictive_router(
-                actual_residual, predicted_residual, **kwargs
-            )
-            router_stats.update(pred_stats)
-
-            B, T, D = hidden_states.shape
-
-            if use_g_threshold:
-                selected_mask = g_cont >= g_threshold
-                batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-                router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
-            else:
-                k = max(1, int(T * self.predictive_router.capacity))
-                _, topk_idx = g_cont.topk(k, dim=-1)
-                batch_indices = (
-                    torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
-                )
-                token_indices = topk_idx.reshape(-1)
-                router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
-
-            final_hidden_states, _, _ = self.block.process_selected(
-                original_hidden,
-                batch_indices=batch_indices,
-                token_indices=token_indices,
-                gating_scores=None,  # No gating scores for hard gating
-                use_soft_gating=False,
-                **kwargs,
-            )
-            return final_hidden_states, layer_losses, router_stats, g_cont
+        return final_hidden_states, layer_losses, router_stats, g_cont_for_loss
 
 
 class STTForCausalLM(BaseForCausalLM):

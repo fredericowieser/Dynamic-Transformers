@@ -3,8 +3,10 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.models.qwen2.modeling_qwen2 import (Qwen2DecoderLayer,
-                                                      Qwen2RMSNorm)
+from transformers.models.qwen2.modeling_qwen2 import (
+    Qwen2DecoderLayer,
+    Qwen2RMSNorm,
+)
 
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
@@ -78,65 +80,43 @@ class SDTPair(nn.Module):
         self.model_params = model_params
 
     def forward(self, hidden_states, **kwargs):
+        # Decision Phase
         processed_hidden, actual_res, predicted_res, prior_loss = self.decision(
             hidden_states, **kwargs
         )
 
-        layer_losses = {"sdt_prior_loss": prior_loss}
-        router_stats = {}
-
+        layer_losses = {}
         if self.training:
-            g_cont, binary_targets, surprise_stats = self.router(
-                actual_res, predicted_res, **kwargs
-            )
-            router_stats.update(surprise_stats)
+            layer_losses["sdt_prior_loss"] = prior_loss
 
-            # Causal router logic removed
+        # Routing Phase
+        g_cont, binary_targets, surprise_stats = self.router(
+            actual_res, predicted_res, **kwargs
+        )
 
-            router_stats["g_cont"] = g_cont.mean().item()
+        router_stats = {}
+        router_stats.update(surprise_stats)
+        router_stats["g_cont"] = g_cont.mean().item()
 
-            B, T, D = hidden_states.shape
-            k = max(1, int(T * self.router.capacity))
-            gating_scores, topk_idx = g_cont.topk(k, dim=-1)
-            batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+        # Dynamic Execution Phase
+        B, T, D = hidden_states.shape
+        k = max(1, int(T * self.router.capacity))
+        gating_scores, topk_idx = g_cont.topk(k, dim=-1)
+        batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
 
+        if B * T > 0:
             router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
 
-            gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
+        gating_scores_for_selected = gating_scores.reshape(-1)
 
-            final_hidden_states, _, _ = self.dynamic.process_selected(
-                processed_hidden,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores_for_selected,
-                use_soft_gating=True,
-                **kwargs,
-            )
-        else:  # Inference
-            # Causal router logic removed, always use training router for validation/inference
-            # Run the main router to get selection decisions
-            g_cont, binary_targets, surprise_stats = self.router(
-                actual_res, predicted_res, **kwargs
-            )
-            router_stats.update(surprise_stats)
-            router_stats["g_cont"] = g_cont.mean().item()
-
-            B, T, D = hidden_states.shape
-            k = max(1, int(T * self.router.capacity))
-            gating_scores, topk_idx = g_cont.topk(k, dim=-1)
-            batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
-
-            gating_scores_for_selected = gating_scores.reshape(-1)  # Reshape to 1D
-
-            final_hidden_states, _, _ = self.dynamic.process_selected(
-                processed_hidden,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores_for_selected,
-                use_soft_gating=True,  # Use soft gating as in training
-                **kwargs,
-            )
-            router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
+        final_hidden_states, _, _ = self.dynamic.process_selected(
+            processed_hidden,
+            batch_indices=batch_idx.reshape(-1),
+            token_indices=topk_idx.reshape(-1),
+            gating_scores=gating_scores_for_selected,
+            use_soft_gating=True,
+            **kwargs,
+        )
 
         return final_hidden_states, layer_losses, router_stats
 

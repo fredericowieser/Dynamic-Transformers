@@ -48,86 +48,51 @@ class MoDLayer(nn.Module):
 
     def forward(self, hidden_states, training: bool, **kwargs):
         layer_losses = {}
-        layer_metrics = {}
+
+        # Run router to get scores and select tokens
+        (
+            scores,
+            router_bce_loss,
+            router_z_loss,
+            binary_targets,
+            gating_scores,
+            topk_idx,
+        ) = self.router(hidden_states)
 
         if training:
-            (
-                scores,
-                router_bce_loss,
-                router_z_loss,
-                binary_targets,
-                gating_scores,
-                topk_idx,
-            ) = self.router(hidden_states)
             layer_losses["mod_aux_loss"] = router_bce_loss
             layer_losses["mod_z_loss"] = router_z_loss * 1e-4  # Apply coefficient here
 
-            # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
-            # This prevents exploding residuals where the scalar multiplier grows unbounded.
-            gating_probs = torch.sigmoid(gating_scores)
+        # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1)
+        gating_probs = torch.sigmoid(gating_scores)
 
-            # Causal router logic removed
+        # Prepare indices for processing
+        B, T, D = hidden_states.shape
+        k = topk_idx.shape[1]
+        batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
+        gating_scores_for_selected = gating_probs.reshape(-1)
 
-            B, T, D = hidden_states.shape
-            k = topk_idx.shape[1]
-            batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
+        # Process selected tokens with soft gating
+        new_states, _, _ = self.block.process_selected(
+            hidden_states,
+            batch_indices=batch_idx.reshape(-1),
+            token_indices=topk_idx.reshape(-1),
+            gating_scores=gating_scores_for_selected,
+            use_soft_gating=True,
+            **kwargs,
+        )
 
-            gating_scores_for_selected = gating_probs.reshape(-1)  # Reshape to 1D
-
-            new_states, _, _ = self.block.process_selected(
-                hidden_states,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores_for_selected,
-                use_soft_gating=True,
-                **kwargs,
-            )
-
-            router_probs = torch.sigmoid(scores)
-            num_selected = int(self.router.capacity * scores.shape[1])
-            layer_metrics = {
-                "router_logits_mean": scores.mean().item(),
-                "router_logits_std": scores.std().item(),
-                "router_probs_mean": router_probs.mean().item(),
-                "router_probs_std": router_probs.std().item(),
-                "selected_tokens_proportion": num_selected / scores.shape[1],
-                "g_cont": router_probs.mean().item(),
-            }
-
-        else:  # Inference
-            # Causal router logic removed, always use training router for validation/inference in this simplified version
-            scores, router_bce_loss, router_z_loss, binary_targets, gating_scores, topk_idx = (
-                self.router(hidden_states)
-            )
-
-            # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1) instead of raw logits.
-            gating_probs = torch.sigmoid(gating_scores)
-
-            B, T, D = hidden_states.shape
-            k = topk_idx.shape[1]  # k is already determined by topk_idx
-            batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
-
-            gating_scores_for_selected = gating_probs.reshape(-1)  # Reshape to 1D
-
-            new_states, _, _ = self.block.process_selected(
-                hidden_states,
-                batch_indices=batch_idx.reshape(-1),
-                token_indices=topk_idx.reshape(-1),
-                gating_scores=gating_scores_for_selected,
-                use_soft_gating=True,  # Use soft gating as in training
-                **kwargs,
-            )
-
-            router_probs = torch.sigmoid(scores)
-            num_selected = int(self.router.capacity * scores.shape[1])
-            layer_metrics = {
-                "router_logits_mean": scores.mean().item(),
-                "router_logits_std": scores.std().item(),
-                "router_probs_mean": router_probs.mean().item(),
-                "router_probs_std": router_probs.std().item(),
-                "selected_tokens_proportion": num_selected / scores.shape[1],
-                "g_cont": router_probs.mean().item(),
-            }
+        # Calculate metrics for logging
+        router_probs = torch.sigmoid(scores)
+        num_selected = int(self.router.capacity * scores.shape[1])
+        layer_metrics = {
+            "router_logits_mean": scores.mean().item(),
+            "router_logits_std": scores.std().item(),
+            "router_probs_mean": router_probs.mean().item(),
+            "router_probs_std": router_probs.std().item(),
+            "selected_tokens_proportion": num_selected / scores.shape[1] if scores.shape[1] > 0 else 0,
+            "g_cont": router_probs.mean().item(),
+        }
 
         return new_states, layer_losses, layer_metrics
 

@@ -6,8 +6,14 @@ import torch.nn as nn
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2Config, Qwen2DecoderLayer, Qwen2ForCausalLM, Qwen2Model, Qwen2RMSNorm,
-    create_causal_mask, create_sliding_window_causal_mask)
+    Qwen2Config,
+    Qwen2DecoderLayer,
+    Qwen2ForCausalLM,
+    Qwen2Model,
+    Qwen2RMSNorm,
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+)
 
 log = logging.getLogger(__name__)
 
