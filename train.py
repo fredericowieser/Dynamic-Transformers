@@ -80,10 +80,30 @@ def main(cfg: DictConfig):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info(f"Model: {total_params/1e6:.1f}M params ({trainable_params/1e6:.1f}M trainable)")
 
-    if cfg.training.max_steps <= 0:
-        raise ValueError("training.max_steps must be a positive integer with streaming dataset.")
-    num_training_steps = cfg.training.max_steps
-    log.info(f"Training will run for {num_training_steps} steps.")
+    if cfg.training.max_steps > 0:
+        num_training_steps = cfg.training.max_steps
+        log.info(f"Training will run for {num_training_steps} steps.")
+    else:
+        log.info(f"max_steps not provided, calculating based on num_epochs: {cfg.training.num_epochs}")
+        if cfg.data.name == "fineweb":
+            # karpathy/fineweb-edu-100b-shuffle has 96,843,011 samples in 10000 shards for the train split.
+            # This gives ~9684.3 samples per shard. We use a conservative integer.
+            SAMPLES_PER_SHARD = 9684
+            num_samples = train_loader.num_shards * SAMPLES_PER_SHARD
+            num_batches_per_epoch = num_samples // cfg.data.batch_size
+            steps_per_epoch = num_batches_per_epoch // cfg.training.accumulate_grad_batches
+            num_training_steps = int(steps_per_epoch * cfg.training.num_epochs)
+        else:
+            raise ValueError(
+                f"Epoch-based training is only supported for 'fineweb' dataset with streaming. "
+                f"Got '{cfg.data.name}'. Please specify training.max_steps."
+            )
+
+        if num_training_steps <= 0:
+            raise ValueError(
+                f"Calculated training steps are {num_training_steps}. Please increase num_epochs."
+            )
+        log.info(f"Training for {cfg.training.num_epochs} epochs, estimated to be {num_training_steps} steps.")
 
     optimizers_dict, schedulers_dict = setup_optimizer_and_scheduler(
         model, cfg, num_training_steps, accelerator
