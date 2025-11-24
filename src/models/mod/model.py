@@ -59,6 +59,10 @@ class MoDLayer(nn.Module):
             topk_idx,
         ) = self.router(hidden_states)
 
+        # Sort indices to ensure causal processing (past cannot see future)
+        topk_idx, sort_indices = topk_idx.sort(dim=-1)
+        gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
+
         if training:
             layer_losses["mod_aux_loss"] = router_bce_loss
             layer_losses["mod_z_loss"] = router_z_loss * 1e-4  # Apply coefficient here

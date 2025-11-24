@@ -93,6 +93,11 @@ class STTLayer(nn.Module):
         else:
             k = max(1, int(T * self.predictive_router.capacity))
             gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+
+            # Sort indices to ensure causal processing (past cannot see future)
+            topk_idx, sort_indices = topk_idx.sort(dim=-1)
+            gating_scores_values = gating_scores_values.gather(dim=-1, index=sort_indices)
+
             gating_scores_for_selected = gating_scores_values.reshape(-1)
             batch_indices = (
                 torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)

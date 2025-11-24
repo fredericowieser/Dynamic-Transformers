@@ -102,6 +102,11 @@ class SDTPair(nn.Module):
         B, T, D = hidden_states.shape
         k = max(1, int(T * self.router.capacity))
         gating_scores, topk_idx = g_cont.topk(k, dim=-1)
+
+        # Sort indices to ensure causal processing (past cannot see future)
+        topk_idx, sort_indices = topk_idx.sort(dim=-1)
+        gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
+
         batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
 
         if B * T > 0:
