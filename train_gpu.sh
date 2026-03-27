@@ -50,6 +50,8 @@ source .venv/bin/activate
 echo "--- Starting training run on GPU ---"
 # Set Hydra to show full stack traces
 export HYDRA_FULL_ERROR=1
+# Enable blocking CUDA launches to pinpoint asynchronous errors
+export CUDA_LAUNCH_BLOCKING=1
 
 # Run training with the default configuration.
 # We explicitly set num_processes=2 to match our SLURM gres=gpu:2 allocation.

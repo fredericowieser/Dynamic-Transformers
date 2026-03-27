@@ -306,8 +306,9 @@ def _sparse_bwd_kernel(
         dq += tl.dot(ds, tl.trans(k.to(v_dtype)))
 
     # Write back dQ
+    # Use explicit cast to match pointer type
     dq_ptr = dQ_base + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
-    tl.store(dq_ptr, dq, mask=offs_m[:, None] < n_selected)
+    tl.store(dq_ptr, dq.to(dQ_base.dtype.element_ty), mask=offs_m[:, None] < n_selected)
 
 
 class SparseCausalAttention(torch.autograd.Function):
@@ -455,7 +456,7 @@ class SparseCausalAttention(torch.autograd.Function):
             BLOCK_N=64,
             HEAD_DIM=D,
             num_warps=4,
-            num_stages=1,
+            num_stages=2,
         )
 
         return (
