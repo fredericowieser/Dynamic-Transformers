@@ -12,7 +12,7 @@ run:
 
 model:
   type: mod  # standard, mod, sdt, stt
-  size: 1.5B
+  size: 0.5B
   from_scratch: true
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
   tie_word_embeddings: True
