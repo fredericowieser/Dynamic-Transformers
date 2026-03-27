@@ -60,7 +60,7 @@ target/
 maildir
 
 # Specific to this project
-data/
+/data/
 outputs/
 .DS_Store
 *.sync-conflict-*
