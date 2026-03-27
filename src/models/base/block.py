@@ -106,22 +106,23 @@ class DynamicBlock(nn.Module):
                 q_full, k_full, cos, sin, position_ids
             )
 
-            # Transpose back to (B, T, heads, head_dim) for gathering
-            q_full_rotary = q_full_rotary.transpose(1, 2)
-            k_full_rotary = k_full_rotary.transpose(1, 2)
+            # Repeat K/V for Grouped-Query Attention while still in (B, H, T, D) format
+            k_full_repeated = repeat_kv(k_full_rotary, num_key_value_groups)
+            v_full_repeated = repeat_kv(v_full.transpose(1, 2), num_key_value_groups)
+
+            # Transpose to (B, T, H, D) for gathering and kernel consumption
+            q_full_rotary_bt = q_full_rotary.transpose(1, 2)
+            k_full_bt = k_full_repeated.transpose(1, 2)
+            v_full_bt = v_full_repeated.transpose(1, 2)
 
             # Gather the Q for selected tokens
-            q_selected_rotary = q_full_rotary[batch_idx_gather, topk_idx]
-
-            # Repeat K/V for Grouped-Query Attention
-            k_full_repeated = repeat_kv(k_full_rotary, num_key_value_groups)
-            v_full_repeated = repeat_kv(v_full, num_key_value_groups)
+            q_selected_rotary = q_full_rotary_bt[batch_idx_gather, topk_idx]
 
             # Call the custom sparse attention kernel
             attn_output_selected = sparse_causal_attention(
                 q_selected_rotary,
-                k_full_repeated,
-                v_full_repeated,
+                k_full_bt,
+                v_full_bt,
                 topk_idx,
                 softmax_scale,
             )  # Shape: [B, k, H, D_h]

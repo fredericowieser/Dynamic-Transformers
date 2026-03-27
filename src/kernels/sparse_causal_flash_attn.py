@@ -23,10 +23,10 @@ def _sparse_fwd_kernel(
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
 
-    Q_ptr = Q + (off_b * stride_qb + off_h * stride_qh).to(tl.int64) + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
-    Idx_ptr = Real_Indices + (off_b * stride_ib).to(tl.int64) + (offs_m * stride_im)
-    K_base = K + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
-    V_base = V + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
+    Q_ptr = Q + (off_b.to(tl.int64) * stride_qb + off_h.to(tl.int64) * stride_qh) + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
+    Idx_ptr = Real_Indices + (off_b.to(tl.int64) * stride_ib) + (offs_m * stride_im)
+    K_base = K + (off_b.to(tl.int64) * stride_kb + off_h.to(tl.int64) * stride_kh)
+    V_base = V + (off_b.to(tl.int64) * stride_vb + off_h.to(tl.int64) * stride_vh)
 
     mask_m = offs_m < n_selected
     mask_md = mask_m[:, None] & (offs_d[None, :] < HEAD_DIM)
@@ -43,7 +43,7 @@ def _sparse_fwd_kernel(
         offs_n = start_n + tl.arange(0, BLOCK_N)
         mask_n = (offs_n < context_len)
 
-        K_ptr = K_base + (offs_n[None, :] * stride_kn + offs_d[:, None] * stride_kk)
+        K_ptr = K_base + (offs_n[None, :].to(tl.int64) * stride_kn + offs_d[:, None].to(tl.int64) * stride_kk)
         k = tl.load(K_ptr, mask=mask_n[None, :] & (offs_d[:, None] < HEAD_DIM), other=0.0)
 
         qk = tl.dot(q, k.to(q.dtype))
@@ -59,15 +59,15 @@ def _sparse_fwd_kernel(
         l_i = l_i * alpha + tl.sum(p, 1)
         m_i = m_i_new
 
-        V_ptr = V_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
+        V_ptr = V_base + (offs_n[:, None].to(tl.int64) * stride_vn + offs_d[None, :].to(tl.int64) * stride_vk)
         v = tl.load(V_ptr, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM), other=0.0)
         acc = tl.dot(p.to(v.dtype), v, acc)
 
     acc = acc / l_i[:, None]
     m_i += tl.math.log2(l_i)
 
-    Out_ptr = Out + (off_b * stride_ob + off_h * stride_oh).to(tl.int64) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
-    M_ptr = M + (off_b * stride_mb + off_h * stride_mh).to(tl.int64) + (offs_m * stride_mm)
+    Out_ptr = Out + (off_b.to(tl.int64) * stride_ob + off_h.to(tl.int64) * stride_oh) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
+    M_ptr = M + (off_b.to(tl.int64) * stride_mb + off_h.to(tl.int64) * stride_mh) + (offs_m * stride_mm)
 
     tl.store(Out_ptr, acc.to(Out.dtype.element_ty), mask=mask_md)
     tl.store(M_ptr, m_i, mask=mask_m)
@@ -90,9 +90,9 @@ def _sparse_bwd_preprocess(
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
 
-    O_ptr = Out + (off_b * stride_ob + off_h * stride_oh).to(tl.int64) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
-    dO_ptr = dO + (off_b * stride_dob + off_h * stride_doh).to(tl.int64) + (offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dok)
-    D_ptr = D + (off_b * stride_db + off_h * stride_dh).to(tl.int64) + (offs_m * stride_dm)
+    O_ptr = Out + (off_b.to(tl.int64) * stride_ob + off_h.to(tl.int64) * stride_oh) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
+    dO_ptr = dO + (off_b.to(tl.int64) * stride_dob + off_h.to(tl.int64) * stride_doh) + (offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dok)
+    D_ptr = D + (off_b.to(tl.int64) * stride_db + off_h.to(tl.int64) * stride_dh) + (offs_m * stride_dm)
 
     mask_m = offs_m < n_selected
     mask_md = mask_m[:, None] & (offs_d[None, :] < HEAD_DIM)
@@ -123,16 +123,16 @@ def _sparse_bwd_kernel(
     off_b = off_hz // n_heads
     off_h = off_hz % n_heads
 
-    K_base = K + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
-    V_base = V + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
-    dK_base = dK + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
-    dV_base = dV + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
-    Q_base = Q + (off_b * stride_qb + off_h * stride_qh).to(tl.int64)
-    dO_base = dO + (off_b * stride_dob + off_h * stride_doh).to(tl.int64)
-    dQ_base = dQ + (off_b * stride_qb + off_h * stride_qh).to(tl.int64)
-    M_base = M + (off_b * stride_mb + off_h * stride_mh).to(tl.int64)
-    D_base = D + (off_b * stride_db + off_h * stride_dh).to(tl.int64)
-    Idx_base = Real_Indices + (off_b * stride_ib).to(tl.int64)
+    K_base = K + (off_b.to(tl.int64) * stride_kb + off_h.to(tl.int64) * stride_kh)
+    V_base = V + (off_b.to(tl.int64) * stride_vb + off_h.to(tl.int64) * stride_vh)
+    dK_base = dK + (off_b.to(tl.int64) * stride_kb + off_h.to(tl.int64) * stride_kh)
+    dV_base = dV + (off_b.to(tl.int64) * stride_vb + off_h.to(tl.int64) * stride_vh)
+    Q_base = Q + (off_b.to(tl.int64) * stride_qb + off_h.to(tl.int64) * stride_qh)
+    dO_base = dO + (off_b.to(tl.int64) * stride_dob + off_h.to(tl.int64) * stride_doh)
+    dQ_base = dQ + (off_b.to(tl.int64) * stride_qb + off_h.to(tl.int64) * stride_qh)
+    M_base = M + (off_b.to(tl.int64) * stride_mb + off_h.to(tl.int64) * stride_mh)
+    D_base = D + (off_b.to(tl.int64) * stride_db + off_h.to(tl.int64) * stride_dh)
+    Idx_base = Real_Indices + (off_b.to(tl.int64) * stride_ib)
 
     qk_scale = sm_scale * 1.44269504
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -160,8 +160,8 @@ def _sparse_bwd_kernel(
         offs_n = start_n + tl.arange(0, BLOCK_N)
         mask_n = (offs_n < context_len)
 
-        k_ptr = K_base + (offs_n[None, :] * stride_kn + offs_d[:, None] * stride_kk)
-        v_ptr = V_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
+        k_ptr = K_base + (offs_n[None, :].to(tl.int64) * stride_kn + offs_d[:, None].to(tl.int64) * stride_kk)
+        v_ptr = V_base + (offs_n[:, None].to(tl.int64) * stride_vn + offs_d[None, :].to(tl.int64) * stride_vk)
         k = tl.load(k_ptr, mask=mask_n[None, :] & (offs_d[:, None] < HEAD_DIM), other=0.0)
         v = tl.load(v_ptr, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM), other=0.0)
 
@@ -179,13 +179,13 @@ def _sparse_bwd_kernel(
         ds = p * (dp - d[:, None])
         ds_in = ds.to(v_dtype)
 
-        dv = tl.dot(tl.trans(p_in), do_in)
-        dv_ptr = dV_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
-        tl.atomic_add(dv_ptr, dv.to(tl.float32), mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
+        dv = tl.dot(tl.trans(p_in), do_in, tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32))
+        dv_ptr = dV_base + (offs_n[:, None].to(tl.int64) * stride_vn + offs_d[None, :].to(tl.int64) * stride_vk)
+        tl.atomic_add(dv_ptr, dv, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
 
-        dk = tl.dot(tl.trans(ds_in), q.to(v_dtype))
-        dk_ptr = dK_base + (offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk)
-        tl.atomic_add(dk_ptr, dk.to(tl.float32), mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
+        dk = tl.dot(tl.trans(ds_in), q.to(v_dtype), tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32))
+        dk_ptr = dK_base + (offs_n[:, None].to(tl.int64) * stride_kn + offs_d[None, :].to(tl.int64) * stride_kk)
+        tl.atomic_add(dk_ptr, dk, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
 
         dq += tl.dot(ds_in, tl.trans(k.to(v_dtype)))
 
