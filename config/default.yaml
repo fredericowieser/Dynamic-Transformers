@@ -86,8 +86,8 @@ data:
   name: "fineweb"
   remote_name: "karpathy/fineweb-edu-100b-shuffle"
   local_dir: "data/fineweb"
-  num_shards_train: 10000
-  num_shards_val: 5
+  num_shards_train: 183
+  num_shards_val: 1
   batch_size: 8
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
   block_size: 1024
@@ -95,7 +95,7 @@ data:
 training:
   mode: finetune # finetune or scratch
   num_epochs: 1
-  max_steps: 10000 # If > 0, overrides num_epochs
+  max_steps: -1 # If > 0, overrides num_epochs
   accumulate_grad_batches: 8
   eval_interval: 500
   use_gradient_clipping: True

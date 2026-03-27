@@ -1,8 +1,9 @@
-#!/bin/bash --login
-#SBATCH --partition=agentS-xlong
-#SBATCH --gres=gpu:h200:1
-#SBATCH --job-name=bench_models
-#SBATCH --time=1-00:00:00
+#!/bin/bash
+#SBATCH --job-name=bigt_dev
+#SBATCH --partition=agent-xlong
+#SBATCH --gres=gpu:2
+#SBATCH --output=slurm_out/%j.out
+#SBATCH --time=5-00:00:00
 
 # This script is a SLURM wrapper for bench.py, designed to run model benchmarking jobs.
 #

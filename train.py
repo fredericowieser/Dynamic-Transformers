@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from src.data.streaming_dataset import StreamingDataset
+from src.data.fineweb_dataloader import FineWebDataloader
 from src.training.utils import (create_model, save_checkpoint,
                                 setup_optimizer_and_scheduler)
 
@@ -45,26 +45,28 @@ def main(cfg: DictConfig):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    log.info("Setting up streaming datasets...")
-    train_loader = StreamingDataset(
+    log.info("Setting up FineWebDataloaders...")
+    train_loader = FineWebDataloader(
         tokenizer=tokenizer,
-        data_dir=cfg.data.local_dir,
-        remote_name=cfg.data.remote_name,
-        num_shards=cfg.data.num_shards_train,
-        batch_size=cfg.data.batch_size,
-        block_size=cfg.data.block_size,
+        B=cfg.data.batch_size,
+        T=cfg.data.block_size,
         split="train",
-        seed=cfg.run.seed,
-    )
-    eval_loader = StreamingDataset(
-        tokenizer=tokenizer,
         data_dir=cfg.data.local_dir,
-        remote_name=cfg.data.remote_name,
-        num_shards=cfg.data.num_shards_val,
-        batch_size=cfg.data.batch_size,
-        block_size=cfg.data.block_size,
+        num_shards=cfg.data.num_shards_train,
+        device=accelerator.device,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
+    )
+    eval_loader = FineWebDataloader(
+        tokenizer=tokenizer,
+        B=cfg.data.batch_size,
+        T=cfg.data.block_size,
         split="val",
-        seed=cfg.run.seed,
+        data_dir=cfg.data.local_dir,
+        num_shards=cfg.data.num_shards_train, # Reuse same shards pool
+        device=accelerator.device,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
     )
 
     log.info(f"Creating {cfg.model.type} model...")
@@ -86,12 +88,13 @@ def main(cfg: DictConfig):
     else:
         log.info(f"max_steps not provided, calculating based on num_epochs: {cfg.training.num_epochs}")
         if cfg.data.name == "fineweb":
-            # karpathy/fineweb-edu-100b-shuffle has 96,843,011 samples in 10000 shards for the train split.
-            # This gives ~9684.3 samples per shard. We use a conservative integer.
-            SAMPLES_PER_SHARD = 9684
+            # karpathy/fineweb-edu-100b-shuffle has ~54.85M tokens per shard.
+            # With best-fit packing and 35% crop loss, we have ~35.65M tokens per shard.
+            # Each sample is block_size tokens.
+            SAMPLES_PER_SHARD = int((54.85e6 * 0.65) // cfg.data.block_size)
             num_samples = train_loader.num_shards * SAMPLES_PER_SHARD
             num_batches_per_epoch = num_samples // cfg.data.batch_size
-            steps_per_epoch = num_batches_per_epoch // cfg.training.accumulate_grad_batches
+            steps_per_epoch = num_batches_per_epoch // (cfg.training.accumulate_grad_batches * accelerator.num_processes)
             num_training_steps = int(steps_per_epoch * cfg.training.num_epochs)
         else:
             raise ValueError(

@@ -1,4 +1,9 @@
 #!/bin/bash
+#SBATCH --job-name=bigt_dev
+#SBATCH --partition=agent-xlong
+#SBATCH --gres=gpu:2
+#SBATCH --output=slurm_out/%j.out
+#SBATCH --time=5-00:00:00
 
 # This script is for running a small-scale training job on a macOS laptop.
 # It handles environment setup and uses the 'laptop.yaml' configuration,
