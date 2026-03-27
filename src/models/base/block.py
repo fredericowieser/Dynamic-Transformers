@@ -58,8 +58,10 @@ class DynamicBlock(nn.Module):
         # Check if we can use the optimized kernel (fixed k per batch item)
         is_fixed_k = (num_selected_total > 0) and (num_selected_total % B == 0)
 
-        # Use custom kernel only if available, enabled, and for fixed-k routing
-        if _SPARSE_ATTN_KERNEL_AVAILABLE and self.layer.self_attn.config._attn_implementation == "flash_attention_2" and is_fixed_k:
+        # Use custom kernel only if available and enabled for fixed-k routing
+        use_kernel = _SPARSE_ATTN_KERNEL_AVAILABLE and is_fixed_k
+        # Ensure we are on a supported platform (Linux for Triton) and not using 'sdpa' which might conflict
+        if use_kernel and torch.cuda.is_available() and self.layer.self_attn.config._attn_implementation != "sdpa":
 
             k = num_selected_total // B
             topk_idx = token_indices.view(B, k)

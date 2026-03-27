@@ -16,7 +16,7 @@ model:
   from_scratch: true
   pretrained_model_name_or_path: "Qwen/Qwen2.5-${model.size}"
   tie_word_embeddings: True
-  attn_implementation: "eager" # eager, flash_attention_2, sdpa
+  attn_implementation: "eager" # eager, sdpa
   use_cache: False
 
   # --- Common Dynamic Model Parameters ---

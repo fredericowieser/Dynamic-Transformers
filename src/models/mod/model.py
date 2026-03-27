@@ -103,7 +103,7 @@ class MoDLayer(nn.Module):
 
 class MoDForCausalLM(BaseForCausalLM):
     config_class = MoDConfig
-    _supports_flash_attn_2 = True
+    _supports_flash_attn_2 = False
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)

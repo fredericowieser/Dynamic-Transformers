@@ -6,7 +6,7 @@ from ..configs import StandardConfig
 
 class StandardTransformerForCausalLM(Qwen2ForCausalLM):
     config_class = StandardConfig
-    _supports_flash_attn_2 = True
+    _supports_flash_attn_2 = False
     """Standard transformer model using Qwen2 architecture.
 
     This is essentially a wrapper around Qwen2ForCausalLM that ensures

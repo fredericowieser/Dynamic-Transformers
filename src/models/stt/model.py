@@ -124,7 +124,7 @@ class STTLayer(nn.Module):
 
 class STTForCausalLM(BaseForCausalLM):
     config_class = STTConfig
-    _supports_flash_attn_2 = True
+    _supports_flash_attn_2 = False
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
