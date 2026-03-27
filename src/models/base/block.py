@@ -77,14 +77,19 @@ class DynamicBlock(nn.Module):
             normed_hidden_states = input_ln(hidden_states)
 
             # 1. Attention
-            q_full = attn_layer.q_proj(normed_hidden_states).view(
-                B, T, attn_layer.num_heads, attn_layer.head_dim
+            config = attn_layer.config
+            num_heads = getattr(attn_layer, "num_heads", config.num_attention_heads)
+            num_key_value_heads = getattr(
+                attn_layer, "num_key_value_heads", config.num_key_value_heads
             )
+            head_dim = getattr(attn_layer, "head_dim", config.hidden_size // num_heads)
+
+            q_full = attn_layer.q_proj(normed_hidden_states).view(B, T, num_heads, head_dim)
             k_full = attn_layer.k_proj(normed_hidden_states).view(
-                B, T, attn_layer.num_key_value_heads, attn_layer.head_dim
+                B, T, num_key_value_heads, head_dim
             )
             v_full = attn_layer.v_proj(normed_hidden_states).view(
-                B, T, attn_layer.num_key_value_heads, attn_layer.head_dim
+                B, T, num_key_value_heads, head_dim
             )
 
             cos, sin = kwargs["position_embeddings"]
