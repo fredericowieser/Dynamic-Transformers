@@ -82,7 +82,7 @@ def _sparse_fwd_kernel(
         k = tl.load(K_ptr, mask=offs_n[None, :] < context_len, other=0.0)
 
         # Compute QK^T
-        qk = tl.dot(q, k)
+        qk = tl.dot(q, k.to(q.dtype.element_ty))
 
         # Apply Sparse Causal Mask
         mask = q_real_pos[:, None] >= offs_n[None, :]
@@ -274,7 +274,7 @@ def _sparse_bwd_kernel(
         v = tl.load(v_ptr, mask=offs_n[:, None] < context_len, other=0.0)
 
         # Recompute Attention
-        qk = tl.dot(q, k)
+        qk = tl.dot(q, k.to(q.dtype.element_ty))
         mask = q_real_pos[:, None] >= offs_n[None, :]
         qk = tl.where(mask & (offs_n[None, :] < context_len), qk, float("-inf"))
 
@@ -282,23 +282,27 @@ def _sparse_bwd_kernel(
         p = tl.where(mask & (offs_n[None, :] < context_len), p, 0.0)
 
         # Compute dV and dK
-        p = p.to(do.dtype)
-        dp = tl.dot(do, tl.trans(v))
+        # Ensure we use the input dtype (likely bf16/fp16) for the dot product
+        v_dtype = v.dtype.element_ty
+        do_in = do.to(v_dtype)
+        p = p.to(v_dtype)
+        
+        dp = tl.dot(do_in, tl.trans(v))
         ds = p * (dp - d[:, None])
-        ds = ds.to(do.dtype)
+        ds = ds.to(v_dtype)
 
         # dV Accumulation (Atomic)
-        dv = tl.dot(tl.trans(p), do)
+        dv = tl.dot(tl.trans(p), do_in)
         dv_ptr = dV_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
         tl.atomic_add(dv_ptr, dv, mask=offs_n[:, None] < context_len)
 
         # dK Accumulation (Atomic)
-        dk = tl.dot(tl.trans(ds), q)
+        dk = tl.dot(tl.trans(ds), q.to(v_dtype))
         dk_ptr = dK_base + (offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk)
         tl.atomic_add(dk_ptr, dk, mask=offs_n[:, None] < context_len)
 
         # dQ Accumulation (Register)
-        dq += tl.dot(ds, tl.trans(k))
+        dq += tl.dot(ds, tl.trans(k.to(v_dtype)))
 
     # Write back dQ
     dq_ptr = dQ_base + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)

@@ -48,10 +48,12 @@ echo "Activating virtual environment..."
 source .venv/bin/activate
 
 echo "--- Starting training run on GPU ---"
-# Run training with the default configuration, but with more steps.
-# We use `accelerate launch` which is the standard way to run scripts
-# that use the Hugging Face Accelerate library.
-accelerate launch train.py \
+# Set Hydra to show full stack traces
+export HYDRA_FULL_ERROR=1
+
+# Run training with the default configuration.
+# We explicitly set num_processes=2 to match our SLURM gres=gpu:2 allocation.
+accelerate launch --num_processes 2 train.py \
     logging.wandb.enabled=true
 
 echo "--- GPU training run finished ---"
