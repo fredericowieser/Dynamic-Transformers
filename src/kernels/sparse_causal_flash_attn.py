@@ -292,14 +292,15 @@ def _sparse_bwd_kernel(
         ds = ds.to(v_dtype)
 
         # dV Accumulation (Atomic)
+        # We must use float32 for atomic_add as bf16 is often not supported
         dv = tl.dot(tl.trans(p), do_in)
         dv_ptr = dV_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
-        tl.atomic_add(dv_ptr, dv, mask=offs_n[:, None] < context_len)
+        tl.atomic_add(dv_ptr, dv.to(tl.float32), mask=offs_n[:, None] < context_len)
 
         # dK Accumulation (Atomic)
         dk = tl.dot(tl.trans(ds), q.to(v_dtype))
         dk_ptr = dK_base + (offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk)
-        tl.atomic_add(dk_ptr, dk, mask=offs_n[:, None] < context_len)
+        tl.atomic_add(dk_ptr, dk.to(tl.float32), mask=offs_n[:, None] < context_len)
 
         # dQ Accumulation (Register)
         dq += tl.dot(ds, tl.trans(k.to(v_dtype)))
@@ -378,8 +379,9 @@ class SparseCausalAttention(torch.autograd.Function):
         _, _, N_CTX, _ = k.shape
 
         dq = torch.empty_like(q)
-        dk = torch.zeros_like(k)
-        dv = torch.zeros_like(v)
+        # Use float32 for dk and dv to support atomic_add
+        dk = torch.zeros_like(k, dtype=torch.float32)
+        dv = torch.zeros_like(v, dtype=torch.float32)
 
         D_pre = torch.empty((B, H, N_SEL), device=q.device, dtype=torch.float32)
 
@@ -456,7 +458,13 @@ class SparseCausalAttention(torch.autograd.Function):
             num_stages=1,
         )
 
-        return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), None, None
+        return (
+            dq.transpose(1, 2),
+            dk.to(q.dtype).transpose(1, 2),
+            dv.to(q.dtype).transpose(1, 2),
+            None,
+            None,
+        )
 
 
 sparse_causal_attention = SparseCausalAttention.apply
