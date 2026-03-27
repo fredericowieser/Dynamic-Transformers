@@ -96,9 +96,17 @@ class DynamicBlock(nn.Module):
             position_ids = kwargs["position_ids"]
 
             # Apply rotary embeddings to the full Q/K tensors
+            # Transformers expects (B, heads, T, head_dim) for RoPE broadcasting
+            q_full = q_full.transpose(1, 2)
+            k_full = k_full.transpose(1, 2)
+            
             q_full_rotary, k_full_rotary = apply_rotary_pos_emb(
                 q_full, k_full, cos, sin, position_ids
             )
+            
+            # Transpose back to (B, T, heads, head_dim) for gathering
+            q_full_rotary = q_full_rotary.transpose(1, 2)
+            k_full_rotary = k_full_rotary.transpose(1, 2)
 
             # Gather the Q for selected tokens
             q_selected_rotary = q_full_rotary[batch_idx_gather, topk_idx]
