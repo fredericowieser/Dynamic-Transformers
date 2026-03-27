@@ -83,6 +83,8 @@ class DynamicBlock(nn.Module):
                 attn_layer, "num_key_value_heads", config.num_key_value_heads
             )
             head_dim = getattr(attn_layer, "head_dim", config.hidden_size // num_heads)
+            softmax_scale = head_dim**-0.5
+            num_key_value_groups = num_heads // num_key_value_heads
 
             q_full = attn_layer.q_proj(normed_hidden_states).view(B, T, num_heads, head_dim)
             k_full = attn_layer.k_proj(normed_hidden_states).view(
@@ -99,11 +101,11 @@ class DynamicBlock(nn.Module):
             # Transformers expects (B, heads, T, head_dim) for RoPE broadcasting
             q_full = q_full.transpose(1, 2)
             k_full = k_full.transpose(1, 2)
-            
+
             q_full_rotary, k_full_rotary = apply_rotary_pos_emb(
                 q_full, k_full, cos, sin, position_ids
             )
-            
+
             # Transpose back to (B, T, heads, head_dim) for gathering
             q_full_rotary = q_full_rotary.transpose(1, 2)
             k_full_rotary = k_full_rotary.transpose(1, 2)
@@ -112,8 +114,8 @@ class DynamicBlock(nn.Module):
             q_selected_rotary = q_full_rotary[batch_idx_gather, topk_idx]
 
             # Repeat K/V for Grouped-Query Attention
-            k_full_repeated = repeat_kv(k_full_rotary, attn_layer.num_key_value_groups)
-            v_full_repeated = repeat_kv(v_full, attn_layer.num_key_value_groups)
+            k_full_repeated = repeat_kv(k_full_rotary, num_key_value_groups)
+            v_full_repeated = repeat_kv(v_full, num_key_value_groups)
 
             # Call the custom sparse attention kernel
             attn_output_selected = sparse_causal_attention(
@@ -121,7 +123,7 @@ class DynamicBlock(nn.Module):
                 k_full_repeated,
                 v_full_repeated,
                 topk_idx,
-                attn_layer.softmax_scale,
+                softmax_scale,
             )  # Shape: [B, k, H, D_h]
 
             attn_output_selected = attn_output_selected.reshape(B, k, -1)
