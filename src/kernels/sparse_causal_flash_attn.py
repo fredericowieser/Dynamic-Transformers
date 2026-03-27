@@ -82,7 +82,7 @@ def _sparse_fwd_kernel(
         k = tl.load(K_ptr, mask=offs_n[None, :] < context_len, other=0.0)
 
         # Compute QK^T
-        qk = tl.dot(q, k.to(q.dtype.element_ty))
+        qk = tl.dot(q, k.to(q.dtype))
 
         # Apply Sparse Causal Mask
         mask = q_real_pos[:, None] >= offs_n[None, :]
@@ -274,7 +274,7 @@ def _sparse_bwd_kernel(
         v = tl.load(v_ptr, mask=offs_n[:, None] < context_len, other=0.0)
 
         # Recompute Attention
-        qk = tl.dot(q, k.to(q.dtype.element_ty))
+        qk = tl.dot(q, k.to(q.dtype))
         mask = q_real_pos[:, None] >= offs_n[None, :]
         qk = tl.where(mask & (offs_n[None, :] < context_len), qk, float("-inf"))
 
@@ -283,7 +283,7 @@ def _sparse_bwd_kernel(
 
         # Compute dV and dK
         # Ensure we use the input dtype (likely bf16/fp16) for the dot product
-        v_dtype = v.dtype.element_ty
+        v_dtype = v.dtype
         do_in = do.to(v_dtype)
         p = p.to(v_dtype)
         
