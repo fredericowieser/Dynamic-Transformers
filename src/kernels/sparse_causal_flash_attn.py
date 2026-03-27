@@ -5,91 +5,52 @@ import triton.language as tl
 
 @triton.jit
 def _sparse_fwd_kernel(
-    Q,
-    K,
-    V,
-    sm_scale,
-    M,
-    Out,
-    Real_Indices,
-    stride_qb,
-    stride_qh,
-    stride_qm,
-    stride_qk,
-    stride_kb,
-    stride_kh,
-    stride_kn,
-    stride_kk,
-    stride_vb,
-    stride_vh,
-    stride_vn,
-    stride_vk,
-    stride_ob,
-    stride_oh,
-    stride_om,
-    stride_ok,
-    stride_ib,
-    stride_im,
-    stride_mb,
-    stride_mh,
-    stride_mm,
-    n_heads,
-    context_len,
-    n_selected,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
+    Q, K, V, sm_scale, M, Out, Real_Indices,
+    stride_qb, stride_qh, stride_qm, stride_qk,
+    stride_kb, stride_kh, stride_kn, stride_kk,
+    stride_vb, stride_vh, stride_vn, stride_vk,
+    stride_ob, stride_oh, stride_om, stride_ok,
+    stride_ib, stride_im,
+    stride_mb, stride_mh, stride_mm,
+    n_heads, context_len, n_selected,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, HEAD_DIM: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
-
     off_b = off_hz // n_heads
     off_h = off_hz % n_heads
 
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
 
-    Q_ptr = (
-        Q
-        + (off_b * stride_qb + off_h * stride_qh).to(tl.int64)
-        + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
-    )
-
+    Q_ptr = Q + (off_b * stride_qb + off_h * stride_qh).to(tl.int64) + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
     Idx_ptr = Real_Indices + (off_b * stride_ib).to(tl.int64) + (offs_m * stride_im)
-
     K_base = K + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
     V_base = V + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
 
-    # Load Q and Indices with 2D mask for Q
     mask_m = offs_m < n_selected
+    mask_md = mask_m[:, None] & (offs_d[None, :] < HEAD_DIM)
     q_real_pos = tl.load(Idx_ptr, mask=mask_m, other=-1)
-    q = tl.load(Q_ptr, mask=mask_m[:, None] & (offs_d[None, :] < HEAD_DIM), other=0.0)
+    q = tl.load(Q_ptr, mask=mask_md, other=0.0)
 
-    # Initialize Accumulators
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
 
     qk_scale = sm_scale * 1.44269504
 
-    # Loop over K/V History
     for start_n in range(0, context_len, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
-        mask_n = offs_n < context_len
+        mask_n = (offs_n < context_len)
 
-        # Load K
         K_ptr = K_base + (offs_n[None, :] * stride_kn + offs_d[:, None] * stride_kk)
         k = tl.load(K_ptr, mask=mask_n[None, :] & (offs_d[:, None] < HEAD_DIM), other=0.0)
 
-        # Compute QK^T
         qk = tl.dot(q, k.to(q.dtype))
-
-        # Apply Sparse Causal Mask
         mask = q_real_pos[:, None] >= offs_n[None, :]
         qk = qk * qk_scale
         qk = tl.where(mask & mask_n[None, :], qk, float("-inf"))
 
-        # Online Softmax
         m_i_new = tl.maximum(m_i, tl.max(qk, 1))
         alpha = tl.math.exp2(m_i - m_i_new)
         p = tl.math.exp2(qk - m_i_new[:, None])
@@ -98,71 +59,39 @@ def _sparse_fwd_kernel(
         l_i = l_i * alpha + tl.sum(p, 1)
         m_i = m_i_new
 
-        # Load V
         V_ptr = V_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
         v = tl.load(V_ptr, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM), other=0.0)
+        acc = tl.dot(p.to(v.dtype), v, acc)
 
-        p = p.to(v.dtype)
-        acc = tl.dot(p, v, acc)
-
-    # Epilogue
-    l_i_reciprocal = 1.0 / l_i
-    acc = acc * l_i_reciprocal[:, None]
+    acc = acc / l_i[:, None]
     m_i += tl.math.log2(l_i)
 
-    Out_ptr = (
-        Out
-        + (off_b * stride_ob + off_h * stride_oh).to(tl.int64)
-        + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
-    )
-
+    Out_ptr = Out + (off_b * stride_ob + off_h * stride_oh).to(tl.int64) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
     M_ptr = M + (off_b * stride_mb + off_h * stride_mh).to(tl.int64) + (offs_m * stride_mm)
 
-    tl.store(Out_ptr, acc.to(Out.dtype.element_ty), mask=mask_m[:, None] & (offs_d[None, :] < HEAD_DIM))
+    tl.store(Out_ptr, acc.to(Out.dtype.element_ty), mask=mask_md)
     tl.store(M_ptr, m_i, mask=mask_m)
 
 
 @triton.jit
 def _sparse_bwd_preprocess(
-    Out,
-    dO,
-    D,
-    stride_ob,
-    stride_oh,
-    stride_om,
-    stride_ok,
-    stride_dob,
-    stride_doh,
-    stride_dom,
-    stride_dok,
-    stride_db,
-    stride_dh,
-    stride_dm,
-    n_heads,
-    n_selected,
-    BLOCK_M: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
+    Out, dO, D,
+    stride_ob, stride_oh, stride_om, stride_ok,
+    stride_dob, stride_doh, stride_dom, stride_dok,
+    stride_db, stride_dh, stride_dm,
+    n_heads, n_selected,
+    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
-
     off_b = off_hz // n_heads
     off_h = off_hz % n_heads
 
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
 
-    O_ptr = (
-        Out
-        + (off_b * stride_ob + off_h * stride_oh).to(tl.int64)
-        + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
-    )
-    dO_ptr = (
-        dO
-        + (off_b * stride_dob + off_h * stride_doh).to(tl.int64)
-        + (offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dok)
-    )
-
+    O_ptr = Out + (off_b * stride_ob + off_h * stride_oh).to(tl.int64) + (offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok)
+    dO_ptr = dO + (off_b * stride_dob + off_h * stride_doh).to(tl.int64) + (offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dok)
     D_ptr = D + (off_b * stride_db + off_h * stride_dh).to(tl.int64) + (offs_m * stride_dm)
 
     mask_m = offs_m < n_selected
@@ -177,60 +106,27 @@ def _sparse_bwd_preprocess(
 
 @triton.jit
 def _sparse_bwd_kernel(
-    Q,
-    K,
-    V,
-    sm_scale,
-    dO,
-    M,
-    D,
-    Real_Indices,
-    dQ,
-    dK,
-    dV,
-    stride_qb,
-    stride_qh,
-    stride_qm,
-    stride_qk,
-    stride_kb,
-    stride_kh,
-    stride_kn,
-    stride_kk,
-    stride_vb,
-    stride_vh,
-    stride_vn,
-    stride_vk,
-    stride_dob,
-    stride_doh,
-    stride_dom,
-    stride_dok,
-    stride_mb,
-    stride_mh,
-    stride_mm,
-    stride_db,
-    stride_dh,
-    stride_dm,
-    stride_ib,
-    stride_im,
-    n_heads,
-    context_len,
-    n_selected,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
+    Q, K, V, sm_scale, dO, M, D, Real_Indices,
+    dQ, dK, dV,
+    stride_qb, stride_qh, stride_qm, stride_qk,
+    stride_kb, stride_kh, stride_kn, stride_kk,
+    stride_vb, stride_vh, stride_vn, stride_vk,
+    stride_dob, stride_doh, stride_dom, stride_dok,
+    stride_mb, stride_mh, stride_mm,
+    stride_db, stride_dh, stride_dm,
+    stride_ib, stride_im,
+    n_heads, context_len, n_selected,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, HEAD_DIM: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
-
     off_b = off_hz // n_heads
     off_h = off_hz % n_heads
 
-    # Base Pointers
     K_base = K + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
     V_base = V + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
     dK_base = dK + (off_b * stride_kb + off_h * stride_kh).to(tl.int64)
     dV_base = dV + (off_b * stride_vb + off_h * stride_vh).to(tl.int64)
-
     Q_base = Q + (off_b * stride_qb + off_h * stride_qh).to(tl.int64)
     dO_base = dO + (off_b * stride_dob + off_h * stride_doh).to(tl.int64)
     dQ_base = dQ + (off_b * stride_qb + off_h * stride_qh).to(tl.int64)
@@ -239,15 +135,12 @@ def _sparse_bwd_kernel(
     Idx_base = Real_Indices + (off_b * stride_ib).to(tl.int64)
 
     qk_scale = sm_scale * 1.44269504
-
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, HEAD_DIM)
 
-    # Masks
     mask_m = offs_m < n_selected
     mask_md = mask_m[:, None] & (offs_d[None, :] < HEAD_DIM)
 
-    # Load Q, dO, M, D, Indices
     q_ptr = Q_base + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
     do_ptr = dO_base + (offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dok)
     m_ptr = M_base + offs_m * stride_mm
@@ -261,53 +154,43 @@ def _sparse_bwd_kernel(
     q_real_pos = tl.load(idx_ptr, mask=mask_m, other=-1)
 
     dq = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
-
     v_dtype = V.dtype.element_ty
 
-    # Loop over K/V blocks
     for start_n in range(0, context_len, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
-        mask_n = offs_n < context_len
+        mask_n = (offs_n < context_len)
 
-        # Load K, V
         k_ptr = K_base + (offs_n[None, :] * stride_kn + offs_d[:, None] * stride_kk)
         v_ptr = V_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
-
         k = tl.load(k_ptr, mask=mask_n[None, :] & (offs_d[:, None] < HEAD_DIM), other=0.0)
         v = tl.load(v_ptr, mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM), other=0.0)
 
-        # Recompute Attention
         qk = tl.dot(q, k.to(q.dtype))
         mask = q_real_pos[:, None] >= offs_n[None, :]
+        qk = qk * qk_scale
         qk = tl.where(mask & mask_n[None, :], qk, float("-inf"))
 
-        p = tl.math.exp2(qk * qk_scale - m[:, None])
+        p = tl.math.exp2(qk - m[:, None])
         p = tl.where(mask & mask_n[None, :], p, 0.0)
 
-        # Compute dV and dK
         do_in = do.to(v_dtype)
         p_in = p.to(v_dtype)
-        
         dp = tl.dot(do_in, tl.trans(v))
         ds = p * (dp - d[:, None])
         ds_in = ds.to(v_dtype)
 
-        # dV Accumulation (Atomic)
         dv = tl.dot(tl.trans(p_in), do_in)
         dv_ptr = dV_base + (offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk)
         tl.atomic_add(dv_ptr, dv.to(tl.float32), mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
 
-        # dK Accumulation (Atomic)
         dk = tl.dot(tl.trans(ds_in), q.to(v_dtype))
         dk_ptr = dK_base + (offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk)
         tl.atomic_add(dk_ptr, dk.to(tl.float32), mask=mask_n[:, None] & (offs_d[None, :] < HEAD_DIM))
 
-        # dQ Accumulation (Register)
         dq += tl.dot(ds_in, tl.trans(k.to(v_dtype)))
 
-    # Write back dQ
     dq_ptr = dQ_base + (offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk)
-    tl.store(dq_ptr, dq.to(dQ_base.dtype.element_ty), mask=mask_md)
+    tl.store(dq_ptr, (dq * qk_scale).to(dQ_base.dtype.element_ty), mask=mask_md)
 
 
 class SparseCausalAttention(torch.autograd.Function):
@@ -354,7 +237,6 @@ class SparseCausalAttention(torch.autograd.Function):
         dq = torch.empty_like(q)
         dk = torch.zeros_like(k, dtype=torch.float32)
         dv = torch.zeros_like(v, dtype=torch.float32)
-
         D_pre = torch.empty((B, H, N_SEL), device=q.device, dtype=torch.float32)
 
         grid_pre = (triton.cdiv(N_SEL, 64), B * H)
@@ -367,7 +249,7 @@ class SparseCausalAttention(torch.autograd.Function):
             BLOCK_M=64, HEAD_DIM=D,
         )
 
-        grid_bwd = (triton.cdiv(N_SEL, 32), B * H)
+        grid_bwd = (triton.cdiv(N_SEL, 16), B * H)
         _sparse_bwd_kernel[grid_bwd](
             q, k, v, ctx.sm_scale, do, M, D_pre, real_indices,
             dq, dk, dv,
@@ -379,7 +261,7 @@ class SparseCausalAttention(torch.autograd.Function):
             D_pre.stride(0), D_pre.stride(1), D_pre.stride(2),
             real_indices.stride(0), real_indices.stride(1),
             H, N_CTX, N_SEL,
-            BLOCK_M=32, BLOCK_N=32, HEAD_DIM=D,
+            BLOCK_M=16, BLOCK_N=16, HEAD_DIM=D,
             num_warps=4, num_stages=1,
         )
 
