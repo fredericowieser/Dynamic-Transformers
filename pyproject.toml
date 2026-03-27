@@ -26,6 +26,9 @@ dev = [
     "pytest",
 ]
 
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+
 [tool.black]
 line-length = 100
 
