@@ -122,7 +122,8 @@ class BaseSurpriseRouter(BaseRouter):
         S_CE = torch.sigmoid(beta_ce * CE)
         S_CU = torch.sigmoid(beta_cu * CU)
 
-        g_cont = S_CE + S_CU - (S_CE * S_CU)
+        # g_cont = S_CE + S_CU - (S_CE * S_CU)
+        g_cont = S_CE
         return g_cont, {
             "S_CE_mean": S_CE.mean().item(),
             "S_CU_mean": S_CU.mean().item(),

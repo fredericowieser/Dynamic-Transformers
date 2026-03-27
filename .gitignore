@@ -63,3 +63,4 @@ maildir
 data/
 outputs/
 .DS_Store
+*.sync-conflict-*
