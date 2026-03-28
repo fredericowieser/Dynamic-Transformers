@@ -25,9 +25,13 @@ log = logging.getLogger(__name__)
 def main(cfg: DictConfig):
     logging.basicConfig(level=cfg.logging.level, format="%(asctime)s - %(levelname)s - %(message)s")
     
-    # Initial accelerator setup
+    # Initial accelerator setup with DDP configuration
+    from accelerate import DistributedDataParallelKwargs
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    
     accelerator = Accelerator(
         mixed_precision=cfg.system.precision,
+        kwargs_handlers=[ddp_kwargs],
     )
 
     log.info(f"Process Index: {accelerator.process_index} | Local Index: {accelerator.local_process_index} | Device: {accelerator.device}")

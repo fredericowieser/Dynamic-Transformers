@@ -71,6 +71,12 @@ class BaseForCausalLM(PreTrainedModel):
             raise ValueError("Specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
+            
+        if self.training:
+            # Ensure the first input to the layer loop has requires_grad=True
+            # This is critical for torch.utils.checkpoint to track gradients
+            # for the parameters inside the checkpointed layers.
+            inputs_embeds.requires_grad_(True)
 
         # Past KV and cache positions
         if use_cache and past_key_values is None:
