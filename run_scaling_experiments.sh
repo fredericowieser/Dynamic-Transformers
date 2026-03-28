@@ -23,8 +23,9 @@ SEQ_LENGTHS="1024,2048,4096,8192,16384,32768"
 MODELS=("mod" "sdt" "stt")
 SIZES=("0.5B" "1.5B" "3B" "7B")
 
-# Set threads
+# Set threads and CUDA config
 export OMP_NUM_THREADS=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 for SIZE in "${SIZES[@]}"; do
     for MODEL in "${MODELS[@]}"; do

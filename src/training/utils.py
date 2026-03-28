@@ -126,6 +126,7 @@ def calculate_vram_optimized_batch_size(
     seq_len = cfg.data.block_size
 
     # Extract model dimensions
+    vocab_size = getattr(model.config, "vocab_size", 151936)
     if hasattr(model.config, "hidden_size"):
         hidden_size = model.config.hidden_size
         num_layers = model.config.num_hidden_layers
@@ -140,41 +141,42 @@ def calculate_vram_optimized_batch_size(
     params = sum(p.numel() for p in model.parameters())
 
     # 1. Estimate Fixed Overhead (Weights + Gradients + Optimizer States)
-    # AdamW with fp32 master weights: 2 (params) + 2 (grads) + 12 (optimizer) = 16 bytes per param
-    # Using a 1.2x buffer for distributed overhead (FSDP/DDP buffers)
-    fixed_overhead_gb = (params * 16 * 1.2) / (1024**3)
+    # AdamW with fp32 master weights: 16 bytes per param
+    # Using a 1.3x buffer for distributed overhead and NCCL buffers
+    fixed_overhead_gb = (params * 16 * 1.3) / (1024**3)
 
     # 2. Estimate Activation Memory per Sample
-    # Eager attention is O(T^2). Seq_len 1024 is relatively small, but still significant.
-    # [B, H, T, T] in half precision = B * H * T * T * 2 bytes
+    # Eager attention matrix: [H, T, T]
     attn_matrix_mem_gb = (num_heads * seq_len * seq_len * 2) / (1024**3)
+    
+    # LOGITS MEMORY: [T, V]
+    # This is often the largest activation for large vocab models!
+    # [1024, 151936] * 2 bytes (bf16) = 300MB per sample
+    # During CrossEntropy, this can be converted to fp32 = 600MB per sample
+    logits_mem_per_sample_gb = (seq_len * vocab_size * 4) / (1024**3)
     
     is_checkpointing = getattr(cfg.training, "gradient_checkpointing", True)
     is_eager = getattr(model.config, "attn_implementation", "eager") == "eager"
-    
-    # Very pessimistic factors for eager attention
-    # Eager attention creates many intermediate tensors (Q, K, V, scores, softmax, etc.)
-    eager_overhead_factor = 4.0 if is_eager else 1.0
+    eager_overhead_factor = 4.0 if is_eager else 1.2
     
     if is_checkpointing:
-        # Boundary: B * T * D * L * 2 bytes (activations stored at checkpoint boundaries)
+        # Boundary: B * T * D * L * 2 bytes
         boundary_mem_per_sample = (seq_len * hidden_size * num_layers * 2) / (1024**3)
-        # Peak: One layer recomputation + intermediates
-        # Factor 8.0 to account for MLPs, Norms, and Attention intermediates
+        # Peak: One layer recomputation (Factor 8) + Attention intermediates
         peak_layer_mem = (seq_len * hidden_size * 8 * 2) / (1024**3) + (attn_matrix_mem_gb * eager_overhead_factor)
-        mem_per_sample_gb = boundary_mem_per_sample + peak_layer_mem
+        mem_per_sample_gb = boundary_mem_per_sample + peak_layer_mem + logits_mem_per_sample_gb
     else:
-        # No checkpointing: Store everything for all layers
-        # Standard transformer factor is ~12-14x T*D*L. 
-        # For eager, we multiply by overhead factor.
-        mem_per_sample_gb = (seq_len * hidden_size * num_layers * 14 * 2 * eager_overhead_factor) / (1024**3) + (attn_matrix_mem_gb * num_layers * eager_overhead_factor)
+        # No checkpointing: All layers + all attention
+        mem_per_sample_gb = (seq_len * hidden_size * num_layers * 14 * 2 * eager_overhead_factor) / (1024**3) + \
+                           (attn_matrix_mem_gb * num_layers * eager_overhead_factor) + \
+                           logits_mem_per_sample_gb
 
     # 3. Get Available VRAM
     if torch.cuda.is_available():
         device_id = accelerator.local_process_index
         total_mem_gb = torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
-        # Safety margin: 30% for kernels, fragmentation, dataloader buffers, and NCCL
-        safe_limit_gb = total_mem_gb * 0.70
+        # Safety margin: 35% for kernels, fragmentation, dataloader, and workspace
+        safe_limit_gb = total_mem_gb * 0.65
         available_vram_gb = safe_limit_gb - fixed_overhead_gb
     else:
         return cfg.data.batch_size, cfg.training.accumulate_grad_batches
