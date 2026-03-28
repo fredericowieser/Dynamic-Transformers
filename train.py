@@ -164,16 +164,21 @@ def main(cfg: DictConfig):
 
             if accelerator.is_main_process:
                 log_metrics = {"train/loss": loss.item()}
+                causal_info = ""
                 
                 if "aux_metrics" in outputs:
                     for k, v in outputs["aux_metrics"].items():
                         if "causal_router" in k:
                             log_metrics[f"train/{k}"] = v
+                            if "loss" in k:
+                                causal_info += f", Causal Loss: {v:.4f}"
+                            elif "acc" in k:
+                                causal_info += f", Causal Acc: {v:.4f}"
 
                 if cfg.logging.wandb.enabled:
                     wandb.log(log_metrics, step=global_step)
 
-                accelerator.print(f"Step {global_step}: Loss = {loss.item():.4f}")
+                accelerator.print(f"Step {global_step}: Loss = {loss.item():.4f}{causal_info}")
 
             if global_step > 0 and global_step % cfg.training.eval_interval == 0:
                 model.eval()
@@ -229,7 +234,7 @@ def main(cfg: DictConfig):
         unwrapped_model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
 
-        # Manually correct the model_type in config.json
+        # Manually correct the model_type and architectures in config.json
         if accelerator.is_main_process:
             try:
                 config_path = save_path / "config.json"
@@ -237,15 +242,32 @@ def main(cfg: DictConfig):
                     config_data = json.load(f)
 
                 correct_model_type = cfg.model.type
+                model_class_map = {
+                    "standard": "StandardTransformerForCausalLM",
+                    "mod": "MoDForCausalLM",
+                    "sdt": "SDTForCausalLM",
+                    "stt": "STTForCausalLM",
+                }
+                correct_arch = model_class_map.get(correct_model_type)
+
+                updated = False
                 if config_data.get("model_type") != correct_model_type:
                     log.warning(
                         f"Overwriting incorrect model_type in config.json. Was: {config_data.get('model_type')}, should be: {correct_model_type}"
                     )
                     config_data["model_type"] = correct_model_type
+                    updated = True
+                
+                if correct_arch and (not config_data.get("architectures") or correct_arch not in config_data["architectures"]):
+                    log.info(f"Adding architecture {correct_arch} to config.json")
+                    config_data["architectures"] = [correct_arch]
+                    updated = True
+
+                if updated:
                     with open(config_path, "w") as f:
                         json.dump(config_data, f, indent=2)
             except Exception as e:
-                log.error(f"Failed to manually correct model_type in config.json: {e}")
+                log.error(f"Failed to manually correct model_type or architectures in config.json: {e}")
 
         if cfg.run.run_final_evaluation and cfg.lm_eval.enabled:
             log.info("Starting final benchmark evaluation...")

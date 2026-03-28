@@ -51,29 +51,16 @@ for MODEL in "${MODELS[@]}"; do
 
     # 3. Evaluate Causal Router
     echo "--> [3/4] Evaluating $MODEL (Causal Router)..."
-    # To test the causal router on evaluation, we would ideally set use_causal_router_in_validation=True in config.json
-    # or pass it as an argument. The bench.py currently just loads the model. We can modify config.json directly.
-    sed -i.bak 's/"use_causal_router_in_validation": false/"use_causal_router_in_validation": true/g' $MODEL_PATH/config.json
-    
-    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8
-
-    # Restore config
-    mv $MODEL_PATH/config.json.bak $MODEL_PATH/config.json
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8 --use_causal_router
 
     # 4. Latency Benchmarking
     echo "--> [4/4] Hardware Latency Benchmarking ($MODEL)..."
-    # Wait, the script iterates over standard, mod, sdt, stt internally.
-    # To make it isolated, we just call the benchmark script which does all models at once
+    echo "    - Non-Causal Latency:"
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "standard,$MODEL"
+    echo "    - Causal Latency:"
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "$MODEL" --use_causal_router
 done
 
 echo "================================================================"
-echo " Running Aggregated Latency Benchmarks (Causal vs Non-Causal)"
+echo " All Tests and Benchmarks for All Models Completed"
 echo "================================================================"
-
-echo "--> Testing Non-Causal Latency"
-python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1
-
-echo "--> Testing Causal Latency"
-python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --use_causal_router
-
-echo "Pipeline Finished Successfully."

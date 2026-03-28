@@ -102,6 +102,11 @@ def main():
         help=f"Comma-separated list of tasks or suites. Available suites: {list(TASK_SUITES.keys())}",
     )
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation.")
+    parser.add_argument(
+        "--use_causal_router",
+        action="store_true",
+        help="If set, uses the causal router during evaluation.",
+    )
     args = parser.parse_args()
 
     task_names = sorted(
@@ -123,6 +128,10 @@ def main():
         device = "cpu"
 
     config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    if args.use_causal_router:
+        log.info("Overriding use_causal_router_in_validation to True for evaluation.")
+        config.use_causal_router_in_validation = True
+    
     model_type = getattr(config, "model_type", "standard")
     model_class_map = {
         "standard": StandardTransformerForCausalLM,
@@ -136,10 +145,12 @@ def main():
 
     log.info(f"Explicitly loading model class: {model_class.__name__}")
     model = model_class.from_pretrained(
-        args.model_path, trust_remote_code=True, torch_dtype="auto", device_map=device
+        args.model_path, config=config, trust_remote_code=True, torch_dtype="auto", device_map=device
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    adaptor = HFLM(pretrained=model, tokenizer=tokenizer)
+    # HFLM works better with a string path if possible, but passing the model is fine
+    # provided it's recognized as a CausalLM.
+    adaptor = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
 
     # Shot counts to align with official Qwen 2.5 evaluations
     shot_counts = {

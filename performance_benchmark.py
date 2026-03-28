@@ -167,6 +167,12 @@ def main():
         action="store_true",
         help="If set, uses the causal router during inference instead of non-causal Top-K.",
     )
+    parser.add_argument(
+        "--model_types",
+        type=str,
+        default="standard,mod,sdt,stt",
+        help="Comma-separated list of model types to benchmark.",
+    )
 
     args = parser.parse_args()
 
@@ -196,7 +202,7 @@ def main():
     cfg.model.use_causal_router_in_validation = args.use_causal_router
     
     all_results = {}
-    model_types_to_benchmark = ["standard", "mod", "sdt", "stt"]
+    model_types_to_benchmark = [mt.strip().lower() for mt in args.model_types.split(",")]
 
     for model_type in model_types_to_benchmark:
         log.info(f"\n--- Initializing and benchmarking {model_type.upper()} model ({args.model_size}) ---")
