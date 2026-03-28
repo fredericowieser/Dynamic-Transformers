@@ -50,10 +50,6 @@ class BaseForCausalLM(PreTrainedModel):
         self.lm_head.load_state_dict(base_model.lm_head.state_dict(), strict=False)
         log.info("Weight copy complete.")
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, Qwen2Model):
-            module.gradient_checkpointing = value
-
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

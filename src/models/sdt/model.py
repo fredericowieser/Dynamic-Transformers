@@ -214,19 +214,39 @@ class SDTForCausalLM(BaseForCausalLM):
 
         for i, layer in enumerate(self.model.layers):
             if isinstance(layer, SDTPair):
-                layer_args["attention_mask"] = mask_mapping[layer.dynamic.layer.attention_type]
+                layer_attn_mask = mask_mapping[layer.dynamic.layer.attention_type]
                 
                 if getattr(self, "gradient_checkpointing", False) and self.training:
                     hidden_states, losses, stats = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
                         hidden_states,
                         use_reentrant=False,
-                        **layer_args,
+                        attention_mask=layer_attn_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                        output_attentions=output_attentions,
+                        beta_ce=beta_ce,
+                        beta_cu=beta_cu,
+                        use_causal_router=use_causal_router,
+                        **kwargs,
                     )
                 else:
                     hidden_states, losses, stats = layer(
                         hidden_states,
-                        **layer_args,
+                        attention_mask=layer_attn_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                        output_attentions=output_attentions,
+                        beta_ce=beta_ce,
+                        beta_cu=beta_cu,
+                        use_causal_router=use_causal_router,
+                        **kwargs,
                     )
                 if self.training:
                     all_losses.append(losses)
@@ -240,7 +260,6 @@ class SDTForCausalLM(BaseForCausalLM):
             elif isinstance(layer, nn.Identity):
                 continue
             else:  # Standard Qwen2DecoderLayer
-                std_layer_args = {k: v for k, v in layer_args.items() if k not in ["beta_ce", "beta_cu", "use_causal_router"]}
                 attn_mask = mask_mapping[layer.attention_type]
                 
                 if getattr(self, "gradient_checkpointing", False) and self.training:
@@ -248,19 +267,24 @@ class SDTForCausalLM(BaseForCausalLM):
                         layer.__call__,
                         hidden_states,
                         attn_mask,
-                        std_layer_args["position_ids"],
-                        std_layer_args["past_key_values"],
-                        std_layer_args["output_attentions"],
-                        std_layer_args["use_cache"],
-                        std_layer_args["cache_position"],
-                        std_layer_args["position_embeddings"],
+                        position_ids,
+                        past_key_values,
+                        output_attentions,
+                        use_cache,
+                        cache_position,
+                        position_embeddings,
                         use_reentrant=False,
                     )
                 else:
                     layer_outputs = layer(
                         hidden_states=hidden_states,
                         attention_mask=attn_mask,
-                        **std_layer_args,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        output_attentions=output_attentions,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
                     )
                     hidden_states = (
                         layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
