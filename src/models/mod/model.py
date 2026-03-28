@@ -163,7 +163,6 @@ class MoDForCausalLM(BaseForCausalLM):
 
         for layer in self.model.layers:
             if isinstance(layer, MoDLayer):
-                # We do NOT modify layer_args in-place to avoid polluting other layers
                 layer_attn_mask = mask_mapping[layer.block.layer.attention_type]
                 
                 if getattr(self, "gradient_checkpointing", False) and self.training:
@@ -174,13 +173,26 @@ class MoDForCausalLM(BaseForCausalLM):
                         False, # use_causal_router
                         use_reentrant=False,
                         attention_mask=layer_attn_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                        output_attentions=output_attentions,
                         **kwargs,
                     )
                 else:
                     hidden_states, losses, mod_metrics = layer(
                         hidden_states,
                         training=self.training,
+                        use_causal_router=False,
                         attention_mask=layer_attn_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                        output_attentions=output_attentions,
                         **kwargs,
                     )
                 all_losses.append(losses)
