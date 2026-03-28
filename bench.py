@@ -160,6 +160,17 @@ def main():
     log.info(f"Explicitly loading model class: {model_class.__name__}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     
+    # Determine if we should use model parallelism
+    num_gpus = torch.cuda.device_count()
+    parallelize = num_gpus > 1
+    
+    if parallelize:
+        log.info(f"Detected {num_gpus} GPUs. Enabling model parallelization for faster evaluation.")
+        # When using parallelize=True, we don't pass 'device' to HFLM
+        hflm_device = None
+    else:
+        hflm_device = device
+
     # Passing the path instead of the model object helps lm-eval manage memory and 
     # reduces 'not a string' warnings. We pass the modified config.
     # Note: AutoModelForCausalLM.register MUST be called before this, 
@@ -168,7 +179,8 @@ def main():
         pretrained=args.model_path,
         tokenizer=tokenizer,
         batch_size=args.batch_size,
-        device=device,
+        device=hflm_device,
+        parallelize=parallelize,
         trust_remote_code=True,
         config=config
     )
@@ -189,6 +201,9 @@ def main():
 
     from tqdm import tqdm
     all_results = {}
+    suffix = "causal" if args.use_causal_router else "non_causal"
+    output_path = os.path.join(output_dir, f"eval_results_{suffix}.json")
+
     pbar = tqdm(task_names, desc="Evaluating tasks")
     for task_name in pbar:
         pbar.set_description(f"Evaluating {task_name}")
@@ -201,25 +216,26 @@ def main():
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
-            device=device,
         )
 
         if "results" in results:
-            all_results.update(results["results"])
+            task_results = results["results"]
+            all_results.update(task_results)
+            
+            # Immediate logging of results for this task
+            task_serializable = _make_json_serializable({"results": task_results})
+            log.info(f"--- Results for {task_name} ---")
+            print_summary(task_serializable)
+            
+            # Save intermediate results to file
+            serializable_results = _make_json_serializable({"results": all_results})
+            with open(output_path, "w") as f:
+                json.dump(serializable_results, f, indent=2)
+            log.info(f"Updated evaluation results saved to {output_path}")
 
-    # Re-create the top-level structure that the rest of the script expects
-    final_results_structure = {"results": all_results}
-    serializable_results = _make_json_serializable(final_results_structure)
-
-    # Save results to a file
-    suffix = "causal" if args.use_causal_router else "non_causal"
-    output_path = os.path.join(output_dir, f"eval_results_{suffix}.json")
-    with open(output_path, "w") as f:
-        json.dump(serializable_results, f, indent=2)
-    log.info(f"Evaluation results saved to {output_path}")
-
-    # Print summary table to stderr for console logging
-    log.info("--- Final Benchmark Summary ---")
+    # Final results summary
+    serializable_results = _make_json_serializable({"results": all_results})
+    log.info("--- Final Full Benchmark Summary ---")
     print_summary(serializable_results)
 
 
