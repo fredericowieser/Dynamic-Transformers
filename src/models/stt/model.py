@@ -226,10 +226,19 @@ class STTForCausalLM(BaseForCausalLM):
         for i, layer in enumerate(self.model.layers):
             if isinstance(layer, STTLayer):
                 layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
-                hidden_states, losses, rstats, g_cont_tensor = layer(
-                    hidden_states,
-                    **layer_args,
-                )
+                
+                if getattr(self, "gradient_checkpointing", False) and self.training:
+                    hidden_states, losses, rstats, g_cont_tensor = torch.utils.checkpoint.checkpoint(
+                        layer.__call__,
+                        hidden_states,
+                        use_reentrant=False,
+                        **layer_args,
+                    )
+                else:
+                    hidden_states, losses, rstats, g_cont_tensor = layer(
+                        hidden_states,
+                        **layer_args,
+                    )
                 all_losses.append(losses)
                 for key, value in rstats.items():
                     all_router_stats[f"stt/layer_{i}/{key}"] = value
@@ -240,14 +249,30 @@ class STTForCausalLM(BaseForCausalLM):
 
             else:  # Standard Qwen2DecoderLayer
                 std_layer_args = {k: v for k, v in layer_args.items() if k not in ["beta_ce", "beta_cu", "use_causal_router"]}
-                std_layer_args["attention_mask"] = mask_mapping[layer.attention_type]
-                layer_outputs = layer(
-                    hidden_states=hidden_states,
-                    **std_layer_args,
-                )
-                hidden_states = (
-                    layer_outputs[0] if isinstance(layer_outputs, tuple) else hidden_states
-                )
+                attn_mask = mask_mapping[layer.attention_type]
+                
+                if getattr(self, "gradient_checkpointing", False) and self.training:
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        layer.__call__,
+                        hidden_states,
+                        attn_mask,
+                        std_layer_args["position_ids"],
+                        std_layer_args["past_key_values"],
+                        std_layer_args["output_attentions"],
+                        std_layer_args["use_cache"],
+                        std_layer_args["cache_position"],
+                        std_layer_args["position_embeddings"],
+                        use_reentrant=False,
+                    )
+                else:
+                    layer_outputs = layer(
+                        hidden_states=hidden_states,
+                        attention_mask=attn_mask,
+                        **std_layer_args,
+                    )
+                    hidden_states = (
+                        layer_outputs[0] if isinstance(layer_outputs, tuple) else hidden_states
+                    )
 
         aux = {}
         agg_losses = {}

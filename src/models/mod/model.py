@@ -164,11 +164,21 @@ class MoDForCausalLM(BaseForCausalLM):
         for layer in self.model.layers:
             if isinstance(layer, MoDLayer):
                 layer_args["attention_mask"] = mask_mapping[layer.block.layer.attention_type]
-                hidden_states, losses, mod_metrics = layer(
-                    hidden_states,
-                    training=self.training,
-                    **layer_args,
-                )
+                
+                if getattr(self, "gradient_checkpointing", False) and self.training:
+                    hidden_states, losses, mod_metrics = torch.utils.checkpoint.checkpoint(
+                        layer.__call__,
+                        hidden_states,
+                        training=self.training,
+                        use_reentrant=False,
+                        **layer_args,
+                    )
+                else:
+                    hidden_states, losses, mod_metrics = layer(
+                        hidden_states,
+                        training=self.training,
+                        **layer_args,
+                    )
                 all_losses.append(losses)
                 all_mod_metrics.append(mod_metrics)
                 if "selected_tokens_proportion" in mod_metrics:
@@ -183,14 +193,30 @@ class MoDForCausalLM(BaseForCausalLM):
             else:  # Standard Qwen2DecoderLayer
                 # Standard layer doesn't expect use_causal_router
                 std_layer_args = {k: v for k, v in layer_args.items() if k != "use_causal_router"}
-                std_layer_args["attention_mask"] = mask_mapping[layer.attention_type]
-                layer_outputs = layer(
-                    hidden_states=hidden_states,
-                    **std_layer_args,
-                )
-                hidden_states = (
-                    layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
-                )
+                attn_mask = mask_mapping[layer.attention_type]
+                
+                if getattr(self, "gradient_checkpointing", False) and self.training:
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        layer.__call__,
+                        hidden_states,
+                        attn_mask,
+                        std_layer_args["position_ids"],
+                        std_layer_args["past_key_values"],
+                        std_layer_args["output_attentions"],
+                        std_layer_args["use_cache"],
+                        std_layer_args["cache_position"],
+                        std_layer_args["position_embeddings"],
+                        use_reentrant=False,
+                    )
+                else:
+                    layer_outputs = layer(
+                        hidden_states=hidden_states,
+                        attention_mask=attn_mask,
+                        **std_layer_args,
+                    )
+                    hidden_states = (
+                        layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
+                    )
 
         aux = {}
         # Aggregate losses

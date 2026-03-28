@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 
 class BaseForCausalLM(PreTrainedModel):
+    supports_gradient_checkpointing = True
 
     def __init__(self, config: PretrainedConfig, **kwargs):
         super().__init__(config, **kwargs)
@@ -188,13 +189,28 @@ class BaseForCausalLM(PreTrainedModel):
         """
         for layer in self.model.layers:
             attn_mask = mask_mapping[layer.attention_type]
-            hidden_states = layer(
-                hidden_states=hidden_states,
-                attention_mask=attn_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
-            )
+            
+            if getattr(self, "gradient_checkpointing", False) and self.training:
+                hidden_states = torch.utils.checkpoint.checkpoint(
+                    layer.__call__,
+                    hidden_states,
+                    attn_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
+                    cache_position,
+                    position_embeddings,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states = layer(
+                    hidden_states=hidden_states,
+                    attention_mask=attn_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                )
         return hidden_states, {}
