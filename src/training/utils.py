@@ -205,14 +205,15 @@ def calculate_vram_optimized_batch_size(
     total_batch_one_step = per_device_batch * num_processes
     accumulate_steps = math.ceil(target_total_batch_size / total_batch_one_step)
 
-    log.info(f"--- VRAM Auto-Configurator (Hyper-Conservative) ---")
-    log.info(f"GPU Total: {total_mem_gb:.2f}GB | Safe Limit: {safe_limit_gb:.2f}GB")
-    log.info(f"Model Overhead: {fixed_overhead_gb:.2f}GB | Attn Implementation: {getattr(model.config, 'attn_implementation', 'unknown')}")
-    log.info(f"Estimated Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
-    log.info(f"Selected Per-Device Batch: {per_device_batch}")
-    log.info(f"Selected Accumulation Steps: {accumulate_steps}")
-    log.info(f"Resulting Total Batch Size: {per_device_batch * num_processes * accumulate_steps}")
-    log.info(f"--------------------------------------------------")
+    if accelerator.is_main_process:
+        log.info(f"--- VRAM Auto-Configurator (Hyper-Conservative) ---")
+        log.info(f"GPU Total: {total_mem_gb:.2f}GB | Safe Limit: {safe_limit_gb:.2f}GB")
+        log.info(f"Model Overhead: {fixed_overhead_gb:.2f}GB | Attn Implementation: {getattr(model.config, 'attn_implementation', 'unknown')}")
+        log.info(f"Estimated Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
+        log.info(f"Selected Per-Device Batch: {per_device_batch}")
+        log.info(f"Selected Accumulation Steps: {accumulate_steps}")
+        log.info(f"Resulting Total Batch Size: {per_device_batch * num_processes * accumulate_steps}")
+        log.info(f"--------------------------------------------------")
 
     return per_device_batch, accumulate_steps
 
