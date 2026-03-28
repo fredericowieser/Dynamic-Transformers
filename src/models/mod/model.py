@@ -141,6 +141,10 @@ class MoDForCausalLM(BaseForCausalLM):
         output_attentions,
         **kwargs,
     ):
+        if self.training and self.gradient_checkpointing:
+            if not hidden_states.requires_grad:
+                hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
+
         all_losses = []
         all_mod_metrics = []
         all_selected_tokens_proportions = []  # To collect for logging
@@ -165,7 +169,7 @@ class MoDForCausalLM(BaseForCausalLM):
             if isinstance(layer, MoDLayer):
                 layer_attn_mask = mask_mapping[layer.block.layer.attention_type]
                 
-                if getattr(self, "gradient_checkpointing", False) and self.training:
+                if self.gradient_checkpointing and self.training:
                     # Clean up checkpoint call to ensure hidden_states is the primary positional arg
                     hidden_states, losses, mod_metrics = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
@@ -210,7 +214,7 @@ class MoDForCausalLM(BaseForCausalLM):
             else:  # Standard Qwen2DecoderLayer
                 attn_mask = mask_mapping[layer.attention_type]
                 
-                if getattr(self, "gradient_checkpointing", False) and self.training:
+                if self.gradient_checkpointing and self.training:
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
                         hidden_states,

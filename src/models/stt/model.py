@@ -181,6 +181,10 @@ class STTForCausalLM(BaseForCausalLM):
         output_attentions: bool,
         **kwargs,
     ):
+        if self.training and self.gradient_checkpointing:
+            if not hidden_states.requires_grad:
+                hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
+
         all_losses = []
         all_router_stats: Dict[str, Any] = {}
         all_g_cont_values = []  # To collect g_cont for regularization
@@ -227,7 +231,7 @@ class STTForCausalLM(BaseForCausalLM):
             if isinstance(layer, STTLayer):
                 layer_attn_mask = mask_mapping[layer.block.layer.attention_type]
                 
-                if getattr(self, "gradient_checkpointing", False) and self.training:
+                if self.gradient_checkpointing and self.training:
                     # Clean up checkpoint call to ensure hidden_states is the primary positional arg
                     hidden_states, losses, rstats, g_cont_tensor = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
@@ -271,7 +275,7 @@ class STTForCausalLM(BaseForCausalLM):
             else:  # Standard Qwen2DecoderLayer
                 attn_mask = mask_mapping[layer.attention_type]
                 
-                if getattr(self, "gradient_checkpointing", False) and self.training:
+                if self.gradient_checkpointing and self.training:
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
                         hidden_states,

@@ -35,6 +35,20 @@ class BaseForCausalLM(PreTrainedModel):
             # Explicitly declare tied weights for the saving mechanism
             self._tied_weights_keys = ["lm_head.weight", "model.embed_tokens.weight"]
 
+    def _set_gradient_checkpointing(self, enable: bool = True, gradient_checkpointing_func=None):
+        """
+        Override to prevent double-checkpointing. HF's default propagates gradient_checkpointing=True
+        to all GradientCheckpointingLayer submodules (e.g. Qwen2DecoderLayer), so when our _run_layers
+        calls checkpoint(layer.__call__, ..., use_reentrant=False), the layer's __call__ also applies
+        its own inner checkpoint(use_reentrant=True). The interaction between the two modes corrupts
+        requires_grad on the output, triggering the 'None of the inputs have requires_grad=True' warning
+        and causing DDP NCCL deadlocks. By only setting the flag on self, we ensure a single checkpoint
+        level applied in _run_layers.
+        """
+        self.gradient_checkpointing = enable
+        if gradient_checkpointing_func is not None:
+            self._gradient_checkpointing_func = gradient_checkpointing_func
+
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
@@ -52,6 +66,15 @@ class BaseForCausalLM(PreTrainedModel):
         self.model.load_state_dict(base_model.model.state_dict(), strict=False)
         self.lm_head.load_state_dict(base_model.lm_head.state_dict(), strict=False)
         log.info("Weight copy complete.")
+
+    @property
+    def gradient_checkpointing(self) -> bool:
+        """Robustly check if gradient checkpointing is enabled on this model."""
+        if getattr(self.model, "gradient_checkpointing", False):
+            return True
+        if getattr(self.config, "gradient_checkpointing", False):
+            return True
+        return getattr(self, "_gradient_checkpointing", False)
 
     def forward(
         self,
@@ -77,11 +100,12 @@ class BaseForCausalLM(PreTrainedModel):
             
         hidden_states = inputs_embeds
         
-        if self.training and getattr(self, "gradient_checkpointing", False):
+        if self.training and self.gradient_checkpointing:
             # Critical: This is a foolproof trigger for gradient checkpointing.
             # Adding a parameter-dependent zero ensures hidden_states.requires_grad is True.
             # This is MANDATORY to prevent DDP NCCL deadlocks when checkpointing is skipped.
-            hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
+            if not hidden_states.requires_grad:
+                hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
             # Explicitly disable cache
             use_cache = False
 
@@ -193,10 +217,14 @@ class BaseForCausalLM(PreTrainedModel):
         Default: run all stock HF layers with the right mask/pos embeddings.
         Dynamic subclasses override this and interpose custom routing.
         """
+        if self.training and self.gradient_checkpointing:
+            if not hidden_states.requires_grad:
+                hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
+
         for layer in self.model.layers:
             attn_mask = mask_mapping[layer.attention_type]
             
-            if getattr(self, "gradient_checkpointing", False) and self.training:
+            if self.gradient_checkpointing and self.training:
                 # Clean up checkpoint call to ensure hidden_states is the primary positional arg
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     layer.__call__,
