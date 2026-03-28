@@ -228,6 +228,7 @@ class STTForCausalLM(BaseForCausalLM):
                 layer_attn_mask = mask_mapping[layer.block.layer.attention_type]
                 
                 if getattr(self, "gradient_checkpointing", False) and self.training:
+                    # Clean up checkpoint call to ensure hidden_states is the primary positional arg
                     hidden_states, losses, rstats, g_cont_tensor = torch.utils.checkpoint.checkpoint(
                         layer.__call__,
                         hidden_states,

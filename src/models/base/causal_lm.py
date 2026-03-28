@@ -75,10 +75,12 @@ class BaseForCausalLM(PreTrainedModel):
         hidden_states = inputs_embeds
         
         if self.training and getattr(self, "gradient_checkpointing", False):
-            # Critical: ensure the first input to checkpointed layers has requires_grad
-            # We do this AFTER any potential token embedding lookup.
-            hidden_states.requires_grad_(True)
-            # Cache must be disabled for gradient checkpointing
+            # Critical: ensure hidden_states requires grad to trigger checkpointing
+            # Adding 0 * parameter ensures it's part of the graph and requires_grad=True
+            # without changing values.
+            trigger = self.model.embed_tokens.weight[0, 0] * 0.0
+            hidden_states = hidden_states + trigger
+            # Explicitly disable cache
             use_cache = False
 
         if cache_position is None:
@@ -193,17 +195,18 @@ class BaseForCausalLM(PreTrainedModel):
             attn_mask = mask_mapping[layer.attention_type]
             
             if getattr(self, "gradient_checkpointing", False) and self.training:
+                # Clean up checkpoint call to ensure hidden_states is the primary positional arg
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     layer.__call__,
                     hidden_states,
-                    attn_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    use_cache,
-                    cache_position,
-                    position_embeddings,
                     use_reentrant=False,
+                    attention_mask=attn_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
                 )
             else:
                 hidden_states = layer(

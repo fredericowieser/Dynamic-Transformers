@@ -147,7 +147,16 @@ def main(cfg: DictConfig):
     optimizers_dict = dict(zip(optimizers_dict.keys(), prepared_optimizers))
     schedulers_dict = dict(zip(schedulers_dict.keys(), prepared_schedulers))
 
-    log.info("Starting training...")
+    # Final synchronization before training starts
+    log.info(f"Rank {accelerator.process_index} ready. Waiting for others...")
+    accelerator.wait_for_everyone()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    if accelerator.is_main_process:
+        log.info("Starting training loop.")
+
     global_step = 0
     best_eval_loss = float("inf")
     progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_main_process)
