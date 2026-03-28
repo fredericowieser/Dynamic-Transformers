@@ -7,7 +7,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
-from ..base.routers import BaseRouter
+from ..base.routers import BaseRouter, UnifiedCausalRouter
 from ..configs import MoDConfig
 
 
@@ -43,60 +43,77 @@ class MoDLayer(nn.Module):
         super().__init__()
         self.block = DynamicBlock(hf_layer)
         self.router = MoDRouter(config, layer_idx=0, model_params=model_params)
-        self.causal_router = None
+        self.causal_router = UnifiedCausalRouter(config)
         self.model_params = model_params
+        self.causal_threshold = getattr(config, "causal_threshold", 0.5)
 
-    def forward(self, hidden_states, training: bool, **kwargs):
+    def forward(self, hidden_states, training: bool, use_causal_router: bool = False, **kwargs):
         layer_losses = {}
-
-        # Run router to get scores and select tokens
-        (
-            scores,
-            router_bce_loss,
-            router_z_loss,
-            binary_targets,
-            gating_scores,
-            topk_idx,
-        ) = self.router(hidden_states)
-
-        # Sort indices to ensure causal processing (past cannot see future)
-        topk_idx, sort_indices = topk_idx.sort(dim=-1)
-        gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
-
-        if training:
-            layer_losses["mod_aux_loss"] = router_bce_loss
-            layer_losses["mod_z_loss"] = router_z_loss * 1e-4  # Apply coefficient here
-
-        # FIX: Apply sigmoid to ensure gating scores are probabilities (0-1)
-        gating_probs = torch.sigmoid(gating_scores)
-
-        # Prepare indices for processing
+        layer_metrics = {}
         B, T, D = hidden_states.shape
-        k = topk_idx.shape[1]
-        batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k)
-        gating_scores_for_selected = gating_probs.reshape(-1)
 
-        # Process selected tokens with soft gating
+        if use_causal_router:
+            # INFERENCE MODE (Autoregressive / Causal)
+            causal_logits, _, _ = self.causal_router(hidden_states)
+            gating_probs = torch.sigmoid(causal_logits)
+            
+            selected_mask = gating_probs >= self.causal_threshold
+            batch_idx, token_idx = selected_mask.nonzero(as_tuple=True)
+            gating_scores_for_selected = gating_probs[selected_mask]
+            
+            if B * T > 0:
+                layer_metrics["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
+            layer_metrics["g_cont"] = gating_probs.mean().item()
+        else:
+            # TRAINING MODE (Non-Causal Top-K)
+            (
+                scores,
+                router_bce_loss,
+                router_z_loss,
+                binary_targets,
+                gating_scores,
+                topk_idx,
+            ) = self.router(hidden_states)
+            
+            causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)
+            
+            topk_idx, sort_indices = topk_idx.sort(dim=-1)
+            gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
+            
+            if training:
+                layer_losses["mod_aux_loss"] = router_bce_loss
+                layer_losses["mod_z_loss"] = router_z_loss * 1e-4
+                layer_losses["mod_causal_router_loss"] = causal_loss
+            
+            if causal_acc is not None:
+                layer_metrics["causal_router_acc"] = causal_acc.item()
+                
+            gating_probs = torch.sigmoid(gating_scores)
+            
+            k = topk_idx.shape[1]
+            batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, k).reshape(-1)
+            token_idx = topk_idx.reshape(-1)
+            gating_scores_for_selected = gating_probs.reshape(-1)
+            
+            router_probs = torch.sigmoid(scores)
+            num_selected = int(self.router.capacity * scores.shape[1])
+            layer_metrics.update({
+                "router_logits_mean": scores.mean().item(),
+                "router_logits_std": scores.std().item(),
+                "router_probs_mean": router_probs.mean().item(),
+                "router_probs_std": router_probs.std().item(),
+                "selected_tokens_proportion": num_selected / scores.shape[1] if scores.shape[1] > 0 else 0,
+                "g_cont": router_probs.mean().item(),
+            })
+
         new_states, _, _ = self.block.process_selected(
             hidden_states,
-            batch_indices=batch_idx.reshape(-1),
-            token_indices=topk_idx.reshape(-1),
+            batch_indices=batch_idx,
+            token_indices=token_idx,
             gating_scores=gating_scores_for_selected,
             use_soft_gating=True,
             **kwargs,
         )
-
-        # Calculate metrics for logging
-        router_probs = torch.sigmoid(scores)
-        num_selected = int(self.router.capacity * scores.shape[1])
-        layer_metrics = {
-            "router_logits_mean": scores.mean().item(),
-            "router_logits_std": scores.std().item(),
-            "router_probs_mean": router_probs.mean().item(),
-            "router_probs_std": router_probs.std().item(),
-            "selected_tokens_proportion": num_selected / scores.shape[1] if scores.shape[1] > 0 else 0,
-            "g_cont": router_probs.mean().item(),
-        }
 
         return new_states, layer_losses, layer_metrics
 
@@ -128,6 +145,10 @@ class MoDForCausalLM(BaseForCausalLM):
         all_mod_metrics = []
         all_selected_tokens_proportions = []  # To collect for logging
         all_g_cont_values = []  # Initialize for collecting g_cont
+        
+        use_causal_router = kwargs.get("use_causal_router", getattr(self.config, "use_causal_router_in_validation", False))
+        if self.training:
+            use_causal_router = False
 
         layer_args = {
             "position_ids": position_ids,
@@ -136,6 +157,7 @@ class MoDForCausalLM(BaseForCausalLM):
             "cache_position": cache_position,
             "position_embeddings": position_embeddings,
             "output_attentions": output_attentions,
+            "use_causal_router": use_causal_router,
             **kwargs,
         }
 
@@ -159,10 +181,12 @@ class MoDForCausalLM(BaseForCausalLM):
                     all_g_cont_values.append(mod_metrics["g_cont"])
 
             else:  # Standard Qwen2DecoderLayer
-                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
+                # Standard layer doesn't expect use_causal_router
+                std_layer_args = {k: v for k, v in layer_args.items() if k != "use_causal_router"}
+                std_layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    **layer_args,
+                    **std_layer_args,
                 )
                 hidden_states = (
                     layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs

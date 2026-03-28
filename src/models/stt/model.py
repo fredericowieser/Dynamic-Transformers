@@ -10,7 +10,7 @@ from transformers.models.qwen2.modeling_qwen2 import (Qwen2DecoderLayer,
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.priors import BasePriorNetwork
-from ..base.routers import BaseSurpriseRouter
+from ..base.routers import BaseSurpriseRouter, UnifiedCausalRouter
 from ..configs import STTConfig
 
 log = logging.getLogger(__name__)
@@ -53,16 +53,42 @@ class STTLayer(nn.Module):
         self.block = DynamicBlock(hf_layer)
         self.transition_network = STTTransitionNetwork(config)
         self.predictive_router = STTPredictiveRouter(config, layer_idx=0, capacity_attr="capacity")
-        self.causal_router = None
+        self.causal_router = UnifiedCausalRouter(config)
         self.config = config
+        self.causal_threshold = getattr(config, "causal_threshold", 0.5)
 
-    def forward(self, hidden_states, **kwargs):
+    def forward(self, hidden_states, use_causal_router: bool = False, **kwargs):
         original_hidden = hidden_states
         router_stats = {}
         layer_losses = {}
+        B, T, D = hidden_states.shape
 
         use_g_threshold = getattr(self.config, "use_g_threshold_selection", False)
         g_threshold = getattr(self.config, "g_threshold", 0.5)
+        
+        g_cont_for_loss = None
+
+        if use_causal_router:
+            causal_logits, _, _ = self.causal_router(hidden_states)
+            gating_probs = torch.sigmoid(causal_logits)
+            
+            selected_mask = gating_probs >= self.causal_threshold
+            batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
+            gating_scores_for_selected = gating_probs[selected_mask]
+            
+            if B * T > 0:
+                router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
+            router_stats["g_cont"] = gating_probs.mean().item()
+            
+            final_hidden_states, _, _ = self.block.process_selected(
+                original_hidden,
+                batch_indices=batch_indices,
+                token_indices=token_indices,
+                gating_scores=gating_scores_for_selected,
+                use_soft_gating=True,
+                **kwargs,
+            )
+            return final_hidden_states, layer_losses, router_stats, g_cont_for_loss
 
         # First pass through the block to get processed_hidden and residuals
         out = self.block(hidden_states, **kwargs)
@@ -82,10 +108,11 @@ class STTLayer(nn.Module):
         )
         router_stats.update(pred_stats)
 
-        B, T, D = hidden_states.shape
         # Determine selected tokens for the second pass based on g_cont
         if use_g_threshold:
             selected_mask = g_cont >= g_threshold
+            binary_targets = selected_mask.float()
+            
             batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
             gating_scores_for_selected = g_cont[selected_mask]
             if B * T > 0:
@@ -93,6 +120,9 @@ class STTLayer(nn.Module):
         else:
             k = max(1, int(T * self.predictive_router.capacity))
             gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+
+            binary_targets = torch.zeros_like(g_cont)
+            binary_targets.scatter_(1, topk_idx, 1.0)
 
             # Sort indices to ensure causal processing (past cannot see future)
             topk_idx, sort_indices = topk_idx.sort(dim=-1)
@@ -105,6 +135,13 @@ class STTLayer(nn.Module):
             token_indices = topk_idx.reshape(-1)
             if B * T > 0:
                 router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
+
+        causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)
+        
+        if self.training:
+            layer_losses["stt_causal_router_loss"] = causal_loss
+        if causal_acc is not None:
+            router_stats["causal_router_acc"] = causal_acc.item()
 
         # Apply the second TF block only to selected tokens, always using soft gating
         final_hidden_states, _, _ = self.block.process_selected(
@@ -169,6 +206,10 @@ class STTForCausalLM(BaseForCausalLM):
                 beta_ce = sched_cfg["beta_ce_start"]
                 beta_cu = sched_cfg["beta_cu_start"]
 
+        use_causal_router = kwargs.get("use_causal_router", getattr(self.config, "use_causal_router_in_validation", False))
+        if self.training:
+            use_causal_router = False
+
         layer_args = {
             "position_ids": position_ids,
             "past_key_values": past_key_values,
@@ -178,6 +219,7 @@ class STTForCausalLM(BaseForCausalLM):
             "output_attentions": output_attentions,
             "beta_ce": beta_ce,
             "beta_cu": beta_cu,
+            "use_causal_router": use_causal_router,
             **kwargs,
         }
 
@@ -197,10 +239,11 @@ class STTForCausalLM(BaseForCausalLM):
                     all_g_cont_values.append(g_cont_tensor)
 
             else:  # Standard Qwen2DecoderLayer
-                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
+                std_layer_args = {k: v for k, v in layer_args.items() if k not in ["beta_ce", "beta_cu", "use_causal_router"]}
+                std_layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    **layer_args,
+                    **std_layer_args,
                 )
                 hidden_states = (
                     layer_outputs[0] if isinstance(layer_outputs, tuple) else hidden_states

@@ -164,8 +164,11 @@ def main(cfg: DictConfig):
 
             if accelerator.is_main_process:
                 log_metrics = {"train/loss": loss.item()}
-                # Removed aux_metrics logging as requested
-                # Removed LR logging as requested
+                
+                if "aux_metrics" in outputs:
+                    for k, v in outputs["aux_metrics"].items():
+                        if "causal_router" in k:
+                            log_metrics[f"train/{k}"] = v
 
                 if cfg.logging.wandb.enabled:
                     wandb.log(log_metrics, step=global_step)

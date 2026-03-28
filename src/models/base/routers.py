@@ -43,45 +43,40 @@ class BaseRouter(nn.Module, ABC):
         )
 
 
-class CausalRouter(BaseRouter):
+class UnifiedCausalRouter(nn.Module):
     """
-    A simple causal router for MoD and SDT inference. It's a small MLP
-    that predicts whether a token should be processed based on its own
-    hidden state.
+    Auxiliary causal predictor (x_t only) based on the original MoD architecture.
     """
-
-    def __init__(self, config, layer_idx: int, capacity_attr: str):
-        super().__init__(config, capacity_attr)
+    def __init__(self, config):
+        super().__init__()
         self.hidden_size = config.hidden_size
+        # Architecture strictly matching MoD auxiliary predictor references
         self.router = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size // 4),
-            nn.GELU(),
-            nn.Linear(self.hidden_size // 4, 1),
+            nn.Linear(self.hidden_size, self.hidden_size // 2, bias=False),
+            nn.SiLU(),
+            nn.Linear(self.hidden_size // 2, 1, bias=False)
         )
 
-    def forward(self, hidden_states: torch.Tensor, **kwargs):
+    def forward(self, hidden_states: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Args:
+            hidden_states: [B, T, D]. MUST BE DETACHED during training to prevent 
+                           gradients from flowing into the main LM.
+            targets: [B, T] binary mask (1.0 for route, 0.0 for skip).
+        """
+        # Strictly x_t only
         logits = self.router(hidden_states).squeeze(-1)
-        return logits, None, {}
-
-
-class STTCausalRouter(BaseRouter):
-    """Causal router for STT inference, which uses the previous token's state to predict the routing decision for the current token."""
-
-    def __init__(self, config, layer_idx: int, capacity_attr: str):
-        super().__init__(config, capacity_attr)
-        self.router = nn.Linear(2 * config.hidden_size, 1, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor, **kwargs):
-        B, T, D = hidden_states.shape
-        prev = torch.cat(
-            [
-                torch.zeros(B, 1, D, device=hidden_states.device, dtype=hidden_states.dtype),
-                hidden_states[:, :-1, :],
-            ],
-            dim=1,
-        )
-        logits = self.router(torch.cat([hidden_states, prev], dim=-1)).squeeze(-1)
-        return logits, None, {}
+        
+        loss = None
+        accuracy = None
+        
+        if targets is not None:
+            loss = F.binary_cross_entropy_with_logits(logits, targets)
+            with torch.no_grad():
+                preds = (logits > 0.0).float()
+                accuracy = (preds == targets).float().mean()
+                
+        return logits, loss, accuracy
 
 
 class BaseSurpriseRouter(BaseRouter):

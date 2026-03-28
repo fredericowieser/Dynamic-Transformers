@@ -1,0 +1,13 @@
+defaults:
+  - default
+  - _self_
+
+model:
+  size: 0.5B
+  scratch_config:
+    "0.5B":
+      hidden_size: 896
+      intermediate_size: 4864
+      num_hidden_layers: 24
+      num_attention_heads: 14
+      num_key_value_heads: 2

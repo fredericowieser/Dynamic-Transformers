@@ -1,0 +1,25 @@
+defaults:
+  - default
+  - _self_
+
+run:
+  name: "test-pipeline-${model.type}-${now:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  from_scratch: false
+  size: 0.5B
+  train_causal_router: true
+  use_causal_router_in_validation: false
+
+training:
+  mode: finetune
+  max_steps: 50
+  eval_interval: 25
+  accumulate_grad_batches: 1
+
+logging:
+  wandb:
+    enabled: false
+
+lm_eval:
+  enabled: false

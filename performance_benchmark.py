@@ -144,23 +144,28 @@ def main():
     parser.add_argument(
         "--sequence_lengths",
         type=str,
-        default="256,512,1024,2048",
+        default="1024,2048,4096,8192,16384,32768",
         help="Comma-separated list of sequence lengths to benchmark.",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=8, help="Batch size for benchmarking."
+        "--batch_size", type=int, default=1, help="Batch size for benchmarking."
     )
     parser.add_argument(
         "--num_runs",
         type=int,
-        default=10,
+        default=5,
         help="Number of benchmark runs for each setting.",
     )
     parser.add_argument(
         "--num_warmup_runs",
         type=int,
-        default=5,
+        default=2,
         help="Number of warmup runs before benchmarking.",
+    )
+    parser.add_argument(
+        "--use_causal_router",
+        action="store_true",
+        help="If set, uses the causal router during inference instead of non-causal Top-K.",
     )
 
     args = parser.parse_args()
@@ -188,6 +193,7 @@ def main():
     cfg.model.size = args.model_size
     cfg.system.use_flash_attention = device == "cuda"
     cfg.model.attn_implementation = "flash_attention_2" if device == "cuda" else "eager"
+    cfg.model.use_causal_router_in_validation = args.use_causal_router
     
     all_results = {}
     model_types_to_benchmark = ["standard", "mod", "sdt", "stt"]

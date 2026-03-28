@@ -11,7 +11,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
 from ..base.block import DynamicBlock
 from ..base.causal_lm import BaseForCausalLM
 from ..base.priors import BasePriorNetwork
-from ..base.routers import BaseSurpriseRouter
+from ..base.routers import BaseSurpriseRouter, UnifiedCausalRouter
 from ..configs import SDTConfig
 
 
@@ -76,48 +76,69 @@ class SDTPair(nn.Module):
         self.decision = SDTDecisionLayer(config, model_params, layer_idx)
         self.router = SDTRouter(config, model_params=model_params)
         self.dynamic = DynamicBlock(hf_layer)
-        self.causal_router = None
+        self.causal_router = UnifiedCausalRouter(config)
         self.model_params = model_params
+        self.causal_threshold = getattr(config, "causal_threshold", 0.5)
 
-    def forward(self, hidden_states, **kwargs):
+    def forward(self, hidden_states, use_causal_router: bool = False, **kwargs):
         # Decision Phase
         processed_hidden, actual_res, predicted_res, prior_loss = self.decision(
             hidden_states, **kwargs
         )
 
         layer_losses = {}
+        router_stats = {}
         if self.training:
             layer_losses["sdt_prior_loss"] = prior_loss
 
-        # Routing Phase
-        g_cont, binary_targets, surprise_stats = self.router(
-            actual_res, predicted_res, **kwargs
-        )
-
-        router_stats = {}
-        router_stats.update(surprise_stats)
-        router_stats["g_cont"] = g_cont.mean().item()
-
-        # Dynamic Execution Phase
         B, T, D = hidden_states.shape
-        k = max(1, int(T * self.router.capacity))
-        gating_scores, topk_idx = g_cont.topk(k, dim=-1)
 
-        # Sort indices to ensure causal processing (past cannot see future)
-        topk_idx, sort_indices = topk_idx.sort(dim=-1)
-        gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
+        if use_causal_router:
+            causal_logits, _, _ = self.causal_router(hidden_states)
+            gating_probs = torch.sigmoid(causal_logits)
+            
+            selected_mask = gating_probs >= self.causal_threshold
+            batch_idx, token_idx = selected_mask.nonzero(as_tuple=True)
+            gating_scores_for_selected = gating_probs[selected_mask]
+            
+            if B * T > 0:
+                router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
+            router_stats["g_cont"] = gating_probs.mean().item()
+        else:
+            # Routing Phase
+            g_cont, binary_targets, surprise_stats = self.router(
+                actual_res, predicted_res, **kwargs
+            )
+            
+            causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)
 
-        batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k)
+            router_stats.update(surprise_stats)
+            router_stats["g_cont"] = g_cont.mean().item()
+            
+            if self.training:
+                layer_losses["sdt_causal_router_loss"] = causal_loss
+            if causal_acc is not None:
+                router_stats["causal_router_acc"] = causal_acc.item()
 
-        if B * T > 0:
-            router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
+            # Dynamic Execution Phase
+            k = max(1, int(T * self.router.capacity))
+            gating_scores, topk_idx = g_cont.topk(k, dim=-1)
 
-        gating_scores_for_selected = gating_scores.reshape(-1)
+            # Sort indices to ensure causal processing (past cannot see future)
+            topk_idx, sort_indices = topk_idx.sort(dim=-1)
+            gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
+
+            batch_idx = torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
+            token_idx = topk_idx.reshape(-1)
+            gating_scores_for_selected = gating_scores.reshape(-1)
+
+            if B * T > 0:
+                router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
 
         final_hidden_states, _, _ = self.dynamic.process_selected(
             processed_hidden,
-            batch_indices=batch_idx.reshape(-1),
-            token_indices=topk_idx.reshape(-1),
+            batch_indices=batch_idx,
+            token_indices=token_idx,
             gating_scores=gating_scores_for_selected,
             use_soft_gating=True,
             **kwargs,
@@ -174,6 +195,10 @@ class SDTForCausalLM(BaseForCausalLM):
                 beta_ce = sched_cfg["beta_ce_start"]
                 beta_cu = sched_cfg["beta_cu_start"]
 
+        use_causal_router = kwargs.get("use_causal_router", getattr(self.config, "use_causal_router_in_validation", False))
+        if self.training:
+            use_causal_router = False
+
         layer_args = {
             "position_ids": position_ids,
             "past_key_values": past_key_values,
@@ -183,6 +208,7 @@ class SDTForCausalLM(BaseForCausalLM):
             "output_attentions": output_attentions,
             "beta_ce": beta_ce,
             "beta_cu": beta_cu,
+            "use_causal_router": use_causal_router,
             **kwargs,
         }
 
@@ -205,10 +231,11 @@ class SDTForCausalLM(BaseForCausalLM):
             elif isinstance(layer, nn.Identity):
                 continue
             else:  # Standard Qwen2DecoderLayer
-                layer_args["attention_mask"] = mask_mapping[layer.attention_type]
+                std_layer_args = {k: v for k, v in layer_args.items() if k not in ["beta_ce", "beta_cu", "use_causal_router"]}
+                std_layer_args["attention_mask"] = mask_mapping[layer.attention_type]
                 layer_outputs = layer(
                     hidden_states=hidden_states,
-                    **layer_args,
+                    **std_layer_args,
                 )
                 hidden_states = (
                     layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
