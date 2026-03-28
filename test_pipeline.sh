@@ -7,8 +7,15 @@ echo "================================================================"
 
 set -e # Exit immediately if a command exits with a non-zero status
 
+# Prepare environment
+if [ ! -d ".venv" ]; then
+    echo "Virtual environment not found. Please run 'uv sync' first."
+    exit 1
+fi
+source .venv/bin/activate
+
 # Configuration for Test run
-NUM_GPUS=$(python -c "import torch; print(torch.cuda.device_count())")
+NUM_GPUS=$(python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
 TOTAL_BATCH_SIZE=64
 PER_DEVICE_BATCH_SIZE=$((TOTAL_BATCH_SIZE / (NUM_GPUS > 0 ? NUM_GPUS : 1)))
 ACCUMULATE_GRAD_BATCHES=1
@@ -18,13 +25,6 @@ SIZE="0.5B"
 
 # Set threads
 export OMP_NUM_THREADS=1
-
-# Prepare environment
-if [ ! -d ".venv" ]; then
-    echo "Virtual environment not found. Please run 'uv sync' first."
-    exit 1
-fi
-source .venv/bin/activate
 
 for MODEL in "${MODELS[@]}"; do
     echo "================================================================"
