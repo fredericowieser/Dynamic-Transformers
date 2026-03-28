@@ -31,20 +31,18 @@ for MODEL in "${MODELS[@]}"; do
     echo " Testing Pipeline for Model Type: $MODEL"
     echo "================================================================"
 
-    # 1. Finetune model (4 GPUs if available)
+    # 1. Finetune model (Multi-GPU if available)
     echo "--> [1/4] Finetuning $MODEL for 50 steps..."
+    # Auto-batch sizing is enabled in train.py, so we don't need to force batch_size here.
+    # We let it calculate based on available VRAM to reach total batch 64.
     if [ "$NUM_GPUS" -gt 1 ]; then
         accelerate launch --num_processes $NUM_GPUS train.py \
             --config-name test_pipeline \
             model.type=$MODEL \
-            data.batch_size=$PER_DEVICE_BATCH_SIZE \
-            training.accumulate_grad_batches=$ACCUMULATE_GRAD_BATCHES \
             model.stt.use_g_threshold_selection=false
     else
-        python train.py --config-name test_pipeline \
+        python3 train.py --config-name test_pipeline \
             model.type=$MODEL \
-            data.batch_size=$PER_DEVICE_BATCH_SIZE \
-            training.accumulate_grad_batches=$ACCUMULATE_GRAD_BATCHES \
             model.stt.use_g_threshold_selection=false
     fi
 

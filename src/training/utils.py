@@ -125,59 +125,77 @@ def calculate_vram_optimized_batch_size(
     num_processes = accelerator.num_processes
     seq_len = cfg.data.block_size
 
-    # Extract model dimensions from config or model object
+    # Extract model dimensions
     if hasattr(model.config, "hidden_size"):
         hidden_size = model.config.hidden_size
         num_layers = model.config.num_hidden_layers
+        num_heads = model.config.num_attention_heads
     else:
-        # Fallback to scratch config if model not fully initialized
         size_cfg = cfg.model.scratch_config.get(cfg.model.size, {})
         hidden_size = size_cfg.get("hidden_size", 896)
         num_layers = size_cfg.get("num_hidden_layers", 24)
+        num_heads = size_cfg.get("num_attention_heads", 14)
 
     # Count parameters
     params = sum(p.numel() for p in model.parameters())
 
     # 1. Estimate Fixed Overhead (Weights + Gradients + Optimizer States)
     # AdamW with fp32 master weights: 2 (params) + 2 (grads) + 12 (optimizer) = 16 bytes per param
-    # If using bf16 weights/grads.
-    fixed_overhead_gb = (params * 16) / (1024**3)
+    # Using a 1.2x buffer for distributed overhead (FSDP/DDP buffers)
+    fixed_overhead_gb = (params * 16 * 1.2) / (1024**3)
 
     # 2. Estimate Activation Memory per Sample
-    # Factor: ~2.0 with gradient checkpointing, ~12.0 without
+    # Eager attention is O(T^2). Seq_len 1024 is relatively small, but still significant.
+    # [B, H, T, T] in half precision = B * H * T * T * 2 bytes
+    attn_matrix_mem_gb = (num_heads * seq_len * seq_len * 2) / (1024**3)
+    
     is_checkpointing = getattr(cfg.training, "gradient_checkpointing", True)
-    act_factor = 2.5 if is_checkpointing else 14.0  # Slightly conservative
-    # Memory = T * H * L * factor * 2 (bytes for half precision)
-    mem_per_sample_gb = (seq_len * hidden_size * num_layers * act_factor * 2) / (1024**3)
+    is_eager = getattr(model.config, "attn_implementation", "eager") == "eager"
+    
+    # Very pessimistic factors for eager attention
+    # Eager attention creates many intermediate tensors (Q, K, V, scores, softmax, etc.)
+    eager_overhead_factor = 4.0 if is_eager else 1.0
+    
+    if is_checkpointing:
+        # Boundary: B * T * D * L * 2 bytes (activations stored at checkpoint boundaries)
+        boundary_mem_per_sample = (seq_len * hidden_size * num_layers * 2) / (1024**3)
+        # Peak: One layer recomputation + intermediates
+        # Factor 8.0 to account for MLPs, Norms, and Attention intermediates
+        peak_layer_mem = (seq_len * hidden_size * 8 * 2) / (1024**3) + (attn_matrix_mem_gb * eager_overhead_factor)
+        mem_per_sample_gb = boundary_mem_per_sample + peak_layer_mem
+    else:
+        # No checkpointing: Store everything for all layers
+        # Standard transformer factor is ~12-14x T*D*L. 
+        # For eager, we multiply by overhead factor.
+        mem_per_sample_gb = (seq_len * hidden_size * num_layers * 14 * 2 * eager_overhead_factor) / (1024**3) + (attn_matrix_mem_gb * num_layers * eager_overhead_factor)
 
     # 3. Get Available VRAM
     if torch.cuda.is_available():
         device_id = accelerator.local_process_index
         total_mem_gb = torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
-        # Safety margin: 15% for kernels, buffers, and fragmentation
-        safe_limit_gb = total_mem_gb * 0.85
+        # Safety margin: 30% for kernels, fragmentation, dataloader buffers, and NCCL
+        safe_limit_gb = total_mem_gb * 0.70
         available_vram_gb = safe_limit_gb - fixed_overhead_gb
     else:
-        # Not on CUDA, return original config
         return cfg.data.batch_size, cfg.training.accumulate_grad_batches
 
     if available_vram_gb <= 0:
         log.warning(
             f"Model overhead ({fixed_overhead_gb:.2f}GB) exceeds safe GPU limit ({safe_limit_gb:.2f}GB). "
-            "Setting batch size to 1."
+            "Setting batch size to 1 and hoping for the best."
         )
         per_device_batch = 1
     else:
         # Max samples that can fit in available VRAM
         per_device_batch = int(available_vram_gb // mem_per_sample_gb)
-
+        
         # Max samples needed per device to hit target without accumulation
         needed_per_device = math.ceil(target_total_batch_size / num_processes)
-
+        
         # Final per-device batch size
         per_device_batch = max(1, min(per_device_batch, needed_per_device))
 
-        # Prefer power of 2 for better kernel alignment
+        # Prefer power of 2
         if per_device_batch > 1:
             per_device_batch = 2 ** int(math.log2(per_device_batch))
 
@@ -185,13 +203,14 @@ def calculate_vram_optimized_batch_size(
     total_batch_one_step = per_device_batch * num_processes
     accumulate_steps = math.ceil(target_total_batch_size / total_batch_one_step)
 
-    log.info(f"--- VRAM Auto-Configurator ---")
-    log.info(f"GPU Total: {total_mem_gb:.2f}GB | Model Overhead: {fixed_overhead_gb:.2f}GB")
-    log.info(f"Activation Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
+    log.info(f"--- VRAM Auto-Configurator (Hyper-Conservative) ---")
+    log.info(f"GPU Total: {total_mem_gb:.2f}GB | Safe Limit: {safe_limit_gb:.2f}GB")
+    log.info(f"Model Overhead: {fixed_overhead_gb:.2f}GB | Attn Implementation: {getattr(model.config, 'attn_implementation', 'unknown')}")
+    log.info(f"Estimated Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
     log.info(f"Selected Per-Device Batch: {per_device_batch}")
     log.info(f"Selected Accumulation Steps: {accumulate_steps}")
     log.info(f"Resulting Total Batch Size: {per_device_batch * num_processes * accumulate_steps}")
-    log.info(f"------------------------------")
+    log.info(f"--------------------------------------------------")
 
     return per_device_batch, accumulate_steps
 

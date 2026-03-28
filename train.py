@@ -30,6 +30,11 @@ def main(cfg: DictConfig):
         mixed_precision=cfg.system.precision,
     )
 
+    log.info(f"Process Index: {accelerator.process_index} | Local Index: {accelerator.local_process_index} | Device: {accelerator.device}")
+    if torch.cuda.is_available():
+        torch.cuda.set_device(accelerator.device)
+        torch.cuda.empty_cache()
+
     if accelerator.is_main_process:
         log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
         if cfg.logging.wandb.enabled:
@@ -46,6 +51,10 @@ def main(cfg: DictConfig):
 
     log.info(f"Creating {cfg.model.type} model...")
     model = create_model(cfg.model.type, cfg)
+
+    if cfg.training.gradient_checkpointing:
+        log.info("Enabling gradient checkpointing.")
+        model.gradient_checkpointing_enable()
 
     if cfg.peft.enabled:
         log.info("Applying LoRA to the model.")
