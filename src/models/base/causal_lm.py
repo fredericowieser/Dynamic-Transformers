@@ -81,6 +81,35 @@ class BaseForCausalLM(PreTrainedModel):
             # Cache must be disabled for gradient checkpointing
             use_cache = False
 
+        if cache_position is None:
+            past_seen = 0
+            if past_key_values is not None:
+                past_seen = past_key_values.get_seq_length()
+            cache_position = torch.arange(
+                past_seen, past_seen + hidden_states.shape[1], device=hidden_states.device
+            )
+
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0).expand(hidden_states.shape[0], -1)
+
+        # Create mask mapping
+        if not isinstance(attention_mask, dict):
+            mask_kwargs = {
+                "config": self.model.config,
+                "input_embeds": hidden_states,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            causal_mask_mapping = {"full_attention": create_causal_mask(**mask_kwargs)}
+            if getattr(self.model, "has_sliding_layers", False):
+                causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(
+                    **mask_kwargs
+                )
+        else:
+            causal_mask_mapping = attention_mask
+
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
 
         hidden_states, aux = self._run_layers(
