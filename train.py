@@ -76,29 +76,31 @@ def main(cfg: DictConfig):
     cfg.training.accumulate_grad_batches = accumulate_steps
     # ----------------------------
 
-    log.info("Setting up FineWebDataloaders...")
-    train_loader = FineWebDataloader(
-        tokenizer=tokenizer,
-        B=cfg.data.batch_size,
-        T=cfg.data.block_size,
-        split="train",
-        data_dir=cfg.data.local_dir,
-        num_shards=cfg.data.num_shards_train,
-        device=accelerator.device,
-        rank=accelerator.process_index,
-        world_size=accelerator.num_processes,
-    )
-    eval_loader = FineWebDataloader(
-        tokenizer=tokenizer,
-        B=cfg.data.batch_size,
-        T=cfg.data.block_size,
-        split="val",
-        data_dir=cfg.data.local_dir,
-        num_shards=cfg.data.num_shards_train, # Reuse same shards pool
-        device=accelerator.device,
-        rank=accelerator.process_index,
-        world_size=accelerator.num_processes,
-    )
+    # Ensure only main process downloads/verifies data first
+    with accelerator.main_process_first():
+        log.info("Setting up FineWebDataloaders...")
+        train_loader = FineWebDataloader(
+            tokenizer=tokenizer,
+            B=cfg.data.batch_size,
+            T=cfg.data.block_size,
+            split="train",
+            data_dir=cfg.data.local_dir,
+            num_shards=cfg.data.num_shards_train,
+            device=accelerator.device,
+            rank=accelerator.process_index,
+            world_size=accelerator.num_processes,
+        )
+        eval_loader = FineWebDataloader(
+            tokenizer=tokenizer,
+            B=cfg.data.batch_size,
+            T=cfg.data.block_size,
+            split="val",
+            data_dir=cfg.data.local_dir,
+            num_shards=cfg.data.num_shards_train, # Reuse same shards pool
+            device=accelerator.device,
+            rank=accelerator.process_index,
+            world_size=accelerator.num_processes,
+        )
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

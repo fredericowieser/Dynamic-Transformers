@@ -72,44 +72,15 @@ class BaseForCausalLM(PreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
             
-        if self.training:
-            # Ensure the first input to the layer loop has requires_grad=True
-            # This is critical for torch.utils.checkpoint to track gradients
-            # for the parameters inside the checkpointed layers.
-            inputs_embeds.requires_grad_(True)
-
-        # Past KV and cache positions
-        if use_cache and past_key_values is None:
-            pass
-
-        if cache_position is None:
-            past_seen = 0
-            cache_position = torch.arange(
-                past_seen, past_seen + inputs_embeds.shape[1], device=inputs_embeds.device
-            )
-
-        if position_ids is None:
-            position_ids = cache_position.unsqueeze(0).expand(inputs_embeds.shape[0], -1)
-
-        # Create mask mapping
-        if not isinstance(attention_mask, dict):
-            mask_kwargs = {
-                "config": self.model.config,
-                "input_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "cache_position": cache_position,
-                "past_key_values": past_key_values,
-                "position_ids": position_ids,
-            }
-            causal_mask_mapping = {"full_attention": create_causal_mask(**mask_kwargs)}
-            if getattr(self.model, "has_sliding_layers", False):
-                causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(
-                    **mask_kwargs
-                )
-        else:
-            causal_mask_mapping = attention_mask
-
         hidden_states = inputs_embeds
+        
+        if self.training and getattr(self, "gradient_checkpointing", False):
+            # Critical: ensure the first input to checkpointed layers has requires_grad
+            # We do this AFTER any potential token embedding lookup.
+            hidden_states.requires_grad_(True)
+            # Cache must be disabled for gradient checkpointing
+            use_cache = False
+
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
 
         hidden_states, aux = self._run_layers(
