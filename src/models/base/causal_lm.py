@@ -26,6 +26,9 @@ class BaseForCausalLM(PreTrainedModel):
         self.model_params = kwargs
         self.model = Qwen2Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        
+        # Dummy parameter to force gradient checkpointing to trigger
+        self.gradient_checkpointing_trigger = nn.Parameter(torch.zeros(1))
 
         if config.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
@@ -75,11 +78,10 @@ class BaseForCausalLM(PreTrainedModel):
         hidden_states = inputs_embeds
         
         if self.training and getattr(self, "gradient_checkpointing", False):
-            # Critical: ensure hidden_states requires grad to trigger checkpointing
-            # Adding 0 * parameter ensures it's part of the graph and requires_grad=True
-            # without changing values.
-            trigger = self.model.embed_tokens.weight[0, 0] * 0.0
-            hidden_states = hidden_states + trigger
+            # Critical: This is a foolproof trigger for gradient checkpointing.
+            # Adding a parameter-dependent zero ensures hidden_states.requires_grad is True.
+            # This is MANDATORY to prevent DDP NCCL deadlocks when checkpointing is skipped.
+            hidden_states = hidden_states + (self.gradient_checkpointing_trigger * 0.0)
             # Explicitly disable cache
             use_cache = False
 
