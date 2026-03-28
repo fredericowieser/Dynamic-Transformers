@@ -59,11 +59,11 @@ for MODEL in "${MODELS[@]}"; do
 
     # 2. Evaluate Non-Causal Router (Parallelized across GPUs)
     echo "--> [2/4] Evaluating $MODEL (Non-Causal Router)..."
-    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --output_dir "$LATEST_DIR"
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --output_dir "$LATEST_DIR" --limit 10
 
     # 3. Evaluate Causal Router (Parallelized across GPUs)
     echo "--> [3/4] Evaluating $MODEL (Causal Router)..."
-    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --use_causal_router --output_dir "$LATEST_DIR"
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --use_causal_router --output_dir "$LATEST_DIR" --limit 10
 
     # 4. Latency Benchmarking (Logs per sequence length)
     echo "--> [4/4] Hardware Latency Benchmarking ($MODEL)..."

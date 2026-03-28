@@ -22,7 +22,6 @@ from src.models import (
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-log = logging.getLogger(__name__)
 
 # Task groups
 TASK_SUITES = {
@@ -118,6 +117,12 @@ def main():
         type=str,
         default=None,
         help="Directory to save evaluation results. Defaults to model_path.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the number of examples per task (useful for quick testing).",
     )
     args = parser.parse_args()
 
@@ -216,6 +221,7 @@ def main():
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
+            limit=args.limit,
         )
 
         if "results" in results:
