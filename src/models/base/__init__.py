@@ -1,13 +1,13 @@
 from .block import DynamicBlock
 from .causal_lm import BaseForCausalLM
 from .priors import BasePriorNetwork
-from .routers import BaseRouter, BaseSurpriseRouter, CausalRouter
+from .routers import BaseRouter, BaseSurpriseRouter, UnifiedCausalRouter
 
 __all__ = [
     "DynamicBlock",
     "BaseForCausalLM",
     "BasePriorNetwork",
     "BaseRouter",
-    "CausalRouter",
+    "UnifiedCausalRouter",
     "BaseSurpriseRouter",
 ]
