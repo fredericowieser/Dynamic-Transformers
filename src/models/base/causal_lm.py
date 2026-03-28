@@ -76,6 +76,10 @@ class BaseForCausalLM(PreTrainedModel):
             return True
         return getattr(self, "_gradient_checkpointing", False)
 
+    @gradient_checkpointing.setter
+    def gradient_checkpointing(self, value: bool):
+        self._gradient_checkpointing = value
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
