@@ -2,17 +2,23 @@ import argparse
 import json
 import logging
 import os
+import warnings
 
 import numpy as np
 import torch
+
+# Suppress annoying library warnings
+warnings.filterwarnings("ignore")
 from lm_eval import simple_evaluate
 from lm_eval.models.huggingface import HFLM
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from src.models.mod.model import MoDForCausalLM
-from src.models.sdt.model import SDTForCausalLM
-from src.models.standard.model import StandardTransformerForCausalLM
-from src.models.stt.model import STTForCausalLM
+from src.models import (
+    MoDForCausalLM,
+    SDTForCausalLM,
+    StandardTransformerForCausalLM,
+    STTForCausalLM,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -144,13 +150,20 @@ def main():
         raise ValueError(f"Unknown model type '{model_type}' in config.")
 
     log.info(f"Explicitly loading model class: {model_class.__name__}")
-    model = model_class.from_pretrained(
-        args.model_path, config=config, trust_remote_code=True, torch_dtype="auto", device_map=device
-    )
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    # HFLM works better with a string path if possible, but passing the model is fine
-    # provided it's recognized as a CausalLM.
-    adaptor = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
+    
+    # Passing the path instead of the model object helps lm-eval manage memory and 
+    # reduces 'not a string' warnings. We pass the modified config.
+    # Note: AutoModelForCausalLM.register MUST be called before this, 
+    # which is handled by 'from src.models import ...'
+    adaptor = HFLM(
+        pretrained=args.model_path,
+        tokenizer=tokenizer,
+        batch_size=args.batch_size,
+        device=device,
+        trust_remote_code=True,
+        config=config
+    )
 
     # Shot counts to align with official Qwen 2.5 evaluations
     shot_counts = {
@@ -166,14 +179,17 @@ def main():
         log.info("Quick test specified, overriding to use zero-shot for all tasks in the suite.")
         shot_counts["truthfulqa_mc2"] = 0
 
+    from tqdm import tqdm
     all_results = {}
-    for task_name in task_names:
+    pbar = tqdm(task_names, desc="Evaluating tasks")
+    for task_name in pbar:
+        pbar.set_description(f"Evaluating {task_name}")
         # Get the task-specific shot count, defaulting to 0 if not specified
         num_fewshot = shot_counts.get(task_name, 0)
         log.info(f"--> Running task '{task_name}' with {num_fewshot} shots...")
 
         results = simple_evaluate(
-            model=adaptor,  # Pass the adaptor object directly
+            model=adaptor,
             tasks=[task_name],
             num_fewshot=num_fewshot,
             batch_size=args.batch_size,
