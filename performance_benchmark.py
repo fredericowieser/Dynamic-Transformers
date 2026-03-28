@@ -173,6 +173,12 @@ def main():
         default="standard,mod,sdt,stt",
         help="Comma-separated list of model types to benchmark.",
     )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default=None,
+        help="Path to save benchmark results as a JSON file.",
+    )
 
     args = parser.parse_args()
 
@@ -231,6 +237,15 @@ def main():
     if not all_results:
         log.error("No results were generated.")
         return
+
+    # Save results to file if output_path is provided
+    if args.output_path:
+        try:
+            with open(args.output_path, "w") as f:
+                json.dump(all_results, f, indent=2)
+            log.info(f"Benchmark results saved to {args.output_path}")
+        except Exception as e:
+            log.error(f"Failed to save results to {args.output_path}: {e}")
 
     dense_results = all_results.get("standard")
 

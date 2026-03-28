@@ -113,7 +113,15 @@ def main():
         action="store_true",
         help="If set, uses the causal router during evaluation.",
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directory to save evaluation results. Defaults to model_path.",
+    )
     args = parser.parse_args()
+
+    output_dir = args.output_dir if args.output_dir else args.model_path
 
     task_names = sorted(
         list(
@@ -203,8 +211,9 @@ def main():
     final_results_structure = {"results": all_results}
     serializable_results = _make_json_serializable(final_results_structure)
 
-    # Save results to a file in the model directory
-    output_path = os.path.join(args.model_path, "eval_results.json")
+    # Save results to a file
+    suffix = "causal" if args.use_causal_router else "non_causal"
+    output_path = os.path.join(output_dir, f"eval_results_{suffix}.json")
     with open(output_path, "w") as f:
         json.dump(serializable_results, f, indent=2)
     log.info(f"Evaluation results saved to {output_path}")

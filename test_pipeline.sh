@@ -47,18 +47,18 @@ for MODEL in "${MODELS[@]}"; do
 
     # 2. Evaluate Non-Causal Router
     echo "--> [2/4] Evaluating $MODEL (Non-Causal Router)..."
-    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8 --output_dir "$LATEST_DIR"
 
     # 3. Evaluate Causal Router
     echo "--> [3/4] Evaluating $MODEL (Causal Router)..."
-    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8 --use_causal_router
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 8 --use_causal_router --output_dir "$LATEST_DIR"
 
     # 4. Latency Benchmarking
     echo "--> [4/4] Hardware Latency Benchmarking ($MODEL)..."
     echo "    - Non-Causal Latency:"
-    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "standard,$MODEL"
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "standard,$MODEL" --output_path "${LATEST_DIR}/latency_non_causal.json"
     echo "    - Causal Latency:"
-    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "$MODEL" --use_causal_router
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "$MODEL" --use_causal_router --output_path "${LATEST_DIR}/latency_causal.json"
 done
 
 echo "================================================================"
