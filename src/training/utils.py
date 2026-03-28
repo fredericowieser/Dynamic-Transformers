@@ -112,6 +112,90 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     return model
 
 
+def calculate_vram_optimized_batch_size(
+    cfg: DictConfig, model: torch.nn.Module, accelerator
+) -> Tuple[int, int]:
+    """
+    Automatically computes the optimal per-device batch size and gradient accumulation steps
+    to achieve a target total batch size of 64, while fitting within available VRAM.
+    """
+    import math
+
+    target_total_batch_size = 64
+    num_processes = accelerator.num_processes
+    seq_len = cfg.data.block_size
+
+    # Extract model dimensions from config or model object
+    if hasattr(model.config, "hidden_size"):
+        hidden_size = model.config.hidden_size
+        num_layers = model.config.num_hidden_layers
+    else:
+        # Fallback to scratch config if model not fully initialized
+        size_cfg = cfg.model.scratch_config.get(cfg.model.size, {})
+        hidden_size = size_cfg.get("hidden_size", 896)
+        num_layers = size_cfg.get("num_hidden_layers", 24)
+
+    # Count parameters
+    params = sum(p.numel() for p in model.parameters())
+
+    # 1. Estimate Fixed Overhead (Weights + Gradients + Optimizer States)
+    # AdamW with fp32 master weights: 2 (params) + 2 (grads) + 12 (optimizer) = 16 bytes per param
+    # If using bf16 weights/grads.
+    fixed_overhead_gb = (params * 16) / (1024**3)
+
+    # 2. Estimate Activation Memory per Sample
+    # Factor: ~2.0 with gradient checkpointing, ~12.0 without
+    is_checkpointing = getattr(cfg.training, "gradient_checkpointing", True)
+    act_factor = 2.5 if is_checkpointing else 14.0  # Slightly conservative
+    # Memory = T * H * L * factor * 2 (bytes for half precision)
+    mem_per_sample_gb = (seq_len * hidden_size * num_layers * act_factor * 2) / (1024**3)
+
+    # 3. Get Available VRAM
+    if torch.cuda.is_available():
+        device_id = accelerator.local_process_index
+        total_mem_gb = torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
+        # Safety margin: 15% for kernels, buffers, and fragmentation
+        safe_limit_gb = total_mem_gb * 0.85
+        available_vram_gb = safe_limit_gb - fixed_overhead_gb
+    else:
+        # Not on CUDA, return original config
+        return cfg.data.batch_size, cfg.training.accumulate_grad_batches
+
+    if available_vram_gb <= 0:
+        log.warning(
+            f"Model overhead ({fixed_overhead_gb:.2f}GB) exceeds safe GPU limit ({safe_limit_gb:.2f}GB). "
+            "Setting batch size to 1."
+        )
+        per_device_batch = 1
+    else:
+        # Max samples that can fit in available VRAM
+        per_device_batch = int(available_vram_gb // mem_per_sample_gb)
+
+        # Max samples needed per device to hit target without accumulation
+        needed_per_device = math.ceil(target_total_batch_size / num_processes)
+
+        # Final per-device batch size
+        per_device_batch = max(1, min(per_device_batch, needed_per_device))
+
+        # Prefer power of 2 for better kernel alignment
+        if per_device_batch > 1:
+            per_device_batch = 2 ** int(math.log2(per_device_batch))
+
+    # 4. Calculate Accumulation Steps
+    total_batch_one_step = per_device_batch * num_processes
+    accumulate_steps = math.ceil(target_total_batch_size / total_batch_one_step)
+
+    log.info(f"--- VRAM Auto-Configurator ---")
+    log.info(f"GPU Total: {total_mem_gb:.2f}GB | Model Overhead: {fixed_overhead_gb:.2f}GB")
+    log.info(f"Activation Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
+    log.info(f"Selected Per-Device Batch: {per_device_batch}")
+    log.info(f"Selected Accumulation Steps: {accumulate_steps}")
+    log.info(f"Resulting Total Batch Size: {per_device_batch * num_processes * accumulate_steps}")
+    log.info(f"------------------------------")
+
+    return per_device_batch, accumulate_steps
+
+
 def setup_optimizer_and_scheduler(
     model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator
 ):

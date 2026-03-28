@@ -24,11 +24,10 @@ log = logging.getLogger(__name__)
 @hydra.main(config_path="config", config_name="default", version_base="1.3")
 def main(cfg: DictConfig):
     logging.basicConfig(level=cfg.logging.level, format="%(asctime)s - %(levelname)s - %(message)s")
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
-
+    
+    # Initial accelerator setup
     accelerator = Accelerator(
         mixed_precision=cfg.system.precision,
-        gradient_accumulation_steps=cfg.training.accumulate_grad_batches,
     )
 
     if accelerator.is_main_process:
@@ -44,6 +43,25 @@ def main(cfg: DictConfig):
     tokenizer = AutoTokenizer.from_pretrained(cfg.data.tokenizer_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    log.info(f"Creating {cfg.model.type} model...")
+    model = create_model(cfg.model.type, cfg)
+
+    if cfg.peft.enabled:
+        log.info("Applying LoRA to the model.")
+        peft_config = LoraConfig(**cfg.peft.config)
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+
+    # --- DYNAMIC BATCH SIZING ---
+    from src.training.utils import calculate_vram_optimized_batch_size
+    per_device_batch, accumulate_steps = calculate_vram_optimized_batch_size(cfg, model, accelerator)
+    
+    # Update accelerator and config with calculated values
+    accelerator.gradient_accumulation_steps = accumulate_steps
+    cfg.data.batch_size = per_device_batch
+    cfg.training.accumulate_grad_batches = accumulate_steps
+    # ----------------------------
 
     log.info("Setting up FineWebDataloaders...")
     train_loader = FineWebDataloader(
@@ -68,15 +86,6 @@ def main(cfg: DictConfig):
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
     )
-
-    log.info(f"Creating {cfg.model.type} model...")
-    model = create_model(cfg.model.type, cfg)
-
-    if cfg.peft.enabled:
-        log.info("Applying LoRA to the model.")
-        peft_config = LoraConfig(**cfg.peft.config)
-        model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
