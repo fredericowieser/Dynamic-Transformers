@@ -10,6 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers import (AutoTokenizer, Qwen2Config, Qwen2ForCausalLM,
                           get_scheduler)
 
+from ..models.configs import MoDConfig, SDTConfig, StandardConfig, STTConfig
 from ..models.mod.model import MoDForCausalLM
 from ..models.sdt.model import SDTForCausalLM
 from ..models.stt.model import STTForCausalLM
@@ -23,11 +24,19 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
     from_scratch = model_cfg.from_scratch
     torch_dtype = getattr(torch, cfg.system.get("torch_dtype", "float32"))
 
-    # Create base Qwen2Config
+    config_class_map = {
+        "standard": StandardConfig,
+        "mod": MoDConfig,
+        "sdt": SDTConfig,
+        "stt": STTConfig,
+    }
+    config_class = config_class_map.get(model_type, Qwen2Config)
+
+    # Create base config
     if from_scratch:
         if model_cfg.size not in model_cfg.scratch_config:
             raise ValueError(f"Unknown model size for scratch: {model_cfg.size}")
-        config = Qwen2Config(
+        config = config_class(
             **model_cfg.scratch_config[model_cfg.size],
             vocab_size=model_cfg.scratch_config.vocab_size,
             max_position_embeddings=model_cfg.scratch_config.max_position_embeddings,
@@ -35,10 +44,9 @@ def create_model(model_type: str, cfg: DictConfig) -> torch.nn.Module:
             sliding_window=model_cfg.scratch_config.sliding_window,
         )
     else:
-        config = Qwen2Config.from_pretrained(model_cfg.pretrained_model_name_or_path)
+        config = config_class.from_pretrained(model_cfg.pretrained_model_name_or_path)
 
-    # Dynamically update config with all parameters from the 'model' section
-    # We convert the OmegaConf object to a standard python dict to prevent
+    # Dynamically update config with all parameters from the 'model' section    # We convert the OmegaConf object to a standard python dict to prevent
     # serialization errors when saving the config.
     model_cfg_dict = OmegaConf.to_container(model_cfg, resolve=True)
     for key, value in model_cfg_dict.items():

@@ -234,40 +234,31 @@ def main(cfg: DictConfig):
         unwrapped_model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
 
-        # Manually correct the model_type and architectures in config.json
+        # Ensure config.json has the correct model_type and architectures for AutoModel and lm-eval
         if accelerator.is_main_process:
             try:
                 config_path = save_path / "config.json"
                 with open(config_path, "r") as f:
                     config_data = json.load(f)
 
-                correct_model_type = cfg.model.type
+                # model_type is set by the config class, but we'll double check
+                config_data["model_type"] = cfg.model.type
+                
                 model_class_map = {
                     "standard": "StandardTransformerForCausalLM",
                     "mod": "MoDForCausalLM",
                     "sdt": "SDTForCausalLM",
                     "stt": "STTForCausalLM",
                 }
-                correct_arch = model_class_map.get(correct_model_type)
-
-                updated = False
-                if config_data.get("model_type") != correct_model_type:
-                    log.warning(
-                        f"Overwriting incorrect model_type in config.json. Was: {config_data.get('model_type')}, should be: {correct_model_type}"
-                    )
-                    config_data["model_type"] = correct_model_type
-                    updated = True
-                
-                if correct_arch and (not config_data.get("architectures") or correct_arch not in config_data["architectures"]):
-                    log.info(f"Adding architecture {correct_arch} to config.json")
+                correct_arch = model_class_map.get(cfg.model.type)
+                if correct_arch:
                     config_data["architectures"] = [correct_arch]
-                    updated = True
 
-                if updated:
-                    with open(config_path, "w") as f:
-                        json.dump(config_data, f, indent=2)
+                with open(config_path, "w") as f:
+                    json.dump(config_data, f, indent=2)
+                log.info(f"Final config.json verified for model_type '{cfg.model.type}' and architecture '{correct_arch}'")
             except Exception as e:
-                log.error(f"Failed to manually correct model_type or architectures in config.json: {e}")
+                log.error(f"Failed to verify config.json: {e}")
 
         if cfg.run.run_final_evaluation and cfg.lm_eval.enabled:
             log.info("Starting final benchmark evaluation...")
