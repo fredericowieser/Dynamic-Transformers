@@ -165,29 +165,27 @@ def main():
     log.info(f"Explicitly loading model class: {model_class.__name__}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     
-    # Determine if we should use model parallelism
+    # Custom models (MoD, SDT, STT) have complex routing logic (dynamic token
+    # selection, scatter/gather, custom Triton kernels) that assumes all tensors
+    # live on one device.  device_map="auto" (parallelize=True) splits the model
+    # across GPUs and breaks these invariants, causing CUDA index-out-of-bounds
+    # errors.  Only enable parallelization for the standard model.
     num_gpus = torch.cuda.device_count()
-    parallelize = num_gpus > 1
-    
-    if parallelize:
-        log.info(f"Detected {num_gpus} GPUs. Enabling model parallelization for faster evaluation.")
-        # When using parallelize=True, we don't pass 'device' to HFLM
-        hflm_device = None
-    else:
-        hflm_device = device
+    parallelize = num_gpus > 1 and model_type == "standard"
 
-    # Passing the path instead of the model object helps lm-eval manage memory and 
-    # reduces 'not a string' warnings. We pass the modified config.
-    # Note: AutoModelForCausalLM.register MUST be called before this, 
-    # which is handled by 'from src.models import ...'
+    if parallelize:
+        log.info(f"Detected {num_gpus} GPUs. Enabling model parallelization for {model_type} model.")
+    elif num_gpus > 1:
+        log.info(f"Detected {num_gpus} GPUs but disabling parallelization for custom model type '{model_type}'.")
+
     adaptor = HFLM(
         pretrained=args.model_path,
         tokenizer=tokenizer,
         batch_size=args.batch_size,
-        device=hflm_device,
+        device=device,
         parallelize=parallelize,
         trust_remote_code=True,
-        config=config
+        config=config,
     )
 
     # Shot counts to align with official Qwen 2.5 evaluations

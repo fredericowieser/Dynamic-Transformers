@@ -171,7 +171,10 @@ class BaseForCausalLM(PreTrainedModel):
         lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         total_loss = lm_loss
-        out = {"logits": logits, "lm_loss": lm_loss}
+        # Don't include logits in training output — the [B, T, V] tensor is never
+        # used by the training loop, but Accelerate's DDP wrapper converts all
+        # outputs to fp32, which allocates an extra B*T*V*4 bytes (~18 GB at B=32).
+        out = {"lm_loss": lm_loss}
 
         aux_metrics = {}
         if self.training and aux:

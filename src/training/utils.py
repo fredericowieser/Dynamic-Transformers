@@ -116,104 +116,138 @@ def calculate_vram_optimized_batch_size(
     cfg: DictConfig, model: torch.nn.Module, accelerator
 ) -> Tuple[int, int]:
     """
-    Automatically computes the optimal per-device batch size and gradient accumulation steps
-    to achieve a target total batch size of 64, while fitting within available VRAM.
+    Trial-based VRAM auto-configurator: runs a small forward+backward pass on GPU
+    to measure actual memory per sample, then picks the largest safe batch size.
     """
     import math
+    from contextlib import nullcontext
 
     target_total_batch_size = 64
     num_processes = accelerator.num_processes
-    seq_len = cfg.data.block_size
 
-    # Extract model dimensions
-    vocab_size = getattr(model.config, "vocab_size", 151936)
-    if hasattr(model.config, "hidden_size"):
-        hidden_size = model.config.hidden_size
-        num_layers = model.config.num_hidden_layers
-        num_heads = model.config.num_attention_heads
-    else:
-        size_cfg = cfg.model.scratch_config.get(cfg.model.size, {})
-        hidden_size = size_cfg.get("hidden_size", 896)
-        num_layers = size_cfg.get("num_hidden_layers", 24)
-        num_heads = size_cfg.get("num_attention_heads", 14)
-
-    # Count parameters
-    params = sum(p.numel() for p in model.parameters())
-
-    # 1. Estimate Fixed Overhead (Weights + Gradients + Optimizer States)
-    # AdamW with fp32 master weights: 16 bytes per param
-    # Using a 1.3x buffer for distributed overhead and NCCL buffers
-    fixed_overhead_gb = (params * 16 * 1.3) / (1024**3)
-
-    # 2. Estimate Activation Memory per Sample
-    # Eager attention matrix: [H, T, T]
-    attn_matrix_mem_gb = (num_heads * seq_len * seq_len * 2) / (1024**3)
-    
-    # LOGITS MEMORY: [T, V]
-    # This is often the largest activation for large vocab models!
-    # [1024, 151936] * 2 bytes (bf16) = 300MB per sample
-    # During CrossEntropy, this can be converted to fp32 = 600MB per sample
-    logits_mem_per_sample_gb = (seq_len * vocab_size * 4) / (1024**3)
-    
-    is_checkpointing = getattr(cfg.training, "gradient_checkpointing", True)
-    is_eager = getattr(model.config, "attn_implementation", "eager") == "eager"
-    eager_overhead_factor = 4.0 if is_eager else 1.2
-    
-    if is_checkpointing:
-        # Boundary: B * T * D * L * 2 bytes
-        boundary_mem_per_sample = (seq_len * hidden_size * num_layers * 2) / (1024**3)
-        # Peak: One layer recomputation (Factor 8) + Attention intermediates
-        peak_layer_mem = (seq_len * hidden_size * 8 * 2) / (1024**3) + (attn_matrix_mem_gb * eager_overhead_factor)
-        mem_per_sample_gb = boundary_mem_per_sample + peak_layer_mem + logits_mem_per_sample_gb
-    else:
-        # No checkpointing: All layers + all attention
-        mem_per_sample_gb = (seq_len * hidden_size * num_layers * 14 * 2 * eager_overhead_factor) / (1024**3) + \
-                           (attn_matrix_mem_gb * num_layers * eager_overhead_factor) + \
-                           logits_mem_per_sample_gb
-
-    # 3. Get Available VRAM
-    if torch.cuda.is_available():
-        device_id = accelerator.local_process_index
-        total_mem_gb = torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
-        # Safety margin: 35% for kernels, fragmentation, dataloader, and workspace
-        safe_limit_gb = total_mem_gb * 0.65
-        available_vram_gb = safe_limit_gb - fixed_overhead_gb
-    else:
+    if not torch.cuda.is_available():
         return cfg.data.batch_size, cfg.training.accumulate_grad_batches
 
-    if available_vram_gb <= 0:
-        log.warning(
-            f"Model overhead ({fixed_overhead_gb:.2f}GB) exceeds safe GPU limit ({safe_limit_gb:.2f}GB). "
-            "Setting batch size to 1 and hoping for the best."
+    device = torch.device(f"cuda:{accelerator.local_process_index}")
+    seq_len = cfg.data.block_size
+    vocab_size = getattr(model.config, "vocab_size", 151936)
+
+    # Determine autocast dtype to match training conditions
+    precision = cfg.system.get("precision", "bf16")
+    if precision == "bf16":
+        autocast_dtype = torch.bfloat16
+    elif precision == "fp16":
+        autocast_dtype = torch.float16
+    else:
+        autocast_dtype = None
+
+    # Fixed overhead NOT captured by the trial (optimizer + DDP created later)
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    all_params = sum(p.numel() for p in model.parameters())
+    # AdamW: fp32 master weights + momentum + variance = 12 bytes per trainable param
+    # DDP: gradient allreduce buckets ≈ param_size
+    optimizer_bytes = trainable_params * 12
+    ddp_bytes = all_params * 2
+    fixed_overhead = optimizer_bytes + ddp_bytes
+
+    # --- Run trial on GPU ---
+    original_device = next(model.parameters()).device
+    was_training = model.training
+
+    try:
+        model.to(device)
+    except torch.cuda.OutOfMemoryError:
+        log.warning("Model doesn't fit on GPU. Using batch_size=1.")
+        return 1, max(1, math.ceil(target_total_batch_size / num_processes))
+
+    model.train()
+    torch.cuda.reset_peak_memory_stats(device)
+    torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
+
+    model_mem = torch.cuda.memory_allocated(device)
+
+    trial_batch = 2
+    dummy_input = torch.randint(0, vocab_size, (trial_batch, seq_len), device=device)
+    dummy_labels = torch.randint(0, vocab_size, (trial_batch, seq_len), device=device)
+
+    trial_success = False
+    per_sample_bytes = 0
+    peak_mem = 0
+    param_grad_mem = 0
+    trial_outputs = None
+    trial_loss = None
+
+    try:
+        amp_ctx = torch.cuda.amp.autocast(dtype=autocast_dtype) if autocast_dtype else nullcontext()
+        with amp_ctx:
+            trial_outputs = model(input_ids=dummy_input, labels=dummy_labels)
+            trial_loss = trial_outputs["loss"] if isinstance(trial_outputs, dict) else trial_outputs.loss
+            trial_loss.backward()
+
+        torch.cuda.synchronize(device)
+        peak_mem = torch.cuda.max_memory_allocated(device)
+
+        param_grad_mem = sum(
+            p.grad.numel() * p.grad.element_size()
+            for p in model.parameters() if p.grad is not None
         )
+        # Activation memory = peak - model weights - parameter gradients
+        activation_mem = peak_mem - model_mem - param_grad_mem
+        per_sample_bytes = max(activation_mem, 0) / trial_batch
+        trial_success = True
+
+    except torch.cuda.OutOfMemoryError:
+        log.warning("Trial forward/backward OOMed with batch=2. Defaulting to batch_size=1.")
+
+    # Clean up
+    model.zero_grad(set_to_none=True)
+    del dummy_input, dummy_labels, trial_outputs, trial_loss
+    torch.cuda.empty_cache()
+    model.to(original_device)
+    if not was_training:
+        model.eval()
+    torch.cuda.empty_cache()
+
+    if not trial_success or per_sample_bytes <= 0:
+        per_device_batch = 1
+        accumulate_steps = max(1, math.ceil(target_total_batch_size / (per_device_batch * num_processes)))
+        if accelerator.is_main_process:
+            log.info("--- VRAM Auto-Configurator (Fallback) ---")
+            log.info(f"Per-Device Batch: {per_device_batch}, Accumulation: {accumulate_steps}")
+        return per_device_batch, accumulate_steps
+
+    # Calculate optimal batch size
+    total_gpu_mem = torch.cuda.get_device_properties(device).total_memory
+    usable_mem = total_gpu_mem * 0.90  # 10% safety for fragmentation/CUDA workspace
+
+    # Available = usable - model weights - param gradients - optimizer states - DDP buffers
+    available = usable_mem - model_mem - param_grad_mem - fixed_overhead
+
+    if available <= 0:
         per_device_batch = 1
     else:
-        # Max samples that can fit in available VRAM
-        per_device_batch = int(available_vram_gb // mem_per_sample_gb)
-        
-        # Max samples needed per device to hit target without accumulation
-        needed_per_device = math.ceil(target_total_batch_size / num_processes)
-        
-        # Final per-device batch size
-        per_device_batch = max(1, min(per_device_batch, needed_per_device))
-
-        # Prefer power of 2
+        per_device_batch = int(available / per_sample_bytes)
+        needed = math.ceil(target_total_batch_size / num_processes)
+        per_device_batch = max(1, min(per_device_batch, needed))
         if per_device_batch > 1:
             per_device_batch = 2 ** int(math.log2(per_device_batch))
 
-    # 4. Calculate Accumulation Steps
-    total_batch_one_step = per_device_batch * num_processes
-    accumulate_steps = math.ceil(target_total_batch_size / total_batch_one_step)
+    total_batch = per_device_batch * num_processes
+    accumulate_steps = max(1, math.ceil(target_total_batch_size / total_batch))
 
     if accelerator.is_main_process:
-        log.info(f"--- VRAM Auto-Configurator (Hyper-Conservative) ---")
-        log.info(f"GPU Total: {total_mem_gb:.2f}GB | Safe Limit: {safe_limit_gb:.2f}GB")
-        log.info(f"Model Overhead: {fixed_overhead_gb:.2f}GB | Attn Implementation: {getattr(model.config, 'attn_implementation', 'unknown')}")
-        log.info(f"Estimated Mem/Sample: {mem_per_sample_gb*1024:.2f}MB")
+        log.info("--- VRAM Auto-Configurator (Trial-Based) ---")
+        log.info(f"GPU Total: {total_gpu_mem/(1024**3):.2f}GB | Usable (90%%): {usable_mem/(1024**3):.2f}GB")
+        log.info(f"Model Weights: {model_mem/(1024**3):.2f}GB | Param Grads: {param_grad_mem/(1024**3):.2f}GB")
+        log.info(f"Fixed Overhead (optim+DDP): {fixed_overhead/(1024**3):.2f}GB")
+        log.info(f"Trial Peak (batch={trial_batch}): {peak_mem/(1024**3):.2f}GB")
+        log.info(f"Measured Mem/Sample: {per_sample_bytes/(1024**2):.2f}MB")
+        log.info(f"Available for Activations: {available/(1024**3):.2f}GB")
         log.info(f"Selected Per-Device Batch: {per_device_batch}")
         log.info(f"Selected Accumulation Steps: {accumulate_steps}")
         log.info(f"Resulting Total Batch Size: {per_device_batch * num_processes * accumulate_steps}")
-        log.info(f"--------------------------------------------------")
+        log.info("---------------------------------------------")
 
     return per_device_batch, accumulate_steps
 
