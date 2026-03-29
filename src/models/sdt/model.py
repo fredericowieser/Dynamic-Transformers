@@ -20,8 +20,8 @@ class SDTPriorNetwork(BasePriorNetwork):
         super().__init__(config)
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(self.norm(x))
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return super().forward(self.norm(x))
 
 
 class SDTRouter(BaseSurpriseRouter):
@@ -29,12 +29,15 @@ class SDTRouter(BaseSurpriseRouter):
         super().__init__(config, capacity_attr="capacity")
 
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
-        actual_residual, predicted_residual = args[0], args[1]
+        actual_residual, mu_q, log_var_q = args[0], args[1], args[2]
         beta_ce, beta_cu = kwargs["beta_ce"], kwargs["beta_cu"]
+        c = getattr(self.config, "posterior_variance_c", 1.0)
 
         d = float(actual_residual.shape[-1])
         D_st = torch.sum(actual_residual.pow(2), dim=-1) / d
-        D_ch = torch.sum((actual_residual - predicted_residual).pow(2), dim=-1) / d
+        
+        # D_ch is now the KL Divergence
+        D_ch = self.compute_kl_divergence(actual_residual, mu_q, log_var_q, c)
 
         g_cont, stats = self._get_vpr_signals(D_st, D_ch, beta_ce, beta_cu)
 
@@ -59,15 +62,12 @@ class SDTDecisionLayer(nn.Module):
         out = self.block(hidden_states, **kwargs)
         processed_hidden = out[0] if isinstance(out, tuple) else out
 
-        prior_output = self.prior(original_hidden)
-        prior_hidden = original_hidden + prior_output
+        # Get mean and log variance from prior
+        mu_q, log_var_q = self.prior(original_hidden)
 
         actual_residual = processed_hidden - original_hidden
-        predicted_residual = prior_hidden - original_hidden
 
-        prior_loss = F.mse_loss(predicted_residual, actual_residual.detach())
-
-        return processed_hidden, actual_residual, predicted_residual, prior_loss
+        return processed_hidden, actual_residual, mu_q, log_var_q
 
 
 class SDTPair(nn.Module):
@@ -82,14 +82,16 @@ class SDTPair(nn.Module):
 
     def forward(self, hidden_states, use_causal_router: bool = False, **kwargs):
         # Decision Phase
-        processed_hidden, actual_res, predicted_res, prior_loss = self.decision(
+        processed_hidden, actual_res, mu_q, log_var_q = self.decision(
             hidden_states, **kwargs
         )
 
         layer_losses = {}
         router_stats = {}
         if self.training:
-            layer_losses["sdt_prior_loss"] = prior_loss
+            c = getattr(self.config, "posterior_variance_c", 1.0)
+            kl_div_per_token = BaseSurpriseRouter.compute_kl_divergence(actual_res.detach(), mu_q, log_var_q, c)
+            layer_losses["sdt_prior_loss"] = kl_div_per_token.mean()
 
         B, T, D = hidden_states.shape
 
@@ -107,7 +109,7 @@ class SDTPair(nn.Module):
         else:
             # Routing Phase
             g_cont, binary_targets, surprise_stats = self.router(
-                actual_res, predicted_res, **kwargs
+                actual_res, mu_q, log_var_q, **kwargs
             )
             
             causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)

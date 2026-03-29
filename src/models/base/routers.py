@@ -99,6 +99,22 @@ class BaseSurpriseRouter(BaseRouter):
 
         self.ma_window = int(getattr(config, "ma_window", 100))
 
+    @staticmethod
+    def compute_kl_divergence(mu_p: torch.Tensor, mu_q: torch.Tensor, log_var_q: torch.Tensor, c: float) -> torch.Tensor:
+        """
+        Computes the normalized KL Divergence D_KL(p||q) / d.
+        Uses the log-variance trick for numerical stability (exp(-log_var) replaces division by variance).
+        """
+        # Precision-weighted squared error + posterior variance
+        precision_weighted_term = ((mu_p - mu_q).pow(2) + c) * torch.exp(-log_var_q)
+        
+        # Sum over dimension d, but we use mean to divide by d implicitly, 
+        # keeping the scale of D_ch identical to the old MSE formulation.
+        # D_KL/d = 0.5 * mean(log_var_q + precision_weighted_term)
+        kl_div_normalized = 0.5 * torch.mean(log_var_q + precision_weighted_term, dim=-1)
+        
+        return kl_div_normalized
+
     def _moving_average(self, d_st: torch.Tensor) -> torch.Tensor:
         B, T = d_st.shape
         W = min(self.ma_window, T)

@@ -23,8 +23,8 @@ class STTTransitionNetwork(BasePriorNetwork):
         super().__init__(config)
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(self.norm(x))
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return super().forward(self.norm(x))
 
 
 class STTPredictiveRouter(BaseSurpriseRouter):
@@ -32,14 +32,15 @@ class STTPredictiveRouter(BaseSurpriseRouter):
         super().__init__(config, capacity_attr=capacity_attr)
 
     def forward(self, *args, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
-        actual_residual = args[0]
-        predicted_residual = args[1]
-        beta_ce = kwargs["beta_ce"]
-        beta_cu = kwargs["beta_cu"]
+        actual_residual, mu_q, log_var_q = args[0], args[1], args[2]
+        beta_ce, beta_cu = kwargs["beta_ce"], kwargs["beta_cu"]
+        c = getattr(self.config, "posterior_variance_c", 1.0)
 
         d = float(actual_residual.shape[-1])
         D_st = torch.sum(actual_residual.pow(2), dim=-1) / d
-        D_ch = torch.sum((actual_residual - predicted_residual).pow(2), dim=-1) / d
+        
+        # D_ch is now the KL Divergence
+        D_ch = self.compute_kl_divergence(actual_residual, mu_q, log_var_q, c)
 
         g_cont, stats = self._get_vpr_signals(D_st, D_ch, beta_ce, beta_cu)
         return g_cont, stats
@@ -99,12 +100,17 @@ class STTLayer(nn.Module):
         prev_final_states = torch.cat(
             [torch.zeros_like(processed_hidden[:, :1, :]), processed_hidden[:, :-1, :]], dim=1
         )
-        predicted_residual = self.transition_network(prev_final_states)
+        
+        # Get mean and log variance from transition network
+        mu_q, log_var_q = self.transition_network(prev_final_states)
+        
         if self.training:
-            layer_losses["stt_tpn_loss"] = F.mse_loss(predicted_residual, actual_residual.detach())
+            c = getattr(self.config, "posterior_variance_c", 1.0)
+            kl_div_per_token = BaseSurpriseRouter.compute_kl_divergence(actual_residual.detach(), mu_q, log_var_q, c)
+            layer_losses["stt_tpn_loss"] = kl_div_per_token.mean()
 
         g_cont, pred_stats = self.predictive_router(
-            actual_residual, predicted_residual, **kwargs
+            actual_residual, mu_q, log_var_q, **kwargs
         )
         router_stats.update(pred_stats)
 
