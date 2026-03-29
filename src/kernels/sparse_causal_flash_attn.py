@@ -265,7 +265,7 @@ class SparseCausalAttention(torch.autograd.Function):
             num_warps=4, num_stages=1,
         )
 
-        orig_dtype = ctx.saved_tensors[0].dtype
+        orig_dtype = q.dtype
         return dq.transpose(1, 2), dk.to(orig_dtype).transpose(1, 2), dv.to(orig_dtype).transpose(1, 2), None, None
 
 
