@@ -228,6 +228,8 @@ def main(cfg: DictConfig):
             if global_step > 0 and global_step % cfg.training.eval_interval == 0:
                 model.eval()
                 eval_losses = []
+                eval_causal_losses = []
+                eval_causal_accs = []
                 eval_batches = []
                 for i, eval_batch in enumerate(eval_loader):
                     if i >= 50:
@@ -241,25 +243,54 @@ def main(cfg: DictConfig):
                     with torch.no_grad():
                         eval_x, eval_y = eval_batch
                         val_outputs = model(input_ids=eval_x, labels=eval_y)
+                        
                         # Unsqueeze the loss to make it a 1D tensor before gathering
                         loss_tensor = val_outputs["loss"].unsqueeze(0)
                         eval_losses.append(accelerator.gather(loss_tensor))
+                        
+                        if "aux_metrics" in val_outputs:
+                            batch_causal_losses = []
+                            batch_causal_accs = []
+                            for k, v in val_outputs["aux_metrics"].items():
+                                if "causal_router" in k:
+                                    if "loss" in k and "unscaled" in k:
+                                        batch_causal_losses.append(v.unsqueeze(0) if v.dim() == 0 else v)
+                                    elif "acc" in k:
+                                        batch_causal_accs.append(v.unsqueeze(0) if v.dim() == 0 else v)
+                            
+                            if batch_causal_losses:
+                                avg_batch_causal_loss = torch.mean(torch.stack(batch_causal_losses))
+                                eval_causal_losses.append(accelerator.gather(avg_batch_causal_loss.unsqueeze(0)))
+                            if batch_causal_accs:
+                                avg_batch_causal_acc = torch.mean(torch.stack(batch_causal_accs))
+                                eval_causal_accs.append(accelerator.gather(avg_batch_causal_acc.unsqueeze(0)))
 
                 if eval_losses:
                     val_loss = torch.mean(torch.cat(eval_losses))
                     val_perplexity = torch.exp(val_loss)
+                    
+                    val_causal_info = ""
+                    if eval_causal_losses:
+                        avg_val_causal_loss = torch.mean(torch.cat(eval_causal_losses)).item()
+                        val_causal_info += f", Causal Loss: {avg_val_causal_loss:.4f}"
+                    if eval_causal_accs:
+                        avg_val_causal_acc = torch.mean(torch.cat(eval_causal_accs)).item()
+                        val_causal_info += f", Causal Acc: {avg_val_causal_acc:.4f}"
 
                     if accelerator.is_main_process:
                         if cfg.logging.wandb.enabled:
-                            wandb.log(
-                                {
-                                    "val/loss": val_loss.item(),
-                                    "val/perplexity": val_perplexity.item(),
-                                },
-                                step=global_step,
-                            )
+                            log_dict = {
+                                "val/loss": val_loss.item(),
+                                "val/perplexity": val_perplexity.item(),
+                            }
+                            if eval_causal_losses:
+                                log_dict["val/causal_loss"] = avg_val_causal_loss
+                            if eval_causal_accs:
+                                log_dict["val/causal_acc"] = avg_val_causal_acc
+                            wandb.log(log_dict, step=global_step)
+
                         accelerator.print(
-                            f"Validation Loss: {val_loss.item():.4f}, Perplexity: {val_perplexity.item():.2f}"
+                            f"Validation Loss: {val_loss.item():.4f}, Perplexity: {val_perplexity.item():.2f}{val_causal_info}"
                         )
 
                         if val_loss < best_eval_loss:

@@ -144,10 +144,9 @@ class STTLayer(nn.Module):
 
         causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)
         
-        if self.training:
-            layer_losses["stt_causal_router_loss"] = causal_loss
+        layer_losses["stt_causal_router_loss"] = causal_loss
         if causal_acc is not None:
-            router_stats["causal_router_acc"] = causal_acc.item()
+            router_stats["causal_router_acc"] = causal_acc # Tensor for gathering
 
         # Apply the second TF block only to selected tokens, always using soft gating
         final_hidden_states, _, _ = self.block.process_selected(
@@ -327,8 +326,8 @@ class STTForCausalLM(BaseForCausalLM):
             avg_g_cont_across_layers = torch.mean(torch.stack(all_g_cont_values))
             aux["unscaled_losses"]["stt_g_reg_loss"] = avg_g_cont_across_layers
             aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont_across_layers.item()
-        elif self.training and all_g_cont_values:
-            # Just log it for fixed capacity
+        elif all_g_cont_values:
+            # Just log it for fixed capacity or validation
             avg_g_cont = sum([g.mean().item() if hasattr(g, "mean") else g for g in all_g_cont_values]) / len(all_g_cont_values)
             aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont
 

@@ -118,10 +118,9 @@ class SDTPair(nn.Module):
             router_stats.update(surprise_stats)
             router_stats["g_cont"] = g_cont.mean().item()
             
-            if self.training:
-                layer_losses["sdt_causal_router_loss"] = causal_loss
+            layer_losses["sdt_causal_router_loss"] = causal_loss
             if causal_acc is not None:
-                router_stats["causal_router_acc"] = causal_acc.item()
+                router_stats["causal_router_acc"] = causal_acc # Tensor for gathering
 
             # Dynamic Execution Phase
             k = max(1, int(T * self.router.capacity))
@@ -256,14 +255,13 @@ class SDTForCausalLM(BaseForCausalLM):
                         use_causal_router=use_causal_router,
                         **kwargs,
                     )
-                if self.training:
-                    all_losses.append(losses)
-                    for key, value in stats.items():
-                        all_router_stats[f"sdt/layer_{i}/{key}"] = value
+                all_losses.append(losses)
+                for key, value in stats.items():
+                    all_router_stats[f"sdt/layer_{i}/{key}"] = value
 
-                    # Collect g_cont for logging
-                    if "g_cont" in stats:
-                        all_g_cont_values.append(stats["g_cont"])
+                # Collect g_cont for logging
+                if "g_cont" in stats:
+                    all_g_cont_values.append(stats["g_cont"])
 
             elif isinstance(layer, nn.Identity):
                 continue
@@ -299,24 +297,23 @@ class SDTForCausalLM(BaseForCausalLM):
                     )
 
         aux = {}
-        if self.training:
-            # FIX: Use a robust loop for aggregating losses instead of a brittle comprehension.
-            agg_losses = {}
-            if all_losses:
-                all_keys = set(k for l in all_losses for k in l)
-                for k in all_keys:
-                    key_losses = [l[k] for l in all_losses if k in l and l.get(k) is not None]
-                    if key_losses:
-                        agg_losses[k] = torch.mean(torch.stack(key_losses))
-            aux["unscaled_losses"] = agg_losses
-            aux["router_stats"] = all_router_stats
-            aux["beta_ce"] = beta_ce
-            aux["beta_cu"] = beta_cu
+        # FIX: Aggregating losses robustly
+        agg_losses = {}
+        if all_losses:
+            all_keys = set(k for l in all_losses for k in l)
+            for k in all_keys:
+                key_losses = [l[k] for l in all_losses if k in l and l.get(k) is not None]
+                if key_losses:
+                    agg_losses[k] = torch.mean(torch.stack(key_losses))
+        aux["unscaled_losses"] = agg_losses
+        aux["router_stats"] = all_router_stats
+        aux["beta_ce"] = beta_ce
+        aux["beta_cu"] = beta_cu
 
-            # Add g_cont mean across layers to router_stats
-            if all_g_cont_values:
-                aux["router_stats"]["sdt_g_cont_mean_across_layers"] = sum(all_g_cont_values) / len(
-                    all_g_cont_values
-                )
+        # Add g_cont mean across layers to router_stats
+        if all_g_cont_values:
+            aux["router_stats"]["sdt_g_cont_mean_across_layers"] = sum(all_g_cont_values) / len(
+                all_g_cont_values
+            )
 
         return hidden_states, aux
