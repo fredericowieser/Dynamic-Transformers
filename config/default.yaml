@@ -22,7 +22,7 @@ model:
   # --- Common Dynamic Model Parameters ---
   capacity: 0.75
   posterior_variance_c: 1.0  # Constant for isotropic posterior variance
-  prior_ffn_intermediate_size_factor: 0.0625 # Factor of hidden size (e.g., 0.0625 for 1/16)
+  prior_ffn_intermediate_size_factor: 0.125 # Factor of hidden size (e.g., 0.0625 for 1/16)
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
@@ -39,15 +39,15 @@ model:
   # --- Model-Specific Loss Weights ---
   sdt:
     prior_loss_weight: 0.05
-    causal_router_loss_weight: 0.0
+    causal_router_loss_weight: 0.01
   
   stt:
     tpn_loss_weight: 0.05
-    causal_router_loss_weight: 0.0
+    causal_router_loss_weight: 0.01
 
   mod:
     router_aux_loss_weight: 0.01    # Weight for the non-causal Top-K router BCE loss
-    causal_router_loss_weight: 0.0 # Weight for the Unified Causal Router BCE loss
+    causal_router_loss_weight: 0.01 # Weight for the Unified Causal Router BCE loss
     z_loss_weight: 1.0e-4           # Default weight for MoD Z-loss
 
   # Beta schedule for SDT and STT routers
@@ -99,7 +99,7 @@ training:
   num_epochs: 1
   max_steps: 10000 # If > 0, overrides num_epochs
   accumulate_grad_batches: 8
-  eval_interval: 500
+  eval_interval: 1000
   use_gradient_clipping: True
   gradient_clip_val: 1.0
   gradient_checkpointing: True
