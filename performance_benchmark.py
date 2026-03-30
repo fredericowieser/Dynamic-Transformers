@@ -181,9 +181,10 @@ def main():
     # Define benchmarks to run
     benchmarks = [
         {"name": "Dense Baseline", "type": "standard", "causal": False},
-        {"name": "MoD Baseline", "type": "mod", "causal": False},
-        {"name": "SDT (Causal)", "type": "sdt", "causal": True},
-        {"name": "STT (Causal)", "type": "stt", "causal": True},
+        {"name": "Inference Mode", "type": "mod", "causal": True}, # Representative for all models using the unified causal router
+        {"name": "MoD Training", "type": "mod", "causal": False},
+        {"name": "SDT Training", "type": "sdt", "causal": False},
+        {"name": "STT Training", "type": "stt", "causal": False},
     ]
 
     all_results = {}
