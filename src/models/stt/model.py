@@ -322,10 +322,14 @@ class STTForCausalLM(BaseForCausalLM):
         aux["beta_ce"] = beta_ce
         aux["beta_cu"] = beta_cu
 
-        # Add g_cont regularization loss if applicable
-        if self.training and all_g_cont_values:
+        # Add g_cont regularization loss if applicable (primarily for variable capacity)
+        if self.training and all_g_cont_values and getattr(self.config, "use_g_threshold_selection", False):
             avg_g_cont_across_layers = torch.mean(torch.stack(all_g_cont_values))
             aux["unscaled_losses"]["stt_g_reg_loss"] = avg_g_cont_across_layers
             aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont_across_layers.item()
+        elif self.training and all_g_cont_values:
+            # Just log it for fixed capacity
+            avg_g_cont = sum([g.mean().item() if hasattr(g, "mean") else g for g in all_g_cont_values]) / len(all_g_cont_values)
+            aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont
 
         return hidden_states, aux

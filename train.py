@@ -199,14 +199,26 @@ def main(cfg: DictConfig):
                 log_metrics = {"train/loss": loss.item()}
                 causal_info = ""
                 
+                # Aggregate causal router metrics across layers for cleaner printing
+                causal_accs = []
+                causal_losses = []
+                
                 if "aux_metrics" in outputs:
                     for k, v in outputs["aux_metrics"].items():
                         if "causal_router" in k:
                             log_metrics[f"train/{k}"] = v
                             if "loss" in k:
-                                causal_info += f", Causal Loss: {v:.4f}"
+                                if "unscaled" in k: # Prefer unscaled for printing
+                                    causal_losses.append(v.item() if hasattr(v, "item") else v)
                             elif "acc" in k:
-                                causal_info += f", Causal Acc: {v:.4f}"
+                                causal_accs.append(v.item() if hasattr(v, "item") else v)
+
+                if causal_losses:
+                    avg_loss = sum(causal_losses) / len(causal_losses)
+                    causal_info += f", Causal Loss: {avg_loss:.4f}"
+                if causal_accs:
+                    avg_acc = sum(causal_accs) / len(causal_accs)
+                    causal_info += f", Causal Acc: {avg_acc:.4f}"
 
                 if cfg.logging.wandb.enabled:
                     wandb.log(log_metrics, step=global_step)
