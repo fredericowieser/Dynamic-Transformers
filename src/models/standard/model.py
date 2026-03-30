@@ -72,6 +72,7 @@ class StandardTransformerForCausalLM(BaseForCausalLM):
             layer_attn_mask = mask_mapping[layer.block.layer.attention_type]
             
             if self.gradient_checkpointing and self.training:
+                # StandardLayer.forward is simplified to just process_selected
                 hidden_states, losses, metrics = torch.utils.checkpoint.checkpoint(
                     layer.__call__,
                     hidden_states,

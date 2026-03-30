@@ -95,8 +95,18 @@ class STTLayer(nn.Module):
         # TRAINING MODE (Non-Causal Top-K via KL Divergence)
         # ==========================================
         # First pass through the block to get processed_hidden and residuals
-        out = self.block(hidden_states, **kwargs)
-        processed_hidden = out[0] if isinstance(out, tuple) else out
+        # Use process_selected (100% capacity) to trigger Triton/Sparse attention
+        batch_idx_all = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, T).reshape(-1)
+        token_idx_all = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1).reshape(-1)
+        
+        processed_hidden, _, _ = self.block.process_selected(
+            hidden_states,
+            batch_indices=batch_idx_all,
+            token_indices=token_idx_all,
+            gating_scores=None,
+            use_soft_gating=False,
+            **kwargs,
+        )
 
         actual_residual = processed_hidden - original_hidden
 

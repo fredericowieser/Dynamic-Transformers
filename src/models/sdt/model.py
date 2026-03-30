@@ -59,8 +59,21 @@ class SDTDecisionLayer(nn.Module):
 
     def forward(self, hidden_states, **kwargs):
         original_hidden = hidden_states
-        out = self.block(hidden_states, **kwargs)
-        processed_hidden = out[0] if isinstance(out, tuple) else out
+        
+        B, T, D = hidden_states.shape
+        # Select ALL tokens for the decision phase, but use the optimized kernel path
+        batch_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(-1, T).reshape(-1)
+        token_idx = torch.arange(T, device=hidden_states.device).unsqueeze(0).expand(B, -1).reshape(-1)
+        
+        # Use process_selected to trigger the Triton kernel path (O(T) memory)
+        processed_hidden, _, _ = self.block.process_selected(
+            hidden_states,
+            batch_indices=batch_idx,
+            token_indices=token_idx,
+            gating_scores=None,
+            use_soft_gating=False,
+            **kwargs,
+        )
 
         # Get mean and log variance from prior
         mu_q, log_var_q = self.prior(original_hidden)
