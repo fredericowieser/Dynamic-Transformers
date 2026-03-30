@@ -175,8 +175,8 @@ def main():
     cfg = OmegaConf.load("config/default.yaml")
     cfg.model.from_scratch = True
     cfg.model.size = args.model_size
-    cfg.system.use_flash_attention = device == "cuda"
-    cfg.model.attn_implementation = "flash_attention_2" if device == "cuda" else "eager"
+    cfg.system.use_flash_attention = False
+    cfg.model.attn_implementation = "eager"
     
     # Define benchmarks to run
     benchmarks = [
