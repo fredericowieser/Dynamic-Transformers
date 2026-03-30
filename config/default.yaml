@@ -20,9 +20,9 @@ model:
   use_cache: False
 
   # --- Common Dynamic Model Parameters ---
-  capacity: 0.5
+  capacity: 0.75
   posterior_variance_c: 1.0  # Constant for isotropic posterior variance
-  prior_ffn_intermediate_size_factor: 0.125 # Factor of hidden size (e.g., 0.0625 for 1/16)
+  prior_ffn_intermediate_size_factor: 0.0625 # Factor of hidden size (e.g., 0.0625 for 1/16)
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
@@ -39,15 +39,15 @@ model:
   # --- Model-Specific Loss Weights ---
   sdt:
     prior_loss_weight: 0.05
-    causal_router_loss_weight: 0.01
+    causal_router_loss_weight: 0.0
   
   stt:
     tpn_loss_weight: 0.05
-    causal_router_loss_weight: 0.01
+    causal_router_loss_weight: 0.0
 
   mod:
     router_aux_loss_weight: 0.01    # Weight for the non-causal Top-K router BCE loss
-    causal_router_loss_weight: 0.01 # Weight for the Unified Causal Router BCE loss
+    causal_router_loss_weight: 0.0 # Weight for the Unified Causal Router BCE loss
     z_loss_weight: 1.0e-4           # Default weight for MoD Z-loss
 
   # Beta schedule for SDT and STT routers
@@ -90,30 +90,38 @@ data:
   local_dir: "data/fineweb"
   num_shards_train: 183
   num_shards_val: 1
-  batch_size: 8
+  batch_size: 4
   tokenizer_name: "Qwen/Qwen2.5-${model.size}"
-  block_size: 1024
+  block_size: 2048
 
 training:
   mode: finetune # finetune or scratch
   num_epochs: 1
   max_steps: 10000 # If > 0, overrides num_epochs
   accumulate_grad_batches: 8
-  eval_interval: 1000
+  eval_interval: 500
   use_gradient_clipping: True
   gradient_clip_val: 1.0
   gradient_checkpointing: True
 
   optimizer:
     scheduler: cosine
-    weight_decay: 0.01
-    warmup_ratio: 0.1
+    weight_decay: 0.1
+    warmup_ratio: 0.05
     adam_beta1: 0.9
     adam_beta2: 0.95
-    adam_epsilon: 1e-6
+    adam_epsilon: 1.0e-8
     lr: 1.0e-5 # Default learning rate
-    # NOTE: The learning rates for MoD components are guesses, as the original paper did not specify them.
-    lrs: {} # Learning rates per parameter group
+    lrs:
+      base_model: 1.0e-5
+      mod_causal_router: 1.0e-4
+      mod_router: 1.0e-4
+      sdt_causal_router: 1.0e-4
+      sdt_prior: 1.0e-4
+      sdt_router: 1.0e-4
+      stt_causal_router: 1.0e-4
+      stt_predictive_router: 1.0e-4
+      stt_transition_network: 1.0e-4
 
 system:
   device: "auto" # auto, cuda, mps, cpu
