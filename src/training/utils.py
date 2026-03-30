@@ -255,86 +255,22 @@ def calculate_vram_optimized_batch_size(
 def setup_optimizer_and_scheduler(
     model: torch.nn.Module, cfg: DictConfig, num_training_steps: int, accelerator
 ):
-    """Setup optimizers and schedulers with parameter grouping for per-component LRs."""
+    """Setup optimizers and schedulers based on parameter groups from the model."""
+    # Simplify to a single optimizer group for all parameters
     optimizer_cfg = cfg.training.optimizer
-    lrs = optimizer_cfg.get("lrs", {})
-    default_lr = optimizer_cfg.lr
-    
-    # Define common optimizer arguments
     common_kwargs = {
         "betas": (optimizer_cfg.adam_beta1, optimizer_cfg.adam_beta2),
         "eps": optimizer_cfg.adam_epsilon,
         "weight_decay": optimizer_cfg.weight_decay,
     }
 
-    # Parameter Grouping Logic
-    param_groups = []
-    
-    # 1. Component-specific groups based on name matching
-    # Map from config key to internal module name patterns
-    component_mapping = {
-        "mod_causal_router": ["causal_router"],
-        "mod_router": ["router"],
-        "sdt_causal_router": ["causal_router"],
-        "sdt_prior": ["prior"],
-        "sdt_router": ["router"],
-        "stt_causal_router": ["causal_router"],
-        "stt_predictive_router": ["predictive_router"],
-        "stt_transition_network": ["transition_network"],
-    }
-    
-    # Track which parameters have been assigned to a group
-    assigned_params = set()
-    
-    # First, identify parameters for specific components if their LR is defined
-    model_type = getattr(cfg.model, "type", "standard")
-    for config_key, lr_val in lrs.items():
-        if config_key == "base_model" or lr_val == default_lr:
-            continue
-            
-        # Only process keys relevant to the current model type
-        if not config_key.startswith(model_type):
-            continue
-            
-        patterns = component_mapping.get(config_key, [])
-        component_params = []
-        
-        for name, param in model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if param in assigned_params:
-                continue
-                
-            # Check if any pattern matches the parameter name
-            if any(f".{pattern}." in f".{name}." for pattern in patterns):
-                component_params.append(param)
-                assigned_params.add(param)
-        
-        if component_params:
-            log.info(f"Group '{config_key}': {len(component_params)} params, LR {lr_val:.2e}")
-            param_groups.append({"params": component_params, "lr": lr_val})
+    lr = optimizer_cfg.lr
+    log.info(f"Creating single optimizer for all model parameters with LR {lr:.2e}")
 
-    # 2. Base model group (everything else)
-    base_lr = lrs.get("base_model", default_lr)
-    base_params = [
-        p for p in model.parameters() 
-        if p.requires_grad and p not in assigned_params
-    ]
-    
-    if base_params:
-        log.info(f"Group 'base_model': {len(base_params)} params, LR {base_lr:.2e}")
-        param_groups.append({"params": base_params, "lr": base_lr})
-
-    # Create the optimizer with grouped parameters
-    if not param_groups:
-        # Fallback to single group if no params found (shouldn't happen)
-        opt = torch.optim.AdamW(
-            [p for p in model.parameters() if p.requires_grad], 
-            lr=default_lr, 
-            **common_kwargs
-        )
-    else:
-        opt = torch.optim.AdamW(param_groups, **common_kwargs)
+    # Create a single optimizer for the entire model
+    # We filter out params that don't require grad just in case
+    params = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr=lr, **common_kwargs)
 
     optimizers = {"model": opt}
     schedulers = {

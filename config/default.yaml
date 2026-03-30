@@ -112,16 +112,6 @@ training:
     adam_beta2: 0.95
     adam_epsilon: 1.0e-8
     lr: 1.0e-5 # Default learning rate
-    lrs:
-      base_model: 1.0e-5
-      mod_causal_router: 1.0e-4
-      mod_router: 1.0e-4
-      sdt_causal_router: 1.0e-4
-      sdt_prior: 1.0e-4
-      sdt_router: 1.0e-4
-      stt_causal_router: 1.0e-4
-      stt_predictive_router: 1.0e-4
-      stt_transition_network: 1.0e-4
 
 system:
   device: "auto" # auto, cuda, mps, cpu
