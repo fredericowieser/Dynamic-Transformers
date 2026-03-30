@@ -1,0 +1,85 @@
+#!/bin/bash
+# run_sdt_stt_0.5B.sh - Focused experiment for SDT and STT 0.5B models
+
+set -e # Exit immediately if a command exits with a non-zero status
+
+echo "================================================================"
+echo " Starting Focused 0.5B Experiments (SDT & STT)"
+echo "================================================================"
+
+# Prepare environment
+if [ ! -d ".venv" ]; then
+    echo "Virtual environment not found. Please run 'uv sync' first."
+    exit 1
+fi
+source .venv/bin/activate
+
+# Configuration
+NUM_GPUS=$(python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 1)
+TOTAL_BATCH_SIZE=64
+PER_DEVICE_BATCH_SIZE=$((TOTAL_BATCH_SIZE / (NUM_GPUS > 0 ? NUM_GPUS : 1)))
+ACCUMULATE_GRAD_BATCHES=1
+SEQ_LENGTHS="1024,2048,4096,8192,16384,32768"
+MODELS=("sdt" "stt")
+SIZE="0.5B"
+
+# Set threads and CUDA config
+export OMP_NUM_THREADS=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+for MODEL in "${MODELS[@]}"; do
+    echo "================================================================"
+    echo " STARTING EXPERIMENT: Model=$MODEL, Size=$SIZE"
+    echo "================================================================"
+
+    # 1. Train Model
+    echo "--> [1/3] Training $MODEL-$SIZE..."
+    if [ "$NUM_GPUS" -gt 1 ]; then
+        accelerate launch --num_processes $NUM_GPUS train.py \
+            --config-name $SIZE \
+            model.type=$MODEL \
+            logging.wandb.enabled=true \
+            run.run_final_evaluation=false
+    else
+        python3 train.py \
+            --config-name $SIZE \
+            model.type=$MODEL \
+            logging.wandb.enabled=true \
+            run.run_final_evaluation=false
+    fi
+
+    # Find the experiment output directory
+    LATEST_DIR=$(ls -td outputs/experiment-${MODEL}-*-${SIZE} | head -1)
+    MODEL_PATH="${LATEST_DIR}/final_model"
+
+    if [ ! -d "$MODEL_PATH" ]; then
+        echo "Error: Training failed, model not found at $MODEL_PATH"
+        exit 1
+    fi
+
+    # 2. Sequential Evaluation (Immediate Logging after each task)
+    echo "--> [2/3] Evaluating $MODEL-$SIZE (Non-Causal & Causal)..."
+    
+    # Non-Causal Router Evaluation (Parallelized across GPUs for speed)
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --output_dir "$LATEST_DIR"
+    
+    # Causal Router Evaluation (Parallelized across GPUs for speed)
+    python bench.py --model_path $MODEL_PATH --tasks general --batch_size 16 --use_causal_router --output_dir "$LATEST_DIR"
+
+    # 3. Latency Benchmarking (Logs per sequence length)
+    echo "--> [3/3] Latency Benchmarking $MODEL-$SIZE..."
+    
+    # Non-Causal Latency
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "standard,$MODEL" --output_path "${LATEST_DIR}/latency_non_causal.json"
+    
+    # Causal Latency
+    python performance_benchmark.py --model_size $SIZE --sequence_lengths $SEQ_LENGTHS --batch_size 1 --model_types "$MODEL" --use_causal_router --output_path "${LATEST_DIR}/latency_causal.json"
+    
+    echo "================================================================"
+    echo " COMPLETED EXPERIMENT: Model=$MODEL, Size=$SIZE"
+    echo "================================================================"
+done
+
+echo "================================================================"
+echo " FOCUSED 0.5B EXPERIMENTS FINISHED SUCCESSFULLY"
+echo "================================================================"
