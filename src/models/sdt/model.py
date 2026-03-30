@@ -118,7 +118,7 @@ class SDTPair(nn.Module):
             router_stats.update(surprise_stats)
             router_stats["g_cont"] = g_cont.mean().item()
             
-            layer_losses["sdt_causal_router_loss"] = causal_loss
+            layer_losses["causal_router_loss"] = causal_loss
             if causal_acc is not None:
                 router_stats["causal_router_acc"] = causal_acc # Tensor for gathering
 

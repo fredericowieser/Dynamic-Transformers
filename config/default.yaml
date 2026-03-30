@@ -22,7 +22,7 @@ model:
   # --- Common Dynamic Model Parameters ---
   capacity: 0.5
   posterior_variance_c: 1.0  # Constant for isotropic posterior variance
-  prior_ffn_intermediate_size_factor: 0.0625 # Factor of hidden size (e.g., 0.0625 for 1/16)
+  prior_ffn_intermediate_size_factor: 0.125 # Factor of hidden size (e.g., 0.0625 for 1/16)
   o_ce_init: 1.025
   m_cu_init: 1.1
   ma_window: 100
@@ -33,21 +33,22 @@ model:
   train_causal_router: false
   use_causal_router_in_validation: false
 
-  # --- Model-Specific Parameters ---
+  # --- Shared Inference & Routing Parameters ---
+  causal_threshold: 0.5           # Shared threshold for all models when use_causal_router=True
+
+  # --- Model-Specific Loss Weights ---
   sdt:
     prior_loss_weight: 0.05
-    causal_router_loss_weight: 0.0
+    causal_router_loss_weight: 0.01
   
   stt:
     tpn_loss_weight: 0.05
-    causal_router_loss_weight: 0.0 # Renamed from causal_loss_weight to match code
-    g_threshold: 0.75 # Value between 0 and 1
-    use_g_threshold_selection: false # If true, use g_threshold instead of top-k
-    g_reg_loss_weight: 0.001 # Weight for g_cont regularization loss, increased for sparsity
+    causal_router_loss_weight: 0.01
 
   mod:
-    aux_loss_weight: 0.01
-    predictor_loss_weight: 0.01
+    router_aux_loss_weight: 0.01    # Weight for the non-causal Top-K router BCE loss
+    causal_router_loss_weight: 0.01 # Weight for the Unified Causal Router BCE loss
+    z_loss_weight: 1.0e-4           # Default weight for MoD Z-loss
 
   # Beta schedule for SDT and STT routers
   beta_schedule:
@@ -96,9 +97,9 @@ data:
 training:
   mode: finetune # finetune or scratch
   num_epochs: 1
-  max_steps: -1 # If > 0, overrides num_epochs
+  max_steps: 10000 # If > 0, overrides num_epochs
   accumulate_grad_batches: 8
-  eval_interval: 500
+  eval_interval: 1000
   use_gradient_clipping: True
   gradient_clip_val: 1.0
   gradient_checkpointing: True

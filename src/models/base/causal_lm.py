@@ -180,21 +180,67 @@ class BaseForCausalLM(PreTrainedModel):
         if aux:
             if "unscaled_losses" in aux:
                 unscaled_losses = aux.pop("unscaled_losses")
-                for loss_name, unscaled_loss in unscaled_losses.items():
-                    model_type = loss_name.split("_")[0]
-                    weight_key = loss_name.replace(f"{model_type}_", "").replace(
-                        "_loss", "_loss_weight"
-                    )
-                    loss_weight = self.model_params.get(model_type, {}).get(weight_key, 0.0)
+                model_type = getattr(self.config, "model_type", None)
+                # Ensure model_weights is a dict (config sub-objects might be objects or dicts)
+                model_weights = getattr(self.config, model_type, {}) if model_type else {}
+                if hasattr(model_weights, "to_dict"):
+                    model_weights = model_weights.to_dict()
+                elif not isinstance(model_weights, dict):
+                    # Handle case where it might be a Namespace or similar
+                    model_weights = vars(model_weights) if hasattr(model_weights, "__dict__") else {}
 
-                    if unscaled_loss is not None and loss_weight > 0:
-                        scaled_loss = unscaled_loss * loss_weight
+                # 1. Causal Router Loss (Shared across MoD, SDT, STT)
+                if "causal_router_loss" in unscaled_losses:
+                    u_loss = unscaled_losses["causal_router_loss"]
+                    weight = model_weights.get("causal_router_loss_weight", 0.0)
+                    if u_loss is not None:
+                        scaled_loss = u_loss * weight
                         if self.training:
                             total_loss += scaled_loss
-                        aux_metrics[f"loss/{loss_name}_scaled"] = scaled_loss
-                        aux_metrics[f"loss_weight/{loss_name}"] = loss_weight
+                        aux_metrics["loss/causal_router_scaled"] = scaled_loss
+                        aux_metrics["loss/causal_router_unscaled"] = u_loss
 
-                    aux_metrics[f"loss/{loss_name}_unscaled"] = unscaled_loss
+                # 2. Model-Specific Auxiliary Losses
+                if model_type == "sdt" and "sdt_prior_loss" in unscaled_losses:
+                    u_loss = unscaled_losses["sdt_prior_loss"]
+                    weight = model_weights.get("prior_loss_weight", 0.0)
+                    if u_loss is not None:
+                        scaled_loss = u_loss * weight
+                        if self.training:
+                            total_loss += scaled_loss
+                        aux_metrics["loss/sdt_prior_scaled"] = scaled_loss
+                        aux_metrics["loss/sdt_prior_unscaled"] = u_loss
+                        
+                elif model_type == "stt" and "stt_tpn_loss" in unscaled_losses:
+                    u_loss = unscaled_losses["stt_tpn_loss"]
+                    weight = model_weights.get("tpn_loss_weight", 0.0)
+                    if u_loss is not None:
+                        scaled_loss = u_loss * weight
+                        if self.training:
+                            total_loss += scaled_loss
+                        aux_metrics["loss/stt_tpn_scaled"] = scaled_loss
+                        aux_metrics["loss/stt_tpn_unscaled"] = u_loss
+                        
+                elif model_type == "mod":
+                    if "mod_router_aux_loss" in unscaled_losses:
+                        u_loss = unscaled_losses["mod_router_aux_loss"]
+                        weight = model_weights.get("router_aux_loss_weight", 0.0)
+                        if u_loss is not None:
+                            scaled_loss = u_loss * weight
+                            if self.training:
+                                total_loss += scaled_loss
+                            aux_metrics["loss/mod_router_aux_scaled"] = scaled_loss
+                            aux_metrics["loss/mod_router_aux_unscaled"] = u_loss
+                    
+                    if "mod_z_loss" in unscaled_losses:
+                        u_loss = unscaled_losses["mod_z_loss"]
+                        weight = model_weights.get("z_loss_weight", 1e-4)
+                        if u_loss is not None:
+                            scaled_loss = u_loss * weight
+                            if self.training:
+                                total_loss += scaled_loss
+                            aux_metrics["loss/mod_z_scaled"] = scaled_loss
+                            aux_metrics["loss/mod_z_unscaled"] = u_loss
 
             for key, value in aux.items():
                 if key.startswith("router_stats"):

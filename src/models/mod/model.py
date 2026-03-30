@@ -81,12 +81,12 @@ class MoDLayer(nn.Module):
             gating_scores = gating_scores.gather(dim=-1, index=sort_indices)
             
             if training:
-                layer_losses["mod_aux_loss"] = router_bce_loss
-                layer_losses["mod_z_loss"] = router_z_loss * 1e-4
-                layer_losses["mod_causal_router_loss"] = causal_loss
+                layer_losses["mod_router_aux_loss"] = router_bce_loss
+                layer_losses["mod_z_loss"] = router_z_loss
+                layer_losses["causal_router_loss"] = causal_loss
             
             if causal_acc is not None:
-                layer_metrics["causal_router_acc"] = causal_acc.item()
+                layer_metrics["causal_router_acc"] = causal_acc # Tensor for gathering
                 
             gating_probs = torch.sigmoid(gating_scores)
             

@@ -64,16 +64,16 @@ class STTLayer(nn.Module):
         layer_losses = {}
         B, T, D = hidden_states.shape
 
-        use_g_threshold = getattr(self.config, "use_g_threshold_selection", False)
-        g_threshold = getattr(self.config, "g_threshold", 0.5)
-        
-        g_cont_for_loss = None
-
         if use_causal_router:
+            # ==========================================
+            # INFERENCE MODE (Autoregressive / Causal)
+            # ==========================================
             causal_logits, _, _ = self.causal_router(hidden_states)
             gating_probs = torch.sigmoid(causal_logits)
             
-            selected_mask = gating_probs >= self.causal_threshold
+            # Use the GLOBALLY SHARED threshold
+            causal_threshold = getattr(self.config, "causal_threshold", 0.5)
+            selected_mask = gating_probs >= causal_threshold
             batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
             gating_scores_for_selected = gating_probs[selected_mask]
             
@@ -89,8 +89,11 @@ class STTLayer(nn.Module):
                 use_soft_gating=True,
                 **kwargs,
             )
-            return final_hidden_states, layer_losses, router_stats, g_cont_for_loss
+            return final_hidden_states, layer_losses, router_stats, None
 
+        # ==========================================
+        # TRAINING MODE (Non-Causal Top-K via KL Divergence)
+        # ==========================================
         # First pass through the block to get processed_hidden and residuals
         out = self.block(hidden_states, **kwargs)
         processed_hidden = out[0] if isinstance(out, tuple) else out
@@ -104,64 +107,55 @@ class STTLayer(nn.Module):
         # Get mean and log variance from transition network
         mu_q, log_var_q = self.transition_network(prev_final_states)
         
-        if self.training:
-            c = getattr(self.config, "posterior_variance_c", 1.0)
-            kl_div_per_token = BaseSurpriseRouter.compute_kl_divergence(actual_residual.detach(), mu_q, log_var_q, c)
-            layer_losses["stt_tpn_loss"] = kl_div_per_token.mean()
-
+        c = getattr(self.config, "posterior_variance_c", 1.0)
+        kl_div_per_token = BaseSurpriseRouter.compute_kl_divergence(actual_residual.detach(), mu_q, log_var_q, c)
+        
         g_cont, pred_stats = self.predictive_router(
             actual_residual, mu_q, log_var_q, **kwargs
         )
         router_stats.update(pred_stats)
 
-        # Determine selected tokens for the second pass based on g_cont
-        if use_g_threshold:
-            selected_mask = g_cont >= g_threshold
-            binary_targets = selected_mask.float()
-            
-            batch_indices, token_indices = selected_mask.nonzero(as_tuple=True)
-            gating_scores_for_selected = g_cont[selected_mask]
-            if B * T > 0:
-                router_stats["selected_tokens_proportion"] = (selected_mask.sum() / (B * T)).item()
-        else:
-            k = max(1, int(T * self.predictive_router.capacity))
-            gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
+        # Strict Top-K Routing based on capacity
+        k = max(1, int(T * self.predictive_router.capacity))
+        gating_scores_values, topk_idx = g_cont.topk(k, dim=-1)
 
-            binary_targets = torch.zeros_like(g_cont)
-            binary_targets.scatter_(1, topk_idx, 1.0)
+        binary_targets = torch.zeros_like(g_cont)
+        binary_targets.scatter_(1, topk_idx, 1.0)
 
-            # Sort indices to ensure causal processing (past cannot see future)
-            topk_idx, sort_indices = topk_idx.sort(dim=-1)
-            gating_scores_values = gating_scores_values.gather(dim=-1, index=sort_indices)
+        # Sort indices to ensure causal processing (past cannot see future)
+        topk_idx, sort_indices = topk_idx.sort(dim=-1)
+        gating_scores_values = gating_scores_values.gather(dim=-1, index=sort_indices)
 
-            gating_scores_for_selected = gating_scores_values.reshape(-1)
-            batch_indices = (
-                torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
-            )
-            token_indices = topk_idx.reshape(-1)
-            if B * T > 0:
-                router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
+        gating_scores_for_selected = gating_scores_values.reshape(-1)
+        batch_indices = (
+            torch.arange(B, device=g_cont.device).unsqueeze(1).expand(-1, k).reshape(-1)
+        )
+        token_indices = topk_idx.reshape(-1)
+        if B * T > 0:
+            router_stats["selected_tokens_proportion"] = topk_idx.numel() / (B * T)
 
+        # Train the Causal Router
         causal_logits, causal_loss, causal_acc = self.causal_router(hidden_states.detach(), targets=binary_targets)
         
-        layer_losses["stt_causal_router_loss"] = causal_loss
+        if self.training:
+            layer_losses["stt_tpn_loss"] = kl_div_per_token.mean()
+            layer_losses["causal_router_loss"] = causal_loss
+        
         if causal_acc is not None:
             router_stats["causal_router_acc"] = causal_acc # Tensor for gathering
 
         # Apply the second TF block only to selected tokens, always using soft gating
         final_hidden_states, _, _ = self.block.process_selected(
-            original_hidden,  # STT uses original_hidden for process_selected
+            original_hidden,
             batch_indices=batch_indices,
             token_indices=token_indices,
             gating_scores=gating_scores_for_selected,
-            use_soft_gating=True,  # Unification point
+            use_soft_gating=True,
             **kwargs,
         )
 
-        # Only return g_cont for regularization loss during training
-        g_cont_for_loss = g_cont if self.training else None
+        return final_hidden_states, layer_losses, router_stats, g_cont
 
-        return final_hidden_states, layer_losses, router_stats, g_cont_for_loss
 
 
 class STTForCausalLM(BaseForCausalLM):
@@ -321,12 +315,7 @@ class STTForCausalLM(BaseForCausalLM):
         aux["beta_ce"] = beta_ce
         aux["beta_cu"] = beta_cu
 
-        # Add g_cont regularization loss if applicable (primarily for variable capacity)
-        if self.training and all_g_cont_values and getattr(self.config, "use_g_threshold_selection", False):
-            avg_g_cont_across_layers = torch.mean(torch.stack(all_g_cont_values))
-            aux["unscaled_losses"]["stt_g_reg_loss"] = avg_g_cont_across_layers
-            aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont_across_layers.item()
-        elif all_g_cont_values:
+        if all_g_cont_values:
             # Just log it for fixed capacity or validation
             avg_g_cont = sum([g.mean().item() if hasattr(g, "mean") else g for g in all_g_cont_values]) / len(all_g_cont_values)
             aux["router_stats"]["stt_g_cont_mean_across_layers"] = avg_g_cont
