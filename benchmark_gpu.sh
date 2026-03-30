@@ -1,19 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=bigt_dev
+#SBATCH --job-name=bench_transformers
 #SBATCH --partition=agent-xlong
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --output=slurm_out/%j.out
-#SBATCH --time=5-00:00:00
+#SBATCH --time=1-00:00:00
 
-# This script is a SLURM wrapper for bench.py, designed to run model benchmarking jobs.
+# This script runs the performance_benchmark.py script to fill in the model variant performance table.
+# It uses randomly initialized models and tests across multiple sequence lengths.
 #
 # To submit this job, run:
-# sbatch benchmark_gpu.sh <bench.py arguments, e.g., --model_path /path/to/model --tasks general>
+# sbatch benchmark_gpu.sh
 #
 # To monitor the job, use:
 # squeue -u $USER
-#
-# To see the output, check the slurm-*.out file that will be created in this directory.
 
 echo "--- Setting up environment for Benchmarking ---"
 
@@ -25,29 +24,38 @@ if ! command -v uv &> /dev/null
 then
     echo "uv could not be found, installing it now..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Source the environment to add uv to the PATH for the current session
     source "$HOME/.local/bin/env"
 fi
 
-# Create a .venv local virtual environment (if it doesn't exist)
+# Create and sync virtual environment
 if [ ! -d ".venv" ]
 then
     echo "Creating virtual environment..."
     uv venv
 fi
 
-# Install the repo dependencies
 echo "Installing dependencies with uv..."
 export UV_HTTP_TIMEOUT=600
 uv sync
 
-# Activate venv so that `python` uses the project's venv instead of system python
+# Activate venv
 echo "Activating virtual environment..."
 source .venv/bin/activate
 
 echo "--- Starting benchmarking run ---"
 
-# Pass all arguments directly to bench.py
-python bench.py "$@"
+# Define sequence lengths as requested
+SEQ_LENGTHS="1024,2048,4096,8192,16384,32768"
+MODEL_SIZE="0.5B"
+
+# Execute the performance benchmark script
+# It will iterate through Dense, MoD, SDT (Causal), and STT (Causal)
+# and print the Markdown table to the output.
+python performance_benchmark.py \
+    --model_size $MODEL_SIZE \
+    --sequence_lengths $SEQ_LENGTHS \
+    --batch_size 1 \
+    --num_runs 5 \
+    --num_warmup_runs 2
 
 echo "--- Benchmarking run finished ---"
