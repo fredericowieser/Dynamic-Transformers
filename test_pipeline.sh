@@ -39,12 +39,10 @@ for MODEL in "${MODELS[@]}"; do
     if [ "$NUM_GPUS" -gt 1 ]; then
         accelerate launch --num_processes $NUM_GPUS train.py \
             --config-name test_pipeline \
-            model.type=$MODEL \
-            model.stt.use_g_threshold_selection=false
+            model.type=$MODEL
     else
         python3 train.py --config-name test_pipeline \
-            model.type=$MODEL \
-            model.stt.use_g_threshold_selection=false
+            model.type=$MODEL
     fi
 
     # Find the output directory (latest created experiment directory for this model)

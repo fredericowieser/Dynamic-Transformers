@@ -39,14 +39,12 @@ for SIZE in "${SIZES[@]}"; do
             accelerate launch --num_processes $NUM_GPUS train.py \
                 --config-name $SIZE \
                 model.type=$MODEL \
-                model.stt.use_g_threshold_selection=false \
                 logging.wandb.enabled=true \
                 run.run_final_evaluation=false
         else
             python3 train.py \
                 --config-name $SIZE \
                 model.type=$MODEL \
-                model.stt.use_g_threshold_selection=false \
                 logging.wandb.enabled=true \
                 run.run_final_evaluation=false
         fi
