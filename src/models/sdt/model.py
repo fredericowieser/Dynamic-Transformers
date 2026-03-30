@@ -78,6 +78,7 @@ class SDTPair(nn.Module):
         self.dynamic = DynamicBlock(hf_layer)
         self.causal_router = UnifiedCausalRouter(config)
         self.model_params = model_params
+        self.config = config
         self.causal_threshold = getattr(config, "causal_threshold", 0.5)
 
     def forward(self, hidden_states, use_causal_router: bool = False, **kwargs):
